@@ -350,7 +350,22 @@ static void test_auth_endpoint() {
           "the ends of the range are ports");
     check(auth_endpoint(json::parse(R"({"auth_server_host":""})")).host.empty(), "an empty host stays empty (and is not this PC)");
 
-    // The automatic sign-in: only this PC, and the answer is one value to keep.
+    // Automatic sign-in uses loopback or verified HTTPS and scopes credentials.
+    {
+        const auto e = auto_sign_in_endpoint(json::parse(R"({"auth_server_host":"auth.example.com","auth_server_port":8444,"auth_server_tls":true})"));
+        check(e && e->tls && e->port == 8444, "a remote HTTPS server supports automatic sign-in");
+        const AuthEndpoint first{"auth.example.com", 8444, true};
+        check(credential_target(first) != credential_target(AuthEndpoint{"other.example.com", 8444, true}),
+              "different servers cannot share saved passwords");
+        check(credential_target(first) != credential_target(AuthEndpoint{"auth.example.com", 443, true}),
+              "different server ports cannot share saved passwords");
+        check(credential_target(first) != credential_target(AuthEndpoint{"auth.example.com", 8444, false}),
+              "HTTPS passwords cannot be reused over cleartext");
+        check(credential_target(AuthEndpoint{}) == kCredentialTarget && credential_target(first) != kCredentialTarget,
+              "local saved passwords remain local");
+        check(!auto_sign_in_endpoint(json::parse(R"({"auth_server_host":"","auth_server_tls":true})")),
+              "an empty HTTPS host is refused");
+    }
     {
         const auto e = auto_sign_in_endpoint(json::parse(R"({"auth_server_host":"localhost","auth_server_port":9090})"));
         check(e && e->host == "localhost" && e->port == 9090, "a server on this PC: the sign-in gets its host and port");

@@ -33,9 +33,9 @@
 //    "Signing in as <name>..." with a Cancel button for 3 seconds, then signs in
 //    against this run's auth server (asking again for up to 60 seconds while it
 //    is not up yet) and writes the token file exactly as a sign-in by hand does.
-//    It only does that for an auth server on this PC: the host in
-//    config\server.json must be exactly 127.0.0.1, localhost or ::1, and the
-//    host and port read at the start are used for every retry.  A refusal (wrong
+//    It does that for a loopback or verified HTTPS server, using a separate
+//    saved credential for each remote endpoint. The host and port read at
+//    startup are used for every retry. A refusal (wrong
 //    password, unknown account, another database) keeps the saved sign-in and
 //    shows the form with the username filled in; a sign-in by hand with the box
 //    ticked replaces it, with the box not ticked deletes it, and Switch Account
@@ -70,6 +70,7 @@
 #ifndef NOMINMAX
 #  define NOMINMAX
 #endif
+#include <winsock2.h>
 #include <windows.h>
 #include <windowsx.h>
 #include <wininet.h>
@@ -87,6 +88,7 @@
 
 #include <nlohmann/json.hpp>
 #include "launcher_sign_in.h"
+#include "launcher_runtime.h"
 #include "services/tether/ics_token_file.h"
 
 #include <atomic>
@@ -216,6 +218,7 @@ static std::wstring g_autoStatus;            // the small line under it
 static std::atomic<bool> g_autoCancel{false};
 
 static std::atomic<bool> g_authBusy{false};
+static aoc::launcher::AuthEndpoint g_authEndpoint; // fixed for this run, including credential lookup and retries
 constexpr UINT WM_AUTH_DONE   = WM_APP + 1;
 constexpr UINT WM_AUTO_STATUS = WM_APP + 2;
 constexpr UINT WM_AUTO_DONE   = WM_APP + 3;
@@ -642,7 +645,7 @@ static void watch_game(HWND hwnd, HANDLE process)
 // puts its own copy next to the exe).  Read once per sign-in, not once per request.
 static aoc::launcher::AuthEndpoint read_auth_endpoint()
 {
-    return aoc::launcher::auth_endpoint(load_server_json());
+    return g_authEndpoint;
 }
 
 // One login or register request to `server`, and what the auth server answered.
@@ -672,7 +675,9 @@ static void auth_worker(HWND hwnd, std::wstring wuser, std::wstring wpass, bool 
     namespace sign_in = aoc::launcher;
     const std::string user = to_utf8(wuser.c_str());
     std::string pass = to_utf8(wpass.c_str());
-    const sign_in::Reply reply = request_token(read_auth_endpoint(), user, pass, is_reg);
+    const auto endpoint = read_auth_endpoint();
+    const auto credential = sign_in::credential_target(endpoint);
+    const sign_in::Reply reply = request_token(endpoint, user, pass, is_reg);
     sign_in::wipe(pass);   // the UTF-8 copy; the request body was wiped in request_token
 
     auto* r = new AuthResult{};
@@ -691,11 +696,13 @@ static void auth_worker(HWND hwnd, std::wstring wuser, std::wstring wpass, bool 
         // forgets (box not ticked) the saved sign-in.
         switch (sign_in::remember_action(false, true, keep)) {
         case sign_in::Remember::Save:
-            if (!sign_in::credential_save(sign_in::kCredentialTarget, sign_in::SavedSignIn{wuser, wpass}))
+            if (!sign_in::is_local_host(endpoint.host) && !endpoint.tls)
+                r->note = "Signed in. Saving a sign-in requires a secure connection.";
+            else if (!sign_in::credential_save(credential.c_str(), sign_in::SavedSignIn{wuser, wpass}))
                 r->note = "Signed in, but Windows would not save the sign-in.";
             break;
         case sign_in::Remember::Delete:
-            sign_in::credential_remove(sign_in::kCredentialTarget);
+            sign_in::credential_remove(credential.c_str());
             break;
         case sign_in::Remember::Leave:
             break;
@@ -738,16 +745,14 @@ static void auto_worker(HWND hwnd, aoc::launcher::SavedSignIn saved, aoc::launch
     if (!::PostMessageW(hwnd, WM_AUTO_DONE, 0, (LPARAM)d)) delete d;
 }
 
-// Starts the automatic sign-in for a saved sign-in, if the auth server is on
-// this PC; otherwise the form stays and says why.
+// Starts automatic sign-in for a local or HTTPS server.
 static void begin_auto_sign_in(HWND hwnd, const aoc::launcher::SavedSignIn& saved)
 {
     // config\server.json is read here, once.  The server that is checked is the
     // server the thread gets, for every request and every retry.
-    const std::optional<aoc::launcher::AuthEndpoint> server =
-        aoc::launcher::auto_sign_in_endpoint(load_server_json());
-    if (!server) {
-        g_feedback = L"Automatic sign-in only works with a server on this PC.";
+    const auto server = read_auth_endpoint();
+    if (server.host.empty() || (!aoc::launcher::is_local_host(server.host) && !server.tls)) {
+        g_feedback = L"Automatic sign-in requires a secure connection.";
         g_feedbackErr = true;
         return;
     }
@@ -755,7 +760,7 @@ static void begin_auto_sign_in(HWND hwnd, const aoc::launcher::SavedSignIn& save
     g_autoUser = saved.username;
     g_autoStatus.clear();
     g_autoCancel.store(false);
-    std::thread([hwnd, saved, endpoint = *server] { auto_worker(hwnd, saved, endpoint); }).detach();
+    std::thread([hwnd, saved, endpoint = server] { auto_worker(hwnd, saved, endpoint); }).detach();
 }
 // Cyb + C.O.A
 
@@ -1397,7 +1402,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             move_legacy_state();     // what an earlier version saved comes along, once
 #endif
             std::wstring remembered = load_remembered_user();
-            const auto saved = aoc::launcher::credential_load(aoc::launcher::kCredentialTarget);
+            const auto target = aoc::launcher::credential_target(read_auth_endpoint());
+            const auto saved = aoc::launcher::credential_load(target.c_str());
             if (saved) {
                 remembered = saved->username;
                 g_keepSignedIn = true;
@@ -1638,10 +1644,13 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             // Switch Account / Logout forgets the saved sign-in: the next start
             // shows the form, with the username filled in.
             const bool wasKept = g_keepSignedIn;   // the box is ticked while a sign-in is saved
-            const bool gone = aoc::launcher::credential_remove(aoc::launcher::kCredentialTarget);
+            const auto target = aoc::launcher::credential_target(read_auth_endpoint());
+            const bool gone = aoc::launcher::credential_remove(target.c_str());
             g_keepSignedIn = false;
             g_loggedIn = false;
             g_username.clear();
+            std::error_code token_error;
+            std::filesystem::remove(aoc::ics_token::path_in(exe_dir()), token_error);
             g_feedback = !gone   ? L"Logged out, but Windows would not delete the saved sign-in."
                        : wasKept ? L"Logged out. The saved sign-in is forgotten."
                                  : L"Logged out.";
@@ -1715,6 +1724,16 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
 
+    case WM_CLOSE:
+        if (g_gameRunning && load_server_json().value("managed_tether", false)) {
+            MessageBoxW(hwnd, L"Keep Reborn Launcher open while playing. It will be minimized.",
+                        L"Reborn Launcher", MB_OK | MB_ICONINFORMATION);
+            ShowWindow(hwnd, SW_MINIMIZE);
+            return 0;
+        }
+        DestroyWindow(hwnd);
+        return 0;
+
     case WM_DESTROY:
         g_autoCancel.store(true);   // an automatic sign-in still running must not write a token after the window is gone
         PostQuitMessage(0);
@@ -1750,6 +1769,15 @@ static std::wstring parse_command_line()
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
     const std::wstring screenshotPath = parse_command_line();
+    g_authEndpoint = aoc::launcher::auth_endpoint(load_server_json());
+    aoc::launcher::PlayerRuntime runtime;
+    if (!g_screenshotMode) {
+        const std::string error = runtime.start(load_server_json(), exe_dir());
+        if (!error.empty()) {
+            MessageBoxA(nullptr, error.c_str(), "Reborn Launcher", MB_OK | MB_ICONERROR);
+            return 1;
+        }
+    }
 
     INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&icc);

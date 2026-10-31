@@ -1,5 +1,9 @@
 # SandalCore
 
+**Reborn Launcher player download:** [Download RebornLauncher.exe](https://github.com/MrJambix/AshesReborn/releases/latest/download/RebornLauncher.exe). Open it, approve the server certificate on your first connection, enter a new username and password, and click **Register**. Select your installed game if needed, then click **LAUNCH GAME** and keep the launcher open while playing. Requires your own compatible Ashes of Creation client (2026-01-29 build); no game files are included.
+
+This repository distributes a modified SandalCore as **Reborn Launcher**. See [player packaging and server deployment](deploy/vps/README.md) for building the executable and operating the test server.
+
 An independent, open-source server emulator compatible with the Ashes of Creation client, developed by Cyb.
 
 > [!IMPORTANT]

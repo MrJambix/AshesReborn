@@ -7,8 +7,8 @@
 //  "Keep me signed in" for launcher.exe (src/launcher_main.cpp):
 //
 //   * the saved sign-in in Windows Credential Manager: one generic credential
-//     per Windows user, under ONE target name (kCredentialTarget) that every
-//     copy of the launcher shares: user name = the account name, secret = the
+//     per Windows user and remote HTTPS endpoint (credential_target), shared
+//     by copies talking to that server: user name = the account name, secret = the
 //     password.  The auth service's login token is not saved instead: it lives
 //     24 hours (AOC_TOKEN_TTL), there is no refresh token, and each auth
 //     service checks it in its own database.  Nothing is written to a file, a
@@ -17,8 +17,8 @@
 //     the current names: a sign-in (credential_move) and the remembered user
 //     name file (copy_if_missing).  The old names are not in this file;
 //   * where the auth server is (config\server.json) and the hosts the saved
-//     password may go to: exactly 127.0.0.1, localhost or ::1, read once per
-//     automatic sign-in and used for every retry;
+//     password may go to: loopback or verified HTTPS, with separate saved
+//     passwords per remote host and port, read once and used for every retry;
 //   * how a request is written (the password is wiped after it is sent) and how
 //     a reply of the auth server is read: by length, at most 64 KB, inside one
 //     deadline, a redirect never followed; then what it means (token / refused /
@@ -72,7 +72,7 @@ namespace aoc { namespace launcher {
 //  The saved sign-in (Windows Credential Manager)
 // ---------------------------------------------------------------------------
 
-/// The one target name every copy of the launcher uses.
+/// Historical local development target; remote endpoints use credential_target.
 inline constexpr wchar_t kCredentialTarget[] = L"RebornLauncher/SignIn";
 
 /// Account name and password as the sign-in form holds them (UTF-16).  The
@@ -261,13 +261,30 @@ inline AuthEndpoint auth_endpoint(const nlohmann::json& server_json) {
     return e;
 }
 
-/// The server an automatic sign-in will use, or nothing when it is not on this
-/// PC.  The caller reads config\server.json ONCE for this and keeps the answer
+/// A saved password may go to a loopback server or a verified HTTPS endpoint.
+/// Remote credentials are isolated by scheme, host and port; local development
+/// keeps the historical target so existing local sign-ins still work.
+inline std::wstring credential_target(const AuthEndpoint& endpoint) {
+    if (is_local_host(endpoint.host)) return kCredentialTarget;
+    std::wstring target = kCredentialTarget;
+    target += endpoint.tls ? L"/https/" : L"/http/";
+    const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, endpoint.host.data(),
+                                    static_cast<int>(endpoint.host.size()), nullptr, 0);
+    std::wstring host(n > 0 ? n : 0, L'\0');
+    if (n > 0) MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, endpoint.host.data(),
+                                 static_cast<int>(endpoint.host.size()), host.data(), n);
+    target += host;
+    target += L":" + std::to_wstring(endpoint.port);
+    return target;
+}
+
+/// The server an automatic sign-in will use, or nothing for remote cleartext.
+/// The caller reads config\server.json ONCE for this and keeps the answer
 /// for the whole sign-in, every retry included: the host that was checked is
 /// the host that gets the password, even if the file changes meanwhile.
 inline std::optional<AuthEndpoint> auto_sign_in_endpoint(const nlohmann::json& server_json) {
     AuthEndpoint e = auth_endpoint(server_json);
-    if (!is_local_host(e.host)) return std::nullopt;
+    if (e.host.empty() || (!is_local_host(e.host) && !e.tls)) return std::nullopt;
     return e;
 }
 

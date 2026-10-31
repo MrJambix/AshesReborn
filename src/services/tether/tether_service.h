@@ -392,26 +392,27 @@ public:
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     /// Bind UDP socket and start the receive loop thread. Returns true on success.
-    bool start(uint16_t port) {
+    bool start(uint16_t port, bool loopback_only = false) {
         // Initialise Winsock (ref-counted, safe to call multiple times)
         WSADATA wsa{};
-        ::WSAStartup(MAKEWORD(2, 2), &wsa);
+        if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
 
         socket_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (socket_ == INVALID_SOCKET) {
             spdlog::error("[Tether] socket() failed: {}", ::WSAGetLastError());
+            ::WSACleanup();
             return false;
         }
 
         // Allow quick restart on the same port (matches working AshesEmulator tether)
         const int reuse = 1;
-        ::setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR,
+        ::setsockopt(socket_, SOL_SOCKET, loopback_only ? SO_EXCLUSIVEADDRUSE : SO_REUSEADDR,
                      reinterpret_cast<const char*>(&reuse), sizeof(reuse));
 
         sockaddr_in addr{};
         addr.sin_family      = AF_INET;
         addr.sin_port        = htons(port);
-        addr.sin_addr.s_addr = INADDR_ANY;
+        addr.sin_addr.s_addr = loopback_only ? htonl(INADDR_LOOPBACK) : INADDR_ANY;
 
         if (::bind(socket_,
                    reinterpret_cast<const sockaddr*>(&addr),
@@ -420,6 +421,7 @@ public:
                           port, ::WSAGetLastError());
             ::closesocket(socket_);
             socket_ = INVALID_SOCKET;
+            ::WSACleanup();
             return false;
         }
 
@@ -432,7 +434,7 @@ public:
 
         running_ = true;
         thread_  = std::thread([this] { recv_loop(); });
-        spdlog::info("[Tether] UDP ARQ server bound on 0.0.0.0:{}", port_);
+        spdlog::info("[Tether] UDP ARQ server bound on {}:{}", loopback_only ? "127.0.0.1" : "0.0.0.0", port_);
         return true;
     }
 
@@ -454,6 +456,7 @@ public:
             socket_ = INVALID_SOCKET;
         }
         spdlog::info("[Tether] stopped");
+        ::WSACleanup();
     }
 
     [[nodiscard]] bool     is_running() const noexcept { return running_.load(); }

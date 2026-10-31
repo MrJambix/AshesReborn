@@ -52,7 +52,11 @@ On the build PC: pull, run `build_all.bat`, then `deploy\vps\package.ps1 -Public
 
 ## Players
 
-On the build PC, after committing: `deploy\vps\package-client.ps1 -ServerIp <ip>` makes `RebornLauncher.zip`. It holds the launcher, tether, CA certificate, settings and source, and no game files or keys. Players unzip it and run `Start Reborn Launcher.bat`; `README.txt` in the pack is their guide.
+Build the native player entry point with `cmake --build build\x64 --config Release --target launcher reborn_bootstrap`, then commit. `deploy\vps\package-client.ps1 -ServerIp <ip>` makes `RebornLauncher.exe`, `RebornLauncher.exe.sha256` and a portable `RebornLauncher.zip`. The EXE embeds the native launcher, runtime DLLs, public CA certificate, settings and corresponding source. It contains no game files or keys. Packaging tests extraction and checks every embedded file before replacing the release outputs.
+
+Players download and double-click **RebornLauncher.exe**, approve the certificate trust on their first connection, and press **Register** to create an account. They can then select their installed game and press **LAUNCH GAME**. The launcher runs its connection helper internally, bound exclusively to loopback; no batch file, PowerShell window, developer tools or administrator account is needed. Keep it open while playing; closing the window during play minimizes it. The portable ZIP supports the same direct EXE entry point.
+
+The downloadable EXE extracts to `%LOCALAPPDATA%\RebornLauncher\versions\<payload hash>`. Repeated launches repair changed application files and preserve the selected game path. Saved sign-ins use Windows Credential Manager with separate entries for each remote HTTPS host and port; existing local development credentials remain local. Logout clears the saved sign-in and the game's token file.
 
 Rebuild and redistribute the pack when the launcher, certificate or address changes. The AGPL requires offering players the source of what this server runs, so keep the pack's commit in step with the server.
 

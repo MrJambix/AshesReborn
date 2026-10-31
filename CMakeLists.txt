@@ -120,6 +120,9 @@ if(WIN32)
             comdlg32
             advapi32
             shell32
+            crypt32
+            ws2_32
+            spdlog::spdlog
     )
     target_compile_features(launcher PRIVATE cxx_std_20)
     target_compile_definitions(launcher PRIVATE
@@ -129,6 +132,25 @@ if(WIN32)
         _WIN32_WINNT=0x0A00
     )
     set_target_properties(launcher PROPERTIES FOLDER "Tools")
+
+    # A native, statically linked entry point. package-client.ps1 embeds the
+    # launcher, its runtime libraries, settings and corresponding source here.
+    add_executable(reborn_bootstrap WIN32 src/reborn_bootstrap.cpp)
+    target_link_libraries(reborn_bootstrap PRIVATE nlohmann_json::nlohmann_json shell32 ole32)
+    target_compile_features(reborn_bootstrap PRIVATE cxx_std_20)
+    target_compile_definitions(reborn_bootstrap PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    set_target_properties(reborn_bootstrap PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        FOLDER "Tools")
+
+    add_executable(test_tether_player
+        src/tools/test_tether_player.cpp
+        src/services/tether/ics_token_acl.cpp)
+    target_include_directories(test_tether_player PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(test_tether_player PRIVATE spdlog::spdlog ws2_32)
+    target_compile_features(test_tether_player PRIVATE cxx_std_20)
+    target_compile_definitions(test_tether_player PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    set_target_properties(test_tether_player PROPERTIES FOLDER "Tools")
 endif()
 
 # test_ics_token_file: the launcher/tether login-token hand-off (plan A3)
