@@ -73,7 +73,7 @@ namespace aoc { namespace launcher {
 // ---------------------------------------------------------------------------
 
 /// The one target name every copy of the launcher uses.
-inline constexpr wchar_t kCredentialTarget[] = L"SandalCore/LauncherSignIn";
+inline constexpr wchar_t kCredentialTarget[] = L"RebornLauncher/SignIn";
 
 /// Account name and password as the sign-in form holds them (UTF-16).  The
 /// password is overwritten when the object goes away (best effort).
@@ -100,7 +100,7 @@ inline bool credential_save(const wchar_t* target, const SavedSignIn& s) {
     const std::size_t bytes = s.password.size() * sizeof(wchar_t);
     if (bytes > CRED_MAX_CREDENTIAL_BLOB_SIZE) return false;
     static wchar_t comment[] =
-        L"Saved by the SandalCore launcher (Keep me signed in). Switch Account / Logout deletes it.";
+        L"Saved by Reborn Launcher (Keep me signed in). Switch Account / Logout deletes it.";
     CREDENTIALW c{};
     c.Type = CRED_TYPE_GENERIC;
     c.TargetName = const_cast<LPWSTR>(target);

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ===========================================================================
-//  launcher_main.cpp  –  SandalCore Emulator Launcher (Modern UI)
+//  launcher_main.cpp  –  Reborn Launcher, a modified SandalCore launcher (Modern UI)
 //
 //  Win32 GUI. No gRPC/protobuf — WinInet + nlohmann_json only.
 //
@@ -14,9 +14,9 @@
 //    data\ics_auth_token.txt    write  the session token after a sign-in; the
 //                                      tether hands it to the game client
 //                                      (services/tether/ics_token_file.h)
-//    %APPDATA%\SandalCore\launcher.json
+//    %APPDATA%\RebornLauncher\launcher.json
 //                               read + write: the username, never the password
-//    Windows Credential Manager one entry, "SandalCore/LauncherSignIn":
+//    Windows Credential Manager one entry, "RebornLauncher/SignIn":
 //                               read + write + delete: "Keep me signed in"
 //                               (below, src/launcher_sign_in.h)
 //    Steam's registry key and steamapps\libraryfolders.vdf   read (Auto-Detect)
@@ -138,7 +138,9 @@ constexpr int kCard2H  = 82;  // Box 2: Client path
 constexpr int kCard3Y  = 302;
 constexpr int kCard3H  = 96;  // Box 3: Launch Game
 
-constexpr int kH       = 398;
+constexpr int kFooterY = 398;
+constexpr int kFooterH = 34;  // the name and the credit the licence asks for
+constexpr int kH       = kFooterY + kFooterH;
 
 // Box 1, top to bottom
 constexpr int kKeepY      = 136;  // "Keep me signed in" (form)
@@ -763,7 +765,7 @@ static void begin_auto_sign_in(HWND hwnd, const aoc::launcher::SavedSignIn& save
 constexpr int kUserMaxChars = 64;
 
 // %APPDATA%\<folder>\launcher.json ("" when APPDATA is not set).
-static std::filesystem::path remembered_user_path(const wchar_t* folder = L"SandalCore")
+static std::filesystem::path remembered_user_path(const wchar_t* folder = L"RebornLauncher")
 {
     wchar_t buf[MAX_PATH]{};
     const DWORD n = ::GetEnvironmentVariableW(L"APPDATA", buf, MAX_PATH);
@@ -987,6 +989,12 @@ static void render_launcher(HWND hwnd, HDC dc)
     }
     draw_text_ex(dc, launchHint.c_str(), 18, kCard3Y + 68, kW - 36, 18,
                  g_fntSmall, hintCol, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    // The name, and the credit section 7 of the licence asks every interface to carry.
+    draw_text_ex(dc, L"Reborn Launcher. Unofficial, not affiliated with Intrepid Studios.", 18, kFooterY, kW - 36, 16,
+                 g_fntSmall, kTxtSub, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    draw_text_ex(dc, L"Modified SandalCore. Developed by Cyb. Thanks to Hatemost and CoA (Creation of Ashes).", 6, kFooterY + 15, kW - 12, 16,
+                 g_fntSmall, kTxtSub, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
 
@@ -1700,7 +1708,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             } else {
                 g_feedback = to_wide(err);
                 g_feedbackErr = true;
-                MessageBoxA(hwnd, err.c_str(), "SandalCore", MB_OK | MB_ICONERROR);
+                MessageBoxA(hwnd, err.c_str(), "Reborn Launcher", MB_OK | MB_ICONERROR);
             }
             sync_controls(hwnd);
         }
@@ -1772,7 +1780,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     WNDCLASSW wc{};
     wc.lpfnWndProc   = wnd_proc;
     wc.hInstance     = hInst;
-    wc.lpszClassName = L"SandalCoreLauncher";
+    wc.lpszClassName = L"RebornLauncher";
     wc.hbrBackground = g_brBg;
     wc.hCursor       = LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW);
     wc.hIcon         = LoadIconW(nullptr, (LPCWSTR)IDI_APPLICATION);
@@ -1787,8 +1795,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     // WS_EX_CONTROLPARENT: the window's children are tab stops (see the loop below).
     HWND hwnd = CreateWindowExW(WS_EX_CONTROLPARENT,
-        L"SandalCoreLauncher",
-        L"SandalCore \u2014 Ashes of Creation Emulator",
+        L"RebornLauncher",
+        L"Reborn Launcher \u2014 unofficial, for the Ashes of Creation client",
         style | WS_VISIBLE,
         sx, sy, ww, wh, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 1;

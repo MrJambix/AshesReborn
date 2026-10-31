@@ -1,6 +1,6 @@
-# SandalCore on a VPS shared with another application
+# Reborn Launcher server: a modified SandalCore on a VPS shared with another application
 
-This is a modified SandalCore deployment (branch `vps-deploy`), not the original project and not endorsed by Cyb. Developed by Cyb. Thanks to Hatemost and CoA (Creation of Ashes). The changes from upstream are this folder, `/bigobj` in `server/worldd/CMakeLists.txt`, a TLS and rate-limited public login listener in the auth service (`services/internal/authhttp/limit.go`, `services/cmd/auth`, `services/internal/config`), and `auth_server_tls` in the launcher.
+Players know this as Reborn Launcher. It is a modified SandalCore deployment (branch `vps-deploy`), not the original project and not endorsed by Cyb. Internal names on the VPS, such as `C:\SandalCore` and the `SandalCore-*` task, service and firewall rules, keep the old name because players never see them. Developed by Cyb. Thanks to Hatemost and CoA (Creation of Ashes). The changes from upstream are this folder, `/bigobj` in `server/worldd/CMakeLists.txt`, a TLS and rate-limited public login listener in the auth service (`services/internal/authhttp/limit.go`, `services/cmd/auth`, `services/internal/config`), `auth_server_tls` in the launcher, and the Reborn Launcher name and credit line in the launcher and tether.
 
 It runs beside another game server on a 2 vCPU, 4 GB Windows Server, so it is built to give way: its programs run at below-normal priority, a watchdog stops it if the machine runs out of memory, and at most 10 players can be on at once (`$MaxPlayers` in `ops\supervisor.ps1`). The programs that face the internet run as LOCAL SERVICE, not as an administrator.
 
@@ -52,7 +52,7 @@ On the build PC: pull, run `build_all.bat`, then `deploy\vps\package.ps1 -Public
 
 ## Players
 
-On the build PC, after committing: `deploy\vps\package-client.ps1 -ServerIp <ip>` makes `SandalCore-Client.zip`. It holds the launcher, tether, CA certificate, settings and source, and no game files or keys. Players unzip it and run `Play.bat`; `README.txt` in the pack is their guide.
+On the build PC, after committing: `deploy\vps\package-client.ps1 -ServerIp <ip>` makes `RebornLauncher.zip`. It holds the launcher, tether, CA certificate, settings and source, and no game files or keys. Players unzip it and run `Start Reborn Launcher.bat`; `README.txt` in the pack is their guide.
 
 Rebuild and redistribute the pack when the launcher, certificate or address changes. The AGPL requires offering players the source of what this server runs, so keep the pack's commit in step with the server.
 

@@ -9,15 +9,16 @@ param(
     [int] $GatewayPort = 8443,
     [int] $LoginPort = 8444,
     [string] $CaFile = "$env:USERPROFILE\SandalCoreDeploy\vps-certs\ca.crt",
-    [string] $OutFile = "$env:USERPROFILE\SandalCoreDeploy\SandalCore-Client.zip"
+    [string] $OutFile = "$env:USERPROFILE\SandalCoreDeploy\RebornLauncher.zip"
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if (git -C $repo status --porcelain) { throw 'Commit first: the source in the pack must be what this server runs.' }
-$stage = "$OutFile.stage\SandalCore-Client"
+$stage = "$OutFile.stage\RebornLauncher"
 if (Test-Path "$OutFile.stage") { Remove-Item -Recurse -Force "$OutFile.stage" }
 New-Item -ItemType Directory -Force "$stage\config", "$stage\source" | Out-Null
-Copy-Item "$repo\dist\Release\launcher.exe", "$repo\dist\Release\tether_server.exe", "$repo\dist\Release\*.dll" $stage
+Copy-Item "$repo\dist\Release\launcher.exe" "$stage\RebornLauncher.exe"
+Copy-Item "$repo\dist\Release\tether_server.exe", "$repo\dist\Release\*.dll" $stage
 Copy-Item "$PSScriptRoot\client\*" $stage
 Copy-Item $CaFile "$stage\ca.crt"
 Copy-Item "$repo\LICENSE", "$repo\NOTICE" $stage

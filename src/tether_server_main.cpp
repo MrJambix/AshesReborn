@@ -97,7 +97,7 @@ int main(int argc, char* argv[]) {
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
     spdlog::flush_on(spdlog::level::info);
 
-    ::SetConsoleTitleA("Tether Server  -  AshesOfCreation Emulator");
+    ::SetConsoleTitleA("Reborn Launcher - tether (leave this open while you play)");
 
     // ── Config ───────────────────────────────────────────────────────────────
     const std::string dir      = exe_dir();
@@ -141,7 +141,7 @@ int main(int argc, char* argv[]) {
 
     // ── Banner ───────────────────────────────────────────────────────────────
     spdlog::info("================================================================");
-    spdlog::info("  Tether Server  -  AshesOfCreation Emulator");
+    spdlog::info("  Reborn Launcher - tether. A modified SandalCore: developed by Cyb. Thanks to Hatemost and CoA (Creation of Ashes).");
     spdlog::info("================================================================");
     spdlog::info("  UDP port  : {}", tether_port);
     spdlog::info("  ICS target: {}:{}", ics_host, ics_port);

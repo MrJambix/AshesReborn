@@ -1126,7 +1126,7 @@ int main() {
     // The test-only target: unique per run, never the real name.
     TargetGuard guard{make_test_target()};
     const wchar_t* T = guard.target.c_str();
-    check(std::wstring(kCredentialTarget) == L"SandalCore/LauncherSignIn", "the target name every launcher shares is SandalCore/LauncherSignIn");
+    check(std::wstring(kCredentialTarget) == L"RebornLauncher/SignIn", "the target name every launcher shares is RebornLaunre/LauncherSignIn");
     check(guard.target != kCredentialTarget && guard.target.rfind(L"SandalCore/LauncherSignInTest/", 0) == 0,
           "this test uses its own target name, never the real one");
 

@@ -11,8 +11,8 @@ if (-not (Get-ChildItem Cert:\CurrentUser\Root | Where-Object Thumbprint -EQ $ca
     if ($LASTEXITCODE -ne 0) { throw 'The certificate was not added, so the game would refuse the server.' }
 }
 New-Item -ItemType Directory -Force "$here\data", "$here\logs" | Out-Null
-Get-Process tether_server, launcher -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($here) } | Stop-Process -Force
+Get-Process tether_server, RebornLauncher -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($here) } | Stop-Process -Force
 if (Test-Path "$here\data\ics_auth_token.txt") { Remove-Item -Force "$here\data\ics_auth_token.txt" }
 Start-Process "$here\tether_server.exe" -ArgumentList '--login-token-file' -WorkingDirectory $here -WindowStyle Minimized
 Start-Sleep 2
-Start-Process "$here\launcher.exe" -WorkingDirectory $here
+Start-Process "$here\RebornLauncher.exe" -WorkingDirectory $here

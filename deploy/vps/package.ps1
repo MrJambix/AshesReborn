@@ -3,7 +3,7 @@
 <#
   Run on the build PC. Makes the package the VPS installs: the server programs, the game data the servers
   read, and the ops scripts. It never contains the game client. The first run also makes the TLS
-  certificates for -PublicIp in -CertDir; their CA key is deleted right after signing, as make_certs.ps1 does.
+  certificates for -PublicIp in -CertDir (make-certs.ps1).
 #>
 param(
     [Parameter(Mandatory)] [string] $PublicIp,
@@ -14,26 +14,7 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $stage = "$OutFile.stage"
 
-if (-not (Test-Path "$CertDir\server.pem")) {
-    New-Item -ItemType Directory -Force $CertDir | Out-Null
-    $ossl = "$env:ProgramFiles\Git\usr\bin\openssl.exe"
-    if (-not (Test-Path $ossl)) { $ossl = "$env:ProgramFiles\Git\mingw64\bin\openssl.exe" }
-    $env:MSYS2_ARG_CONV_EXCL = '*'; $env:MSYS_NO_PATHCONV = '1'
-    $ext = "$CertDir\ext.cnf"
-    try {
-        cmd /c "`"$ossl`" req -quiet -x509 -newkey rsa:2048 -nodes -sha256 -days 3650 -keyout `"$CertDir\ca.key`" -out `"$CertDir\ca.crt`" -subj `"/CN=SandalCore VPS CA`" -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign 2>nul"
-        if ($LASTEXITCODE -ne 0) { throw 'could not make the CA' }
-        cmd /c "`"$ossl`" req -quiet -newkey rsa:2048 -nodes -sha256 -keyout `"$CertDir\server.key`" -out `"$CertDir\server.csr`" -subj `"/CN=$PublicIp`" 2>nul"
-        if ($LASTEXITCODE -ne 0) { throw 'could not make the server key' }
-        Set-Content $ext -Encoding ascii -Value @(
-            'basicConstraints=CA:FALSE', 'keyUsage=critical,digitalSignature,keyEncipherment',
-            'extendedKeyUsage=serverAuth', "subjectAltName=IP:$PublicIp")
-        cmd /c "`"$ossl`" x509 -req -sha256 -days 825 -in `"$CertDir\server.csr`" -CA `"$CertDir\ca.crt`" -CAkey `"$CertDir\ca.key`" -set_serial 0x$('{0:x}' -f (Get-Random)) -extfile `"$ext`" -out `"$CertDir\server.pem`" 2>nul"
-        if ($LASTEXITCODE -ne 0) { throw 'could not sign the server certificate' }
-    } finally {
-        foreach ($f in "$CertDir\ca.key", "$CertDir\server.csr", $ext) { if (Test-Path $f) { Remove-Item -Force $f } }
-    }
-}
+& "$PSScriptRoot\make-certs.ps1" -PublicIp $PublicIp -CertDir $CertDir
 
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 foreach ($d in 'dist\Release', 'dist\services', 'dist\content', 'deploy', 'ops', 'certs') { New-Item -ItemType Directory -Force "$stage\$d" | Out-Null }
