@@ -362,6 +362,7 @@ if(MSVC)
         NOMINMAX
         _WIN32_WINNT=0x0A00
     )
+    target_compile_options(worldd_core PRIVATE /bigobj)   # player_session.cpp exceeds the default section limit (C1128)
 endif()
 set_target_properties(worldd_core PROPERTIES FOLDER "Servers/worldd")
 
