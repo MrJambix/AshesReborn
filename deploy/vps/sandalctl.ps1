@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Part of a modified SandalCore deployment (branch vps-deploy); not the original project or endorsed by Cyb.
 <#
-  sandalctl start | stop | restart | status | logs [name] | diag | backup | restore <file> | update <package.tar> | allow-ip <ip>
+  sandalctl start | stop | restart | status | logs [name] | diag | backup | restore <file> | update <package.tar> | allow-ip <ip> | open | close
   Only ever touches C:\SandalCore, the SandalCore-* task, service and firewall rules. See ops\README.md.
 #>
 param(
-    [Parameter(Mandatory, Position = 0)] [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'diag', 'backup', 'restore', 'update', 'allow-ip')] [string] $Action,
+    [Parameter(Mandatory, Position = 0)] [ValidateSet('start', 'stop', 'restart', 'status', 'logs', 'diag', 'backup', 'restore', 'update', 'allow-ip', 'open', 'close')] [string] $Action,
     [Parameter(Position = 1)] [string] $Arg
 )
 $ErrorActionPreference = 'Stop'
 $root = 'C:\SandalCore'; $run = "$root\run"; $logs = "$root\dist\services\logs"; $pg = "$root\pgsql\bin"
 $task = 'SandalCore-Stack'; $names = 'auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'worldd'
-$tcp = 8081, 8443, 50051, 50052, 50053, 50054, 50055, 50056, 50057, 50058, 5432
+$tcp = 8081, 8443, 8444, 50051, 50052, 50053, 50054, 50055, 50056, 50057, 50058, 5432
 
 function Exe($n) { if ($n -eq 'worldd') { "$root\dist\Release\worldd.exe" } else { "$root\dist\services\$n.exe" } }
 function Find($n) { Get-Process -Name $n -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq (Exe $n) } | Select-Object -First 1 }
@@ -133,5 +133,14 @@ switch ($Action) {
         if (-not $Arg) { throw 'allow-ip needs the IP address' }
         Get-NetFirewallRule -DisplayName 'SandalCore-*' | Set-NetFirewallRule -RemoteAddress $Arg
         Write-Host "SandalCore's game ports now answer only $Arg"
+    }
+    'open' {
+        Get-NetFirewallRule -DisplayName 'SandalCore-*' | Set-NetFirewallRule -RemoteAddress Any
+        Write-Host "SandalCore's game ports now answer everyone"
+    }
+    'close' {
+        $site = Get-Content "$root\ops\site.json" -Raw | ConvertFrom-Json
+        Get-NetFirewallRule -DisplayName 'SandalCore-*' | Set-NetFirewallRule -RemoteAddress $site.owner_ip
+        Write-Host "SandalCore's game ports now answer only $($site.owner_ip)"
     }
 }

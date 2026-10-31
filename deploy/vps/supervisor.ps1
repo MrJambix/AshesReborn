@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Part of a modified SandalCore deployment (branch vps-deploy); not the original project or endorsed by Cyb.
 <#
-  Keeps the SandalCore programs running: started by the SandalCore-Stack task (SYSTEM), restarts what dies, at
+  Keeps the SandalCore programs running: started by the SandalCore-Stack task (LOCAL SERVICE, because these programs
+  face the internet and must not hold rights over the rest of this PC), restarts what dies, at
   below-normal priority so the other application on this PC wins the CPU. run\stop.flag (sandalctl stop) makes it
   stop them cleanly and exit. If the PC runs out of memory it stops SandalCore and stays down until started again:
   the other application on this PC matters more.
@@ -11,6 +12,8 @@ $root = 'C:\SandalCore'; $run = "$root\run"; $logs = "$root\dist\services\logs"
 $stopFlag = "$run\stop.flag"; $tripFlag = "$run\watchdog.tripped"; $svLog = "$logs\supervisor.log"
 # Limits: commit charge (this PC's page file can grow to about 16 GB in all) and memory left, for a minute.
 $MaxCommitMB = 13000; $MinAvailableMB = 60; $LowChecksToTrip = 12
+# Players at once: this PC has 4 GB and shares it. Raise it only after watching how much a player costs.
+$MaxPlayers = 10
 New-Item -ItemType Directory -Force $logs, $run | Out-Null
 
 function Log($m) { Add-Content $svLog ('{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), $m) }
@@ -21,6 +24,9 @@ $pw = [IO.File]::ReadAllText("$root\secrets\db.password")
 $env:AOC_DATABASE_URL = "postgres://aoc:$pw@127.0.0.1:5432/aoc?sslmode=disable"
 $env:AOC_SERVICE_TOKEN_FILE = $token
 $env:AOC_CONTENT_DB = $content
+$env:AOC_AUTH_PUBLIC_ADDR = '0.0.0.0:8444'
+$env:AOC_AUTH_TLS_CERT = "$root\certs\server.pem"
+$env:AOC_AUTH_TLS_KEY = "$root\certs\server.key"
 $env:AOC_GATEWAY_ICS_ADDR = '0.0.0.0:8443'
 $env:AOC_GATEWAY_TLS_CERT = "$root\certs\server.pem"
 $env:AOC_GATEWAY_TLS_KEY = "$root\certs\server.key"
@@ -35,7 +41,7 @@ function Find($n) { Get-Process -Name $n -ErrorAction SilentlyContinue | Where-O
 
 function Start-Svc($n) {
     $a = switch ($n) {
-        'worldd' { " --bind 0.0.0.0:7777 --public-address $($site.public_ip):7777 --content-db `"$content`" --service-token-file `"$token`"" }
+        'worldd' { " --bind 0.0.0.0:7777 --public-address $($site.public_ip):7777 --content-db `"$content`" --service-token-file `"$token`" --max-sessions $MaxPlayers" }
         'character' { " --content-db `"$content`"" }
         default { '' }
     }

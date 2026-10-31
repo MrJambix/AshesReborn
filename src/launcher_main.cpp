@@ -537,8 +537,10 @@ static aoc::launcher::ReadResult http_post(const aoc::launcher::AuthEndpoint& ep
     HINTERNET hC = InternetConnectA(hI, ep.host.c_str(), (INTERNET_PORT)ep.port,
                                     nullptr, nullptr, INTERNET_SERVICE_HTTP, 0, 0);
     if (!hC) { InternetCloseHandle(hI); return out; }
-    HINTERNET hR = HttpOpenRequestA(hC, "POST", path.c_str(), nullptr, nullptr,
-                                    nullptr, INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_AUTO_REDIRECT, 0);
+    // With auth_server_tls, a certificate Windows does not trust fails the request: no flag here relaxes the check.
+    HINTERNET hR = HttpOpenRequestA(hC, "POST", path.c_str(), nullptr, nullptr, nullptr,
+                                    INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_NO_AUTO_REDIRECT |
+                                        (ep.tls ? INTERNET_FLAG_SECURE : 0), 0);
     if (!hR) { InternetCloseHandle(hC); InternetCloseHandle(hI); return out; }
 
     // Without the watch (no thread to be had) the waits above still apply.

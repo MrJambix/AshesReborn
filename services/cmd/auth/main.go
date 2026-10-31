@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"log/slog"
 	"net"
 	"net/http"
@@ -74,7 +75,34 @@ func run() error {
 	}
 	grpcSrv := newGRPCServer(token, store)
 
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
+	// The public listener never answers in clear text: without its certificate the service does not start.
+	var publicSrv *http.Server
+	if cfg.AuthPublicAddr != "" {
+		publicLis, err := net.Listen("tcp", cfg.AuthPublicAddr)
+		if err != nil {
+			httpLis.Close()
+			grpcLis.Close()
+			return err
+		}
+		cert, err := tls.LoadX509KeyPair(cfg.AuthTLSCert, cfg.AuthTLSKey)
+		if err != nil {
+			publicLis.Close()
+			httpLis.Close()
+			grpcLis.Close()
+			return err
+		}
+		publicSrv = &http.Server{
+			Handler:           authhttp.Limit(authhttp.Handler(store), authhttp.DefaultLimits()),
+			TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
+		go func() { errc <- publicSrv.ServeTLS(publicLis, "", "") }()
+		slog.Info("auth listening over TLS", "public", publicLis.Addr().String())
+	}
 	go func() { errc <- httpSrv.Serve(httpLis) }()
 	go func() { errc <- grpcSrv.Serve(grpcLis) }()
 	go purgeTokens(ctx, store)
@@ -88,9 +116,18 @@ func run() error {
 	// Drain both servers within one budget, then cut what is left. Closing
 	// cancels the stuck handlers' contexts, so their database queries end
 	// and the deferred pool.Close() does not wait on them.
-	force := time.AfterFunc(shutdownGrace, func() { grpcSrv.Stop(); httpSrv.Close() })
+	force := time.AfterFunc(shutdownGrace, func() {
+		grpcSrv.Stop()
+		httpSrv.Close()
+		if publicSrv != nil {
+			publicSrv.Close()
+		}
+	})
 	drained := make(chan struct{})
 	go func() { grpcSrv.GracefulStop(); close(drained) }()
+	if publicSrv != nil {
+		_ = publicSrv.Shutdown(context.Background())
+	}
 	_ = httpSrv.Shutdown(context.Background())
 	<-drained
 	force.Stop()

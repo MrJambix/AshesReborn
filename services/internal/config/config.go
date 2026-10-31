@@ -15,6 +15,9 @@ type Config struct {
 	DatabaseURL       string        // AOC_DATABASE_URL
 	AuthHTTPAddr      string        // AOC_AUTH_HTTP_ADDR: the launcher's login API
 	AuthGRPCAddr      string        // AOC_AUTH_GRPC_ADDR: internal token validation
+	AuthPublicAddr    string        // AOC_AUTH_PUBLIC_ADDR: the login API over TLS and rate limited, for players on other machines; "" for none
+	AuthTLSCert       string        // AOC_AUTH_TLS_CERT: PEM certificate for AuthPublicAddr
+	AuthTLSKey        string        // AOC_AUTH_TLS_KEY: its private key
 	CharacterGRPCAddr string        // AOC_CHARACTER_GRPC_ADDR
 	CityNodeGRPCAddr  string        // AOC_CITYNODE_GRPC_ADDR: the city node service (Nodes 1)
 	CityNodeSeed      string        // AOC_CITYNODE_SEED: the node seed file citynode applies once (default deploy/citynode_seed.json)
@@ -43,6 +46,9 @@ func Load() Config {
 		DatabaseURL:       str("AOC_DATABASE_URL", "postgres://aoc:aoc@127.0.0.1:5432/aoc?sslmode=disable"),
 		AuthHTTPAddr:      str("AOC_AUTH_HTTP_ADDR", "127.0.0.1:8081"),
 		AuthGRPCAddr:      str("AOC_AUTH_GRPC_ADDR", "127.0.0.1:50051"),
+		AuthPublicAddr:    str("AOC_AUTH_PUBLIC_ADDR", ""),
+		AuthTLSCert:       str("AOC_AUTH_TLS_CERT", "certs/server.pem"),
+		AuthTLSKey:        str("AOC_AUTH_TLS_KEY", "certs/server.key"),
 		CharacterGRPCAddr: str("AOC_CHARACTER_GRPC_ADDR", "127.0.0.1:50052"),
 		CityNodeGRPCAddr:  str("AOC_CITYNODE_GRPC_ADDR", "127.0.0.1:50055"),
 		CityNodeSeed:      str("AOC_CITYNODE_SEED", "deploy/citynode_seed.json"),

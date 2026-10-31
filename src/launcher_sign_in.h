@@ -241,6 +241,7 @@ inline bool is_local_host(const std::string& host) {
 struct AuthEndpoint {
     std::string host = "127.0.0.1";
     int port = 8081;
+    bool tls = false;   ///< auth_server_tls: HTTPS, for a server on another machine
 };
 
 /// A key that is missing or of the wrong type keeps its default; a port outside
@@ -255,6 +256,8 @@ inline AuthEndpoint auth_endpoint(const nlohmann::json& server_json) {
         const long long p = port->get<long long>();
         if (p > 0 && p < 65536) e.port = static_cast<int>(p);
     }
+    const auto tls = server_json.find("auth_server_tls");
+    if (tls != server_json.end() && tls->is_boolean()) e.tls = tls->get<bool>();
     return e;
 }
 

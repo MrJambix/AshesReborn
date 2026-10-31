@@ -2,12 +2,13 @@
 # Part of a modified SandalCore deployment (branch vps-deploy); not the original project or endorsed by Cyb.
 <#
   Run on the VPS from C:\SandalCore\ops, once, as Administrator. Safe to run again: what exists is kept.
-  Adds only things named SandalCore*: a PostgreSQL service on loopback, a start-up task, a backup task and two
-  firewall rules limited to -AllowIp. It does not read or change anything of another application.
+  Adds only things named SandalCore*: a PostgreSQL service on loopback, a start-up task, a backup task and three
+  firewall rules for -AllowIp (an address, or Any for everyone). It does not read or change anything of another application.
 #>
 param(
     [Parameter(Mandatory)] [string] $PublicIp,
-    [Parameter(Mandatory)] [string] $AllowIp
+    [Parameter(Mandatory)] [string] $AllowIp,
+    [Parameter(Mandatory)] [string] $OwnerIp   # what sandalctl close goes back to
 )
 $ErrorActionPreference = 'Stop'
 $root = 'C:\SandalCore'; $secrets = "$root\secrets"; $pg = "$root\pgsql"; $data = "$root\pgdata"; $pgService = 'SandalCore-Postgres'
@@ -27,7 +28,7 @@ Protect $secrets; Protect "$root\certs"; Protect "$root\backups"
 if (-not (Test-Path "$secrets\db.password")) { [IO.File]::WriteAllText("$secrets\db.password", (New-Secret 24)) }
 if (-not (Test-Path "$secrets\service.token")) { [IO.File]::WriteAllText("$secrets\service.token", (New-Secret 32)) }
 $pw = [IO.File]::ReadAllText("$secrets\db.password")
-@{ public_ip = $PublicIp; allow_ip = $AllowIp } | ConvertTo-Json | Set-Content "$root\ops\site.json" -Encoding ascii
+@{ public_ip = $PublicIp; owner_ip = $OwnerIp } | ConvertTo-Json | Set-Content "$root\ops\site.json" -Encoding ascii
 
 if (-not (Test-Path "$data\PG_VERSION")) {
     # initdb drops the Administrators group, so it can read neither secrets\ nor a file only that group may open.
@@ -74,9 +75,20 @@ if ("$have".Trim() -ne '1') {
     if ($LASTEXITCODE -ne 0) { throw 'createdb failed' }
 }
 
+# What faces the internet runs as LOCAL SERVICE: it may read its own files, its key and database password, and write only logs and run\.
+$svc = 'NT AUTHORITY\LOCAL SERVICE'
+foreach ($p in "$root\run", "$root\dist\services\logs") {
+    New-Item -ItemType Directory -Force $p | Out-Null
+    & icacls $p /grant "${svc}:(OI)(CI)M" | Out-Null
+}
+& icacls $secrets /grant "${svc}:(OI)(CI)RX" | Out-Null
+& icacls "$root\certs" /grant "${svc}:(OI)(CI)RX" | Out-Null
+
+Get-NetFirewallRule -DisplayName 'SandalCore-*one IP only*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 $rules = @(
-    @{ Name = 'SandalCore-Gateway (TCP 8443, one IP only)'; Protocol = 'TCP'; Port = 8443 },
-    @{ Name = 'SandalCore-World (UDP 7777, one IP only)'; Protocol = 'UDP'; Port = 7777 })
+    @{ Name = 'SandalCore-Gateway (TCP 8443)'; Protocol = 'TCP'; Port = 8443 },
+    @{ Name = 'SandalCore-Login (TCP 8444, TLS)'; Protocol = 'TCP'; Port = 8444 },
+    @{ Name = 'SandalCore-World (UDP 7777)'; Protocol = 'UDP'; Port = 7777 })
 foreach ($r in $rules) {
     if (Get-NetFirewallRule -DisplayName $r.Name -ErrorAction SilentlyContinue) { Set-NetFirewallRule -DisplayName $r.Name -RemoteAddress $AllowIp }
     else { New-NetFirewallRule -DisplayName $r.Name -Direction Inbound -Action Allow -Protocol $r.Protocol -LocalPort $r.Port -RemoteAddress $AllowIp -Profile Any | Out-Null }
@@ -88,7 +100,8 @@ $ps = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -F
 # Three minutes after a boot, so the other application on this PC gets its memory first.
 $boot = New-ScheduledTaskTrigger -AtStartup; $boot.Delay = 'PT3M'
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -Priority 7 -MultipleInstances IgnoreNew
-Register-ScheduledTask -TaskName 'SandalCore-Stack' -Force -Principal $system -Trigger $boot -Settings $settings `
+$localService = New-ScheduledTaskPrincipal -UserId $svc -LogonType ServiceAccount -RunLevel Limited
+Register-ScheduledTask -TaskName 'SandalCore-Stack' -Force -Principal $localService -Trigger $boot -Settings $settings `
     -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "$ps `"$root\ops\supervisor.ps1`"" -WorkingDirectory $root) | Out-Null
 
 $daily = New-ScheduledTaskTrigger -Daily -At '04:30'
