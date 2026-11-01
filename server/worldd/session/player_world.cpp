@@ -1361,6 +1361,10 @@ void PlayerWorld::start_aftermath() {
 }
 // built by C Y B with C-O-A
 
+bool PlayerWorld::nearer_anvils_start(double x, double y) const {
+    return area_.region && std::hypot(bootstrap::kAnvilsSpawn.x - x, bootstrap::kAnvilsSpawn.y - y) < std::hypot(area_.center_x - x, area_.center_y - y);
+}
+
 PlayerWorld::RespawnSpot PlayerWorld::respawn_spot(double from_x, double from_y, bool nearest_point) const {
     RespawnSpot s;
     s.x = area_.center_x;
@@ -1368,6 +1372,14 @@ PlayerWorld::RespawnSpot PlayerWorld::respawn_spot(double from_x, double from_y,
     s.z = spawns::kLoginSpotZ;
     s.yaw = spawns::kLoginSpotYaw;
     s.name = "the login spot";
+    // the starting zone the character is nearer to: nobody comes back on the other side of the world
+    if (nearer_anvils_start(from_x, from_y)) {
+        s.x = bootstrap::kAnvilsSpawn.x;
+        s.y = bootstrap::kAnvilsSpawn.y;
+        s.z = bootstrap::kAnvilsSpawn.z;
+        s.yaw = bootstrap::kAnvilsSpawn.yaw_degrees;
+        s.name = "the Anvils' start";
+    }
     double best = 1e300;
     if (area_report_ && nearest_point) {
         for (const spawns::RespawnPoint& p : area_report_->respawn_points) {
@@ -1596,6 +1608,7 @@ std::optional<PlayerWorld::FloorRescue> PlayerWorld::floor_rescue(double x, doub
     if (const auto town = town_ground_at(x, y)) return FloorRescue{x, y, town->z + kCapsuleHalfHeightCm + kBowlSlackCm, town->node, "the floor of " + name_of(town->node)};
     double ground = 0;
     if (nav_ && nav_->terrain_height(x, y, &ground) && std::isfinite(ground)) return FloorRescue{x, y, ground + kCapsuleHalfHeightCm + kBowlSlackCm, 0, "the ground"};
+    if (nearer_anvils_start(x, y)) return FloorRescue{bootstrap::kAnvilsSpawn.x, bootstrap::kAnvilsSpawn.y, bootstrap::kAnvilsSpawn.z, 0, "the Anvils' start"};
     return FloorRescue{area_.center_x, area_.center_y, spawns::kLoginSpotZ, 0, "the login spot"};
 }
 

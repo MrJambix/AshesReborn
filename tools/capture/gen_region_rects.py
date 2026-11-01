@@ -45,22 +45,22 @@ DEFAULT_DB = os.environ.get('AOC_CONTENT_DB') or os.path.join(ROOT, 'dist', 'con
 CELL = 512                         # cm per ZOI cell
 CELLS = 64                         # cells per chunk and axis
 CHUNK_CM = CELLS * CELL
-XMIN, XMAX, YMIN, YMAX = -44, -6, 3, 31      # the chunk window that holds the Riverlands
+XMIN, XMAX, YMIN, YMAX = -66, -6, -32, 31    # the chunk window that holds the Riverlands and the Anvils
 REF_Z = 16384                      # the surface height of the footprint, cm
 RUN = re.compile(rb'\x01+')
 
-RECTS_NOTE = 'disjoint axis-aligned rectangles [x0,y0,x1,y1) in world cm whose union is the Riverlands surface footprint (the 1-cell hole is kept)'
-ZOI_NOTE = 'disjoint [x0,y0,x1,y1) rects per Riverlands ZOI at z=16384 (the owner is the same for every z in [3072,163840))'
+RECTS_NOTE = 'disjoint axis-aligned rectangles [x0,y0,x1,y1) in world cm whose union is the surface footprint of the Riverlands and the Anvils (the 1-cell hole is kept)'
+ZOI_NOTE = 'disjoint [x0,y0,x1,y1) rects per ZOI of the Riverlands and the Anvils at z=16384 (the owner is the same for every z in [3072,163840))'
 
 
 def load_zois(db):
-    """(guid -> name of every ZOI record, the set of guids whose biome is Riverlands), from content.db's city_zoi."""
+    """(guid -> name of every ZOI record, the set of guids of the world: biome Riverlands, and the Anvils' Verra_ANV_ zones), from content.db's city_zoi."""
     con = sqlite3.connect('file:%s?mode=ro' % db.replace('\\', '/'), uri=True)
     try:
         rows = list(con.execute('SELECT guid, name, biome FROM city_zoi'))
     finally:
         con.close()
-    return {g: n for g, n, _ in rows}, {g for g, _, b in rows if b == 'Riverlands'}
+    return {g: n for g, n, _ in rows}, {g for g, n, b in rows if b == 'Riverlands' or n.startswith('Verra_ANV_')}
 
 
 def lutb_map(lut, cells):
@@ -186,7 +186,7 @@ def main():
     names, riverlands = load_zois(args.content_db)
     rows, guids = read_window(args.chunks)
     whole, per_zoi, cells, n_rects, n_zoi_rects, n_zois = render(rows, guids, names, riverlands)
-    print('the Riverlands footprint: %d cells (%.4f km2) in %d rectangles; %d ZOIs in %d rectangles' % (cells, cells * CELL * CELL / 1e10, n_rects, n_zois, n_zoi_rects))
+    print('the world footprint: %d cells (%.4f km2) in %d rectangles; %d ZOIs in %d rectangles' % (cells, cells * CELL * CELL / 1e10, n_rects, n_zois, n_zoi_rects))
     ok = write_if_changed(RECTS_JSON, whole, args.check)
     ok = write_if_changed(ZOI_JSON, per_zoi, args.check) and ok
     sys.exit(0 if ok else 1)

@@ -471,6 +471,8 @@ public:
     /// under the floor of a bowl, or has stood on the pit under one (see kPlatformUnderCm: a pawn that fell through a town with no floor yet and was caught by the landscape's collision
     /// 50 m down), is put back on the floor (or the ground) with the same slack a teleport has.
     static constexpr double kKillPlaneCm = -10000.0;
+    /// (x, y) is nearer the Anvils' start than the login spot; never in a circle area, which has only the login spot.
+    bool nearer_anvils_start(double x, double y) const;
     static constexpr double kBelowFloorCm = 10000.0;
     struct FloorRescue {
         double      x = 0, y = 0, z = 0;   // where to put the character (its origin)
