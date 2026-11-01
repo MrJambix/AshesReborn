@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
 	characterv1 "aocrop/services/gen/aoc/character/v1"
@@ -403,5 +404,45 @@ func TestMountItemStateCrossesTheGrpcBoundary(t *testing.T) {
 	wantProtoEqual(t, "the character with its mounts", got.GetCharacter(), want)
 	if got.GetCharacter().GetItems()[1].PersistedHealth == nil || got.GetCharacter().GetItems()[2].PersistedHealth != nil {
 		t.Error("the dead mount's Health of 0 is present, the plain item's absent")
+	}
+}
+
+// recStarts answers with a position for "Anvils", the default spawn for "Riverlands" and an unknown zone for anything else.
+type recStarts struct {
+	at    character.Position
+	asked []string
+}
+
+func (s *recStarts) Start(tag string) (*character.Position, bool) {
+	s.asked = append(s.asked, tag)
+	switch tag {
+	case "Anvils":
+		p := s.at
+		return &p, true
+	case "Riverlands":
+		return nil, true
+	}
+	return nil, false
+}
+
+func TestCreateCharacterAppearsInTheZoneTheCreatorChose(t *testing.T) {
+	at := character.Position{X: -1057812.5, Y: -694683.5, Z: 5370.25, Yaw: 90}
+	for _, c := range []struct {
+		tag  string
+		want *character.Position
+	}{{"Anvils", &at}, {"Riverlands", nil}, {"Moonlands", nil}} {
+		st := &recStore{ret: fullCharacter()}
+		starts := &recStarts{at: at}
+		client := dialServer(t, New(st, acceptAll{}, WithStarts(starts)))
+		info := protowire.AppendString(protowire.AppendTag(nil, 5, protowire.BytesType), c.tag)
+		if _, err := client.CreateCharacter(context.Background(), &characterv1.CreateCharacterRequest{AccountId: 41, Name: "Zed", ClassId: 7, AppearanceJson: "{}", CreateInfo: info}); err != nil {
+			t.Fatalf("%s: %v", c.tag, err)
+		}
+		if len(starts.asked) != 1 || starts.asked[0] != c.tag {
+			t.Errorf("%s: the zones were asked for %q", c.tag, starts.asked)
+		}
+		if !reflect.DeepEqual(st.gotNew.Position, c.want) {
+			t.Errorf("%s: the store was given the position %+v, want %+v", c.tag, st.gotNew.Position, c.want)
+		}
 	}
 }

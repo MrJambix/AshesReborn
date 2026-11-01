@@ -837,6 +837,7 @@ CharacterSetupResult build_player_setup(const svc::Character& ch, const content:
     if (ch.name.empty()) return fail("the character record has no name");
     if (!repl::fstring_fits(ch.name)) return fail("the character's name cannot be sent (not UTF-8 text, a NUL, or too long)");
     s.name = ch.name;
+    s.auto_attack_settings = ch.auto_attack_settings;
 
     const auto race = client_race_from_id(ch.race_id);
     if (!race) {

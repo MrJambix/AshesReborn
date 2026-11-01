@@ -23,6 +23,16 @@ type ItemUse struct {
 	Actions          []int64 // ActionResponse guids, in the record's order
 }
 
+// ItemCast is the server-owned ability of an item's CastAbility activation.
+func (d *DB) ItemCast(item int64) (int64, error) {
+	var ability int64
+	err := d.sql.QueryRow(`SELECT ability_guid FROM item_cast WHERE item_guid = ?`, item).Scan(&ability)
+	if err != nil {
+		return 0, fmt.Errorf("content: item cast of %d: %w", item, err)
+	}
+	return ability, nil
+}
+
 // ItemUse returns how the item is used; an error wrapping sql.ErrNoRows for an item that is not used.
 func (d *DB) ItemUse(item int64) (ItemUse, error) {
 	var u ItemUse

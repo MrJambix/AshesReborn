@@ -89,6 +89,17 @@ struct Resolved {
     bool miss() const { return (flags & stats::kHitMiss) != 0; }
 };
 
+/// The number a session's own dice (its abilities' hit, block and critical rolls, RandDouble) start from.  `world_seed` is the one number the whole run starts from (worldd draws a new one on
+/// every start unless --combat-seed names it); 0, a test's world, keeps the plain function of the player id.  A player id is never used twice in a run, so a new login rolls a new sequence too.
+inline uint64_t session_dice_seed(uint64_t world_seed, uint64_t player_id) {
+    const uint64_t base = player_id * 7919u + 1u;
+    if (world_seed == 0) return base;
+    stats::SplitMix mix;
+    mix.state = world_seed ^ (base * 0x9E3779B97F4A7C15ull);
+    const uint64_t seed = mix.next();
+    return seed != 0 ? seed : 1;
+}
+
 class HitResolver {
 public:
     HitResolver(const abilities::Catalog& catalog, const CombatData& data, uint64_t seed = 1) : catalog_(catalog), data_(data) { rng_.state = seed; }

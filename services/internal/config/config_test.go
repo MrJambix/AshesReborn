@@ -38,6 +38,17 @@ func TestContentDB(t *testing.T) {
 	}
 }
 
+func TestWorldDisplayName(t *testing.T) {
+	t.Setenv("AOC_WORLD_NAME", "")
+	if got := Load().WorldName; got != "Ashes Reborn" {
+		t.Fatalf("default world name = %q", got)
+	}
+	t.Setenv("AOC_WORLD_NAME", "Ashes Reborn Test")
+	if got := Load().WorldName; got != "Ashes Reborn Test" {
+		t.Fatalf("configured world name = %q", got)
+	}
+}
+
 func TestOverrides(t *testing.T) {
 	t.Setenv("AOC_DATABASE_URL", "postgres://x")
 	t.Setenv("AOC_AUTH_HTTP_ADDR", "0.0.0.0:9000")

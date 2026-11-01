@@ -19,6 +19,7 @@ import (
 	characterv1 "aocrop/services/gen/aoc/character/v1"
 	"aocrop/services/internal/character"
 	"aocrop/services/internal/chardef"
+	"aocrop/services/internal/createinfo"
 	"aocrop/services/internal/customization"
 )
 
@@ -107,6 +108,12 @@ type Kits = character.KitMaker
 // the server was made with one (AOC_GM_STARTER_SET=1).
 type StarterSets = character.StarterSetMaker
 
+// Starts says where a new character of a starting zone first appears (internal/kit's Starts): a nil position with true is
+// worldd's default spawn, false a tag no zone has.
+type Starts interface {
+	Start(tag string) (*character.Position, bool)
+}
+
 // Server implements characterv1.CharacterServiceServer.
 type Server struct {
 	characterv1.UnimplementedCharacterServiceServer
@@ -114,6 +121,7 @@ type Server struct {
 	check   Checker
 	kits    Kits
 	starter StarterSets
+	starts  Starts
 }
 
 // [C | O | A x C:Y:B]
@@ -129,6 +137,10 @@ func WithKits(k Kits) Option { return func(s *Server) { s.kits = k } }
 // WithStarterSet gives the server the GM starter set (plan D1): a character it creates gets the set in its bag with its kit
 // and is marked as given it, so the backfill at the next start leaves it alone.
 func WithStarterSet(m StarterSets) Option { return func(s *Server) { s.starter = m } }
+
+// WithStarts gives the server the starting zones: a character it creates first appears in the zone the client's character
+// creator chose. Without it every character appears at worldd's default spawn.
+func WithStarts(st Starts) Option { return func(s *Server) { s.starts = st } }
 
 // New serves store. check judges the characters CreateCharacter is asked to
 // create; a nil check refuses them all (there is nothing to judge by).
@@ -197,6 +209,15 @@ func (s *Server) CreateCharacter(ctx context.Context, r *characterv1.CreateChara
 		items = append(items, placed...)
 		granted = true
 	}
+	// The starting zone the creator chose. A tag no zone has is no reason to lose the character: it appears at the default spawn.
+	var position *character.Position
+	if s.starts != nil {
+		tag := createinfo.Parse(r.GetCreateInfo()).StartingLocation
+		var known bool
+		if position, known = s.starts.Start(tag); !known {
+			slog.Warn("character: the starting location is no starting zone, so the character appears at the default spawn", "name", r.GetName(), "tag", tag[:min(len(tag), 64)])
+		}
+	}
 	// What is stored is what worldd can build the pawn from at join: the creator's JSON carries every member a
 	// preset resolved to, and worldd takes no real preset (customization.Normalize), so presetGuid is stored as 0.
 	// create_info stays as the client sent it.
@@ -204,7 +225,7 @@ func (s *Server) CreateCharacter(ctx context.Context, r *characterv1.CreateChara
 		ID: r.GetId(), AccountID: r.GetAccountId(), Name: r.GetName(),
 		RaceID: r.GetRaceId(), GenderID: r.GetGenderId(), ClassID: r.GetClassId(), ArchetypeID: archetype,
 		ClassName: className, AppearanceJSON: customization.Normalize(r.GetAppearanceJson()),
-		CreateInfo: r.GetCreateInfo(), Level: r.GetLevel(), Items: items, GMStarterSetGranted: granted,
+		CreateInfo: r.GetCreateInfo(), Level: r.GetLevel(), Position: position, Items: items, GMStarterSetGranted: granted,
 		MaxCharacters: character.DefaultMaxCharacters,
 	})
 	if err != nil {
@@ -233,7 +254,23 @@ func (s *Server) GetCharacter(ctx context.Context, r *characterv1.GetCharacterRe
 		return nil, toStatus(ctx, err)
 	}
 	out := toProto(c)
+	if grants, ok := s.store.(interface {
+		GMLevel(context.Context, int64) (int32, error)
+	}); ok {
+		out.GmLevel, err = grants.GMLevel(ctx, c.AccountID)
+		if err != nil {
+			return nil, toStatus(ctx, err)
+		}
+	}
 	if r.GetIncludeItems() {
+		if settings, ok := s.store.(interface {
+			AutoAttackSettings(context.Context, int64) (map[string]bool, error)
+		}); ok {
+			out.AutoAttackSettings, err = settings.AutoAttackSettings(ctx, c.AccountID)
+			if err != nil {
+				return nil, toStatus(ctx, err)
+			}
+		}
 		items, err := s.store.Inventory(ctx, c.ID)
 		if err != nil {
 			return nil, toStatus(ctx, err)
@@ -305,6 +342,7 @@ func (s *Server) SaveProgress(ctx context.Context, r *characterv1.SaveProgressRe
 	p := character.Progress{Level: r.GetLevel(), ClassID: r.GetClassId(), ReplaceSkillRanks: r.GetReplaceSkillRanks(), ReplaceActionBar: r.GetReplaceActionBar(),
 		ReplaceCompletedFTUEs: r.GetReplaceCompletedFtues(), CompletedFTUEs: r.GetCompletedFtues(),
 		ReplaceAttunements: r.GetReplaceAttunements(), Attunements: character.Attunements{Discovered: r.GetAttunements(), Home: r.GetHomeAttunement(), HomeLastUsedMs: r.GetHomeLastUsedMs()}}
+	p.AutoAttackSettings = r.GetAutoAttackSettings()
 	for _, e := range r.GetExperience() {
 		p.Experience = append(p.Experience, character.Experience{LevelingTypeGuid: e.GetLevelingTypeGuid(), XP: e.GetXp(), Debt: e.GetDebt()})
 	}

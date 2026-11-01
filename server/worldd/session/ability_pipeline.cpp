@@ -9,6 +9,7 @@
 #include "bootstrap/constants.h"
 #include "content/content_db.h"
 #include "session/ability_timings.h"
+#include "session/summoner_pets.h"
 
 #include <spdlog/spdlog.h>
 
@@ -329,6 +330,23 @@ bool is_weapon_combo(const content::AbilityRow& row) {
 
 // What a program asks of the host besides the stats: the instigator's effect counts, a seeded random number, nothing of a running ability's
 // progress (songs are stage 2) or of a hit event (the defaults).
+struct AbilityPipeline::ItemScope {
+    AbilityPipeline& pipeline;
+    const std::map<int64_t, double>* previous;
+    std::map<int64_t, double> values;
+    ItemScope(AbilityPipeline& p, const std::map<int64_t, double>& item)
+        : pipeline(p), previous(p.consumed_item_stats_), values(item) {
+        const auto* next = values.empty() ? nullptr : &values;
+        if (next != previous) { p.consumed_item_stats_ = next; p.drop_evaluation(); }
+    }
+    ~ItemScope() {
+        if (pipeline.consumed_item_stats_ != previous) {
+            pipeline.consumed_item_stats_ = previous;
+            pipeline.drop_evaluation();
+        }
+    }
+};
+
 class AbilityPipeline::Host final : public combat::ContextHost {
 public:
     explicit Host(AbilityPipeline& p) : p_(p) {}
@@ -490,6 +508,7 @@ bool AbilityPipeline::ensure_evaluation(std::string& why) {
         why = "the stat engine cannot run: " + err;
         return false;
     }
+    if (consumed_item_stats_) evaluation_->set_consumed_item_stats(*consumed_item_stats_);
     return true;
 }
 
@@ -700,6 +719,12 @@ bool AbilityPipeline::remove_effect(int64_t effect_guid, double now) {
 void AbilityPipeline::set_moving(bool moving) {
     moving_ = moving;
     stats_.set_moving(moving);
+    if (moving) {
+        for (size_t i = casts_.size(); i-- > 0;) {
+            if (pets::for_ability(casts_[i].def->row.guid) && casts_[i].cost_due)
+                abort_cast(i, now_, "the summoner moved before completion");
+        }
+    }
 }
 
 double AbilityPipeline::progress_of(const std::string& group) const {
@@ -850,6 +875,18 @@ void AbilityPipeline::apply_effect(AbilityChange& c, const EffectDef& def, int s
     const bool override_duration = row.stack_type.find("OverrideDuration") != std::string::npos;
 // Cyb + C O A
 
+    // The design's elixir group allows one effect, replacing the oldest. Distinct
+    // elixir records must not bypass that limit by having different effect IDs.
+    if (def.group != 0 && def.group_limit == 1 && def.group_stack_type.find("OverrideOldest") != std::string::npos) {
+        for (size_t i = 0; i < effects_.size();) {
+            if (effects_[i].def != &def && effects_[i].def->group == def.group) {
+                const EffectInst old = effects_[i];
+                remove_instance(c, i);
+                constexpr const char* phases[] = {"Remove", "End"};
+                run_effect_hits(c, old, phases, 2, t);
+            } else ++i;
+        }
+    }
     EffectInst* existing = nullptr;
     int same = 0;
     for (EffectInst& e : effects_) {
@@ -859,6 +896,7 @@ void AbilityPipeline::apply_effect(AbilityChange& c, const EffectDef& def, int s
     }
     auto refreshed = [&](EffectInst& e) {   // the refresh rule of the record on an instance that is applied again
         if (never_refresh) return;
+        e.item_stats = consumed_item_stats_ ? *consumed_item_stats_ : std::map<int64_t, double>{};
         give_shield(e);   // a shield that is applied again is given in full again
         double total = dur;
         if (extend && !std::isinf(e.end) && !std::isinf(dur)) total = (e.end - t) + dur;   // the remaining time plus the full one
@@ -867,6 +905,7 @@ void AbilityPipeline::apply_effect(AbilityChange& c, const EffectDef& def, int s
     };
     auto fresh = [&](int stacks) {
         EffectInst e;
+        if (consumed_item_stats_) e.item_stats = *consumed_item_stats_;
         e.key = a7_.allocate_effect_id();
         e.def = &def;
         e.owner = owner;
@@ -986,6 +1025,7 @@ void AbilityPipeline::remove_by_hit(AbilityChange& c, const HitDef& hit) {
 // C:Y:B with C-O-A
 
 void AbilityPipeline::run_effect_hits(AbilityChange& c, const EffectInst& e, const char* const* phases, size_t n, double t) {
+    ItemScope item_scope(*this, e.item_stats);
     HitSource src;   // an effect's hit: confirmed by the server when it lands, Source is the pawn [R: 1,525 effect hits]
     src.type = content::kSourceTypeEffect;
     src.guid = e.def->row.guid;
@@ -1660,7 +1700,8 @@ void AbilityPipeline::run_due(double t) {
                 if (s.due[i].at > t) continue;
                 const Pending p = s.due[i];
                 s.due.erase(s.due.begin() + static_cast<std::ptrdiff_t>(i));
-                return run_slot(rec, s, t, true, p.found, p.targets);
+                const bool response = !s.server_self_use;
+                return run_slot(rec, s, t, response, p.found, p.targets);
             }
         }
     }
@@ -1803,6 +1844,7 @@ AbilityPipeline::HitVerdict AbilityPipeline::hit_request(int64_t ability, int64_
     }
     // (the targeting record the client names is not checked against the ability's key map: 122 of 1,854 retail requests name another record than the
     // map's, and the hit is what decides what happens)
+    if (slot->server_self_use) return HitVerdict::Quiet;
     if (slot->requests >= max_requests || now - slot->last_request < rec->min_gap) return HitVerdict::TooMany;
     ++slot->requests;
     slot->last_request = now;
@@ -1823,6 +1865,7 @@ AbilityPipeline::HitVerdict AbilityPipeline::hit_request(int64_t ability, int64_
 }
 
 void AbilityPipeline::run_slot(CastRecord& rec, HitSlot& slot, double t, bool response, bool found, const std::vector<uint64_t>& targets) {
+    ItemScope item_scope(*this, rec.item_stats);
     const FillScope fill(*this, rec.fill);   // (a HELD ability released early: its hit reads the fill its bar reached)
     AbilityChange c;
     const AbilityDef* def = catalog_->ability(rec.ability);
@@ -1864,10 +1907,7 @@ void AbilityPipeline::run_slot(CastRecord& rec, HitSlot& slot, double t, bool re
 bool AbilityPipeline::cancel(int32_t client_instance_id, double now, double held_seconds) {
     advance(now);
     cancel_timed(client_instance_id, now);
-    // a held ability (Guard, Reflect) ends with the key's release: its effects go kHeldEndDelay later
-    for (Held& h : held_) {
-        if (h.client_id == client_instance_id && !h.end_due) h.end_due = now_ + kHeldEndDelay;
-    }
+    release_held(client_instance_id, now_);
     // a cast that a talent made a held one (Scatter Shot with Concentrated) goes on from the key's release [R: 99 and 121 ms later the montage jumped]
     for (Cast& cast : casts_) {
         if (cast.client_id != client_instance_id || !cast.held || cast.charged || !cast.branched || !cast.branch_due) continue;
@@ -1926,7 +1966,7 @@ void AbilityPipeline::abort_cast(size_t index, double t, const char* why) {
     const bool paid = cast.branched && cast.branched->cost_first;   // (a Smite paid before its bar's end: only what follows the bar is dropped)
     spdlog::info("[abilities] {} {:.3f} s after the trigger: {}: {}", cast.def->row.name, t - cast.trigger_at, why, paid ? "its cost was paid before the bar's end, nothing more happens" : "nothing is paid and nothing fires");
     AbilityChange c;
-    if (cast.montage_branch && !cast.item_due && item_instance_ && *item_instance_ == cast.instance) {   // (its item was sent and is still the pawn's: it keeps its place, the montage cleared)
+    if ((cast.montage_branch || cast.clears_montage) && !cast.item_due && item_instance_ && *item_instance_ == cast.instance) {   // (its item was sent and is still the pawn's: it keeps its place, the montage cleared)
         cast.item.montage_path.clear();
         cast.item.montage_guid = 0;
         cast.item.branch_predicted = cast.branch_predicted;
@@ -1995,12 +2035,17 @@ bool AbilityPipeline::end_request(int32_t server_instance_id, double now) {
     // answered like every other one (ClientEndAbility kEndDelay later, below): the cancel is not the whole answer
     for (size_t i = 0; i < casts_.size(); ++i) {
         const Cast& cast = casts_[i];
+        if (cast.instance == server_instance_id && pets::for_ability(cast.def->row.guid) && cast.cost_due) {
+            abort_cast(i, now_, "the client ended the summon before completion");
+            break;
+        }
         if (cast.instance != server_instance_id || !cast.branched || !cast.branched->cancels || cast.held || cast.request_heard || !cast.branch_due) continue;
         abort_cast(i, now_, "the client ended the cast bar");
         break;
     }
     for (Instance& i : instances_) {
         if (i.server_id != server_instance_id || i.end_due) continue;
+        release_held(i.client_id, now_);
         i.end_due = now_ + kEndDelay;
         return true;
     }
@@ -2147,9 +2192,11 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
         return why;
     };
     if (dead_) return refused(Refusal::Dead);
-    if (!def || a7_.enabled(ability)) return refused(Refusal::NotEnabled);
-    if (!known(ability)) return refused(Refusal::NotKnown);
-    if (info.item) return refused(Refusal::Unsupported, " (an item's ability is not run here)");
+    const bool authorized_item = info.item && static_cast<bool>(info.consume_item);
+    if (!def || (a7_.enabled(ability) && !authorized_item)) return refused(Refusal::NotEnabled);
+    if (info.item && !authorized_item) return refused(Refusal::Unsupported, " (the item was not authorized by the inventory)");
+    if (!known(ability) && !authorized_item) return refused(Refusal::NotKnown);
+    ItemScope item_scope(*this, info.item_stats);
     // a trigger during another's cast is taken (retail's weapon combos and channels re-trigger within a montage; no refusal is captured), up to a few
     // waiting at once: more is a client that floods
     if (casts_.size() >= kMaxCasts) return refused(Refusal::Busy);
@@ -2176,8 +2223,8 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
     const std::set<int64_t> by_hits = effects_applied_by_hits(*def);
     for (const auto& [key, effect_guid] : def->effects) {
         const EffectDef* e = catalog_->effect(effect_guid);
-        if (!e || !e->row.infinite_duration) continue;
-        if (e->row.tick_timer > 0 && single_press) {
+        if (!e || (!e->row.infinite_duration && !authorized_item)) continue;
+        if (e->row.infinite_duration && e->row.tick_timer > 0 && single_press) {
             loop = true;
             loop_effect = effect_guid;
         } else if (!by_hits.count(effect_guid)) {
@@ -2209,6 +2256,8 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
     // the formulas
     Cast cast;
     cast.client_id = client_id;
+    cast.consume_item = info.consume_item;
+    cast.item_stats = info.item_stats;
     cast.def = def;
     cast.trigger_at = t;
     cast.animation_index = info.animation_index;
@@ -2292,6 +2341,13 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
             cost_delay = tm.cost;
             hit_delay = tm.hit;
         }
+    }
+    if (pets::for_ability(ability)) {
+        // These casts have no branch notify. Keep the hit request window open
+        // through completion, and let the server apply the summon exactly once.
+        cost_delay = pets::kSummonSeconds;
+        hit_delay = 0;
+        if (table_end < 0) table_end = pets::kSummonSeconds + 0.38;
     }
     bool has_montage = false;   // (an ability with no montage has a row with an empty path: Fortissimo)
     for (const content::MontageRow& m : def->montages) has_montage = has_montage || !m.soft_path.empty();
@@ -2398,6 +2454,7 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
     if (!cast.own_effects.empty()) cast.own_due = *cast.cost_due + kHitDelay;
     // the hits the client will ask for: every direct hit that is not aimed at the caster
     CastRecord rec;
+    rec.item_stats = info.item_stats;
     rec.client_id = client_id;
     rec.ability = row.guid;
     rec.trigger_at = t;
@@ -2425,6 +2482,12 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
         slot.targeting = tg;
         slot.reaches = hits_caster(hit->row);
         slot.aims_others = combat_ != nullptr && (hit->row.applicable_targets & (2 | 4 | 8 | 16)) != 0;
+        if ((authorized_item || pets::for_ability(ability)) && hit->row.applicable_targets == 1 && hit->row.fallback_target.find("SelfOnly") != std::string::npos) {
+            // A verified self-use or pet summon is paid at the cost step and
+            // applied once, even if the client's hit request is delayed or absent.
+            // Mark this slot server-owned so a later request cannot repeat it.
+            slot.server_self_use = true;
+        }
         rec.slots.push_back(std::move(slot));
     }
     records_.push_back(std::move(rec));
@@ -2441,6 +2504,7 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
 // == C O A | C-Y-B ==
 
 void AbilityPipeline::step_item(Cast& cast, double t) {
+    ItemScope item_scope(*this, cast.item_stats);
     const AbilityDef& def = *cast.def;
     AbilityChange c;
     if (item_instance_) {
@@ -2502,6 +2566,7 @@ void AbilityPipeline::cancel_swings(double t, const std::string& by) {
 }
 
 void AbilityPipeline::step_branch(Cast& cast, double t) {
+    ItemScope item_scope(*this, cast.item_stats);
     // a cast that finds its own targets sends its projectiles with the jump (the hits land whoever's item the pawn shows by now)
     if (cast.gathered) launch_gathered(cast, t);
     // the projectiles of a cast bar are launched from the request: they land when they get to the target
@@ -2595,6 +2660,7 @@ void AbilityPipeline::launch_gathered(Cast& cast, double t) {
 }
 
 void AbilityPipeline::step_end(Cast& cast, double t) {
+    ItemScope item_scope(*this, cast.item_stats);
     // the montage is over: the effects the ability put on its caster itself end with it, and the item keeps its place and its targets with the montage cleared [R: retail's last update of the item]
     AbilityChange c;
     if (!cast.own_effects.empty()) {
@@ -2613,6 +2679,7 @@ void AbilityPipeline::step_end(Cast& cast, double t) {
 }
 
 void AbilityPipeline::step_cost(Cast& cast, double t) {
+    ItemScope item_scope(*this, cast.item_stats);
     const AbilityDef& def = *cast.def;
     AbilityChange c;
     // the costs again: nothing but regeneration and Sprint's drain can have moved since the trigger, and a cast that cannot pay now is over
@@ -2620,6 +2687,11 @@ void AbilityPipeline::step_cost(Cast& cast, double t) {
     for (const auto& [stat, amount] : cast.stat_costs) affordable = affordable && stat_now(stat) >= amount;
     for (const auto& [effect, n] : cast.effect_costs) affordable = affordable && stacks_of(effect) >= n;
     if (const auto g = groups_.find(cast.group); g != groups_.end() && cast.triggers_cooldown && g->second.charges < cast.charge_cost) affordable = false;   // a cast that waited behind another's
+    if (affordable && cast.consume_item) {
+        auto consume = std::move(cast.consume_item);
+        cast.consume_item = {};
+        affordable = consume();
+    }
     if (CastRecord* rec = record_of(cast.client_id)) rec->cost_at = t;
     if (!affordable && cast.looped && cast.shots > 0) {
         // a later shot that cannot be paid is the branch's own trigger: the loop ends, and the missiles in flight still land
@@ -2658,6 +2730,14 @@ void AbilityPipeline::step_cost(Cast& cast, double t) {
         cast.own_due.reset();
         events_.push_back(std::move(e));
         return;
+    }
+    if (CastRecord* rec = record_of(cast.client_id)) {
+        for (HitSlot& slot : rec->slots) {
+            if (slot.server_self_use && !slot.applied) {
+                slot.applied = true;
+                slot.due.push_back({t + rec->hit_delay, true, {}});
+            }
+        }
     }
     bool spent_mana = false;
     for (const auto& [stat, amount] : cast.stat_costs) {
@@ -2711,7 +2791,10 @@ void AbilityPipeline::step_cost(Cast& cast, double t) {
 // Cyb and C O A
 
 void AbilityPipeline::step_own(Cast& cast, double t) {
+    ItemScope item_scope(*this, cast.item_stats);
     const AbilityDef& def = *cast.def;
+    // A quick tap may be released before this delayed step ever creates a Held entry.
+    if (cast.held_release_due && *cast.held_release_due <= t) return;
     AbilityChange c;
     for (const EffectDef* e : cast.own_effects) {
         // an effect the character's talents gate (the Salvo's Expeditious) starts only when its requirement holds
@@ -2724,11 +2807,23 @@ void AbilityPipeline::step_own(Cast& cast, double t) {
     // a held ability (the key stays down: Guard, Reflect) ends with the client's cancel
     if (def.row.hold_animation) {
         held_.erase(std::remove_if(held_.begin(), held_.end(), [&](const Held& h) { return h.ability == def.row.guid; }), held_.end());
-        held_.push_back({cast.client_id, def.row.guid, std::nullopt});
+        held_.push_back({cast.client_id, def.row.guid, cast.held_release_due});
         if (held_.size() > 16) held_.erase(held_.begin());
     }
     recompute(c);
     emit({std::move(c), std::nullopt, t, "the own effects of " + def.row.name + " start"});
+}
+
+void AbilityPipeline::release_held(int32_t client_id, double t) {
+    const double due = t + kHeldEndDelay;
+    for (Held& h : held_) {
+        if (h.client_id == client_id && !h.end_due) h.end_due = due;
+    }
+    for (Cast& cast : casts_) {
+        if (cast.client_id == client_id && cast.def->row.hold_animation && cast.own_due && !cast.held_release_due) {
+            cast.held_release_due = due;
+        }
+    }
 }
 
 void AbilityPipeline::end_held(size_t index, double t) {
@@ -2755,6 +2850,7 @@ void AbilityPipeline::end_loop(AbilityChange& c, int64_t ability, double t) {
 }
 
 void AbilityPipeline::step_loop(Cast& cast, double t) {
+    ItemScope item_scope(*this, cast.item_stats);
     const AbilityDef& def = *cast.def;
     AbilityChange c;
     // a song replaces the one that plays (the songs share a tag): its effects end
@@ -2873,6 +2969,7 @@ void AbilityPipeline::run_zone(size_t index, double t) {
 // [Cyb - C | O | A]
 
 void AbilityPipeline::step_hits(Cast& cast, double t, const char* which) {
+    ItemScope item_scope(*this, cast.item_stats);
     const CastRecord* fill_record = record_of(cast.client_id);
     const FillScope fill(*this, fill_record ? fill_record->fill : 1.0);
     const AbilityDef& def = *cast.def;
@@ -3040,6 +3137,7 @@ void AbilityPipeline::start_timed(Cast& cast, const TimedCast& timed, double t) 
 }
 
 void AbilityPipeline::step_timed(Cast& cast, const Cast::Missile& m, double t) {
+    ItemScope item_scope(*this, cast.item_stats);
     if (!combat_ || !cast.timed) return;
     if (m.kind == Cast::Missile::Kind::Launch) launch_timed(cast, m, t);
     else if (m.kind == Cast::Missile::Kind::Strike) land_strike(cast, m, t);

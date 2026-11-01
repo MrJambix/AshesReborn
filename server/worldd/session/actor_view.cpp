@@ -440,6 +440,7 @@ bool ActorView::open_scenery(Connection& conn, double x, double y, Clock::time_p
         const world::WorldActor* a = registry_.find(id);
         if (!a || a->kind != world::ActorKind::NodeLayout) continue;
         if (a->owner != 0 && a->owner != config_.player_id) continue;
+        if (a->hidden_from_player != 0 && a->hidden_from_player == config_.player_id) continue;
         if (entries_.count(id) != 0) continue;   // the view has it already (open, or given up as broken): the passes look after it
         const double d = world::horizontal_distance(a->x, a->y, x, y);
         if (world::classify(cfg, d, a->awake_radius_cm, a->never_dormant, ClientState::None) != Ring::Awake) continue;   // (a replicator is awake or nothing)
@@ -538,6 +539,7 @@ void ActorView::pass(Connection& conn, double x, double y, Clock::time_point now
         const world::WorldActor* a = registry_.find(id);
         if (!a) continue;   // removed: flush_removed deals with it
         if (a->owner != 0 && a->owner != config_.player_id) continue;   // another player's (its lingering zones): not for this connection
+        if (a->hidden_from_player != 0 && a->hidden_from_player == config_.player_id) continue;
         const auto it = entries_.find(id);
         const ClientState prior = it == entries_.end() ? ClientState::None : it->second.state;
         const double d = world::horizontal_distance(a->x, a->y, x, y);

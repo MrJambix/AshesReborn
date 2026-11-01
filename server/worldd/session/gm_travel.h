@@ -59,7 +59,17 @@ public:
 };
 
 /// How a call ended, in gRPC's terms (svc/world_admin.cpp maps them).
-enum class GmStatus : uint8_t { Ok, NotFound, InvalidArgument, FailedPrecondition };
+enum class GmStatus : uint8_t { Ok, NotFound, InvalidArgument, FailedPrecondition, PermissionDenied };
+
+struct GmCommandSpec { std::string name, category, arguments; };
+struct GmCommandResult {
+    GmStatus status = GmStatus::Ok;
+    std::string message, character;
+    bool enabled = false;
+    int level = 0;
+    uint64_t panel_revision = 0;
+};
+const std::vector<GmCommandSpec>& gm_command_specs();
 
 struct GmPosition {
     double x = 0, y = 0, z = 0;
@@ -194,6 +204,8 @@ public:
     GmTravel(PlayerWorld& world, Directory directory, Now now) : world_(world), directory_(std::move(directory)), now_(std::move(now)) {}
 
     std::vector<GmPlayerInfo> list_players();
+    GmCommandResult account_command(int64_t account_id, const std::string& command);
+    GmCommandResult command(PlayerSession& invoker, Connection& conn, const std::string& command);
     std::vector<world::Place> list_places();
     /// `by` names who asked, for the log ("worldctl", "ServerTeleportXYZ").
     GmTeleportResult teleport(const GmTeleportRequest& request, const std::string& by);

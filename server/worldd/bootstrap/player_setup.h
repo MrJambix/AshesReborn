@@ -26,6 +26,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -237,6 +238,7 @@ inline constexpr uint64_t kDefaultSharedAppearanceInfoId = 6064629977195085824ul
 // (C_Y_B) (CoA)
 
 struct PlayerSetup {
+    std::map<std::string, bool> auto_attack_settings;
     // ---- the character [char] ------------------------------------------------------------------------------------
     /// BaseCharacterInfo.CharacterGuid A..D: the record's 32 hex digits as four big-endian words.
     std::array<uint32_t, 4> character_guid{};

@@ -36,6 +36,7 @@
 //  With AOC_CONTENT_DB set the sessions run on the real content.db instead of the small fixture (the numbers are the same).
 // ============================================================================
 #include "ability_rig.h"
+#include "session/summoner_pets.h"
 #include "combat_rig.h"
 #include "tooltip_key.h"
 #include "bootstrap/captured_setup.h"
@@ -3971,6 +3972,8 @@ static void test_e1_death_without_loss() {
     CHECK(held_of(*r.h.s, kCopper) == 20 && r.h.s->pile_actor() == 0, "the copper is all there and no pile stands");
 }
 
+#include "summoner_pet_session_tests.inc"
+
 int main() {
     auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
     logger->set_level(spdlog::level::debug);
@@ -3993,6 +3996,8 @@ int main() {
     test_through_the_endpoint();
     test_hostile_client();
     if (ability_rig::real_db_present()) {
+        test_summoner_pet_session();
+        test_summoner_spawn_failure();
         test_d2_glee_heals();
         test_d2_flourish_dash();
         test_d2_dodge_keeps_cooldowns();

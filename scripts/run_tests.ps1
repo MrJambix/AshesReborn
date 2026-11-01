@@ -22,6 +22,7 @@
 #
 #  -NoBuild runs whatever test_*.exe is already present in dist\<Config>,
 #  including leftovers from a test target since dropped from CMake.
+#  Any failing or unstartable test exits 1, even when its result matches a baseline.
 # ============================================================================
 [CmdletBinding()]
 param(
@@ -63,8 +64,17 @@ try {
         # dist\content\area_nav.bin is there (Nodes 1 review B, M7: the town floor's constants are tuned on exactly that data)
         $realGround = $exe.BaseName -eq 'test_worldd_node_pop' -and (Test-Path -LiteralPath (Join-Path $root 'dist\content\area_nav.bin'))
         if ($realGround) { $env:AOC_REAL_GROUND = '1' }
-        $text = & $exe.FullName 2>&1 | Out-String
-        $code = $LASTEXITCODE
+        # A program that cannot start must not inherit a previous test's exit 0.
+        # (the global one: a plain assignment makes a local that hides every program's real exit code)
+        $global:LASTEXITCODE = $null
+        try {
+            $text = & $exe.FullName 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            if ($null -eq $code) { $code = 1 }
+        } catch {
+            $text = $_.Exception.Message
+            $code = 1
+        }
         if ($realGround) { Remove-Item Env:AOC_REAL_GROUND -ErrorAction SilentlyContinue }
         if ($code -eq 0 -and $text -match '(?m)\[skip\]|:\s+skipped\s*$') { $skippers.Add($exe.BaseName) }
         $status = if ($code -eq 0) { 'PASS' } else { 'FAIL' }
@@ -90,4 +100,5 @@ if ($CompareTo) {
     }
     Write-Host 'Matches baseline.'
 }
+if ($failed -gt 0) { exit 1 }
 exit 0

@@ -21,6 +21,7 @@
 //  Without a content.db the test says so and is skipped.
 // ============================================================================
 #include "ability_rig.h"
+#include "session/summoner_pets.h"
 
 #include <cmath>
 #include <cstring>
@@ -792,6 +793,43 @@ void test_a7_beside() {
 
 // ---- plan D2, stage 2: class resources, the Mend chain, the client's end of an ability ----------------------------------------------------
 
+void test_guard_stamina_recovery() {
+    std::printf("Guard releases restore stamina recovery, including quick taps and end requests\n");
+    for (int release = 0; release < 4; ++release) {
+        Rig r(5, 1);
+        CHECKF(r.ok(), "the Rogue rig: %s", r.problem.c_str());
+        if (!r.ok()) return;
+        r.know({"General_Guard"});
+        CHECK(r.trigger("General_Guard", 1.0) == Refusal::None, "Guard starts");
+        const int32_t client_id = r.next_client_id - 1;
+        if (release < 2) {
+            // Release before the item, or between the item and its delayed effect.
+            CHECK(r.pipe->cancel(client_id, release == 0 ? 1.01 : 1.31), "the quick release is accepted");
+        }
+        r.run_to(1.5);
+        CHECK(r.a7->trigger(content::kGuidDodge, 100, 1.5) == Refusal::None, "the first Dodge starts");
+        r.take();
+        r.run_to(2.3);
+        CHECK(r.a7->trigger(content::kGuidDodge, 101, 2.3) == Refusal::None, "the second Dodge starts after its cooldown");
+        r.take();
+        CHECK(r.a7->stamina() == 0 && r.pawn.stat(content::kGuidStamina) == 0, "two Dodges exhaust stamina on the server and client");
+        if (release == 2) {
+            CHECK(r.pipe->cancel(client_id, 2.3), "the active Guard release is accepted");
+        } else if (release == 3) {
+            int64_t instance = -1;
+            for (const auto& [id, item] : r.pawn.abilities)
+                if (item.ability_guid == r.ability("General_Guard")) instance = item.server_instance_id;
+            CHECK(instance >= 0 && r.pipe->end_request(static_cast<int32_t>(instance), 2.3), "the active Guard end request is accepted");
+        }
+        r.run_to(5.0);
+        r.run_to(6.0);   // A7's next tick follows the pipeline's restoration of its recovery rate.
+        CHECKF(r.pawn.effect(r.effect("General_Guard")) == nullptr, "release %d leaves no Guard effect", release);
+        CHECKF(near(r.pawn.stat(content::kGuidStaminaRegeneration), 5.0, 1e-6), "release %d restores the replicated recovery rate", release);
+        CHECKF(r.a7->stamina() > 0 && r.pawn.stat(content::kGuidStamina) > 0, "release %d recovers from zero on the server and client", release);
+        CHECK(r.pawn.broken.empty(), "every ability update applies");
+    }
+}
+
 void test_class_resources() {
     std::printf("class resources are held stats that move by their regeneration\n");
     constexpr int64_t kFocus = 6064633175093543338ll;   // the Ranger's Focus
@@ -1155,6 +1193,51 @@ void test_dance_zones() {
     CHECK(m.pawn.broken.empty() && m.pawn.effect(shielding_aura) == nullptr, "(the pawn took every change; no Aura is left)");
 }
 
+static void test_summoner_completion() {
+    std::printf("Summoner: completion, cancellation, and one server-owned summon hit\n");
+    const char* names[] = {"Summoner_Summon_SpiritGuardian", "Summoner_Summon_SpiritHunter", "Summoner_Summon_SpiritMystic"};
+    for (const char* name : names) {
+        Rig r(6, 25);
+        CHECK(r.ok(), "the Summoner rig loads");
+        if (!r.ok()) return;
+        r.know({name});
+        r.asks = false;
+        const auto* d = pets::for_ability(r.ability(name));
+        CHECK(d != nullptr, "the summon has a pet definition");
+        if (!d) continue;
+        CHECK(r.trigger(name, 1.0, false) == Refusal::None, "the summon cast is accepted");
+        const auto* ability = r.catalog->ability(d->ability);
+        const int64_t hit = ability->hits.front().hit_guid;
+        CHECK(r.pipe->hit_request(d->ability, content::kTargetingDefaultSelf, hit, 1, 1, 1.2) == AbilityPipeline::HitVerdict::Quiet,
+              "a premature client hit cannot complete a summon");
+        r.run_to(8.9);
+        CHECK(!r.pawn.effect(d->effect), "the pet effect is absent before the cast completes");
+        r.run_to(9.1);
+        const auto* effect = r.pawn.effect(d->effect);
+        CHECK(effect != nullptr, "completion applies the summon even without a client hit request");
+        const int64_t effect_id = effect ? effect->effect_id : -1;
+        r.pipe->hit_request(d->ability, content::kTargetingDefaultSelf, hit, 1, 1, 9.2);
+        r.run_to(10.0);
+        effect = r.pawn.effect(d->effect);
+        CHECK(effect && effect->effect_id == effect_id && r.pawn.broken.empty(), "a late hit cannot summon a second pet");
+    }
+    for (const bool move : {false, true}) {
+        Rig r(6, 25);
+        r.know({names[0]});
+        r.asks = false;
+        r.trigger(names[0], 1.0, false);
+        r.run_to(1.5);
+        CHECK(!r.pawn.abilities.empty(), "the summon montage is present before cancellation");
+        if (r.pawn.abilities.empty()) continue;
+        const int64_t instance = r.pawn.abilities.begin()->first;
+        if (move) r.pipe->set_moving(true);
+        else r.pipe->end_request(static_cast<int32_t>(instance), 1.5);
+        r.run_to(12.0);
+        CHECK(!r.pawn.effect(pets::kDefinitions[0].effect), "a cancelled summon creates no pet effect");
+        CHECK(r.pawn.broken.empty(), "cancelling keeps the replicated arrays valid");
+    }
+}
+
 int main() {
     if (!real_db_present()) {
         std::printf("no content.db at %s (cd services && go run ./cmd/contentc): the generic ability runtime's tests are skipped\n", real_db_path().c_str());
@@ -1180,9 +1263,11 @@ int main() {
     test_regeneration();
     test_movement();
     test_a7_beside();
+    test_guard_stamina_recovery();
     test_class_resources();
     test_mend_chain();
     test_end_request();
+    test_summoner_completion();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

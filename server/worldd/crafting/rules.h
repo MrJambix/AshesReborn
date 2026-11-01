@@ -37,6 +37,7 @@
 
 #include "content/content_db.h"
 #include "crafting/job.h"
+#include "items/currency.h"
 #include "items/inventory.h"
 #include "items/rarity.h"
 #include "items/wallet.h"
@@ -86,6 +87,7 @@ struct StartFacts {
     const items::Inventory*         inventory = nullptr;
     int64_t                         copper = 0;
     int64_t                         node_currency = 0;   // the character's node currency (a citizen crate is paid in it)
+    const items::CurrencyTier*      glint = nullptr;     // the Glint tier: its kinds pay a price in Glint, with change (null: only Glint T1 items pay)
     size_t                          unfinished_here = 0;   // the player's jobs at this station that are not over
     size_t                          held_here = 0;         // ... and all of them, finished ones too
     bool                            quick = false;         // the station crafts at once (a crafting station): one unit, no queue, no job
@@ -447,7 +449,7 @@ inline Plan plan_start(const protocol::repl::StartCraft& req, const StartFacts& 
     plan.unit_taxed = taxed_unit(unit.value, f.tax, unit.tier);
     plan.cost = plan.unit_taxed * req.quantity;
     if (unit.tier == items::kGlintTier) {
-        const int64_t held = f.inventory->count_of(items::kGlintT1Item);
+        const int64_t held = f.glint ? items::carried_value(*f.glint, *f.inventory) : f.inventory->count_of(items::kGlintT1Item);
         if (plan.cost > held) return refuse("the bags hold " + std::to_string(held) + " Glint T1 and the craft costs " + std::to_string(plan.cost) + " (not enough Glint)");
     } else if (unit.tier == items::kNodeCurrencyTier) {
         if (plan.cost > f.node_currency) return refuse("the purse holds " + std::to_string(f.node_currency) + " node currency and the craft costs " + std::to_string(plan.cost));

@@ -66,6 +66,7 @@ struct TriggerAbility {
     uint32_t target_transform_count = 0;
     int32_t  item_slot = -1;            // ItemData.Slot: -1 is "no item"
     uint32_t item_location = 0;         // ItemData.Location (EItemLocation)
+    ItemInstance item;                 // untrusted request: match its identity against the server inventory
 };
 // [C Y B - CoA]
 

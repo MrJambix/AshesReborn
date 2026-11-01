@@ -50,7 +50,24 @@ GM tools are in `dist\services` (`worldctl`, `nodectl`, `questctl`); give them `
 
 On the build PC: pull, run `build_all.bat`, then `deploy\vps\package.ps1 -PublicIp <ip>`, copy the package over with scp, and run `sandalctl update <package.tar>`.
 
+### Discord notifications
+
+The operator webhook is stored separately in `C:\SandalCore\secrets\discord-webhook.secret`. Keep that directory restricted to SYSTEM, Administrators and LOCAL SERVICE, as configured by `install.ps1`. The webhook is never included in source or release packages. Updates preserve this file.
+
+`sandalctl` sends start, success and failure notices for updates, restores, starts, stops, restarts and access changes. A failed update also reports rollback and whether the previous programs restarted. Read-only commands and routine backups do not send messages. Delivery has a 10-second timeout; a Discord failure warns locally and lets maintenance continue.
+
+For direct server changes outside `sandalctl`, send a notice before maintenance and a completion or failure notice afterward:
+
+```powershell
+& C:\SandalCore\ops\notify-discord.ps1 -Message 'Server maintenance is starting.'
+& C:\SandalCore\ops\notify-discord.ps1 -Message 'Server maintenance completed.' -Level success
+```
+
+The helper returns whether Discord confirmed delivery, disables mentions, and never prints the webhook or raw HTTP errors. If the secret file is absent, automatic notifications are disabled.
+
 ## Players
+
+The advertised world name is **Ashes Reborn**. `config\realm.json` controls `world_display_name`; `config\rates.json` controls `exp_rate` and `drop_rate`. The supervisor reads both at start and passes the values to gateway/worldd. The testing defaults are **5x earned player XP** and **3x loot-roll chance**. XP includes Adventuring and weapon XP from kills, Adventuring and profession XP from gathering/hunting, quest Adventuring rewards, and crafting/processing XP. Saved totals, world identity, character ownership, level-targeting scrolls and administrative XP setters are unchanged. Loot-roll chances cap at 100%; quantities, rarity weighting and existing loot eligibility rules are unchanged. Restart the stack after editing the settings. Program updates seed these files only when missing, preserving local operator changes. `worldd --exp-rate` / `AOC_EXP_RATE` also work outside this deployment.
 
 Build the native player entry point with `cmake --build build\x64 --config Release --target launcher reborn_bootstrap`, then commit. `deploy\vps\package-client.ps1 -ServerIp <ip>` makes `RebornLauncher.exe`, `RebornLauncher.exe.sha256` and a portable `RebornLauncher.zip`. The EXE embeds the native launcher, runtime DLLs, public CA certificate, settings and corresponding source. It contains no game files or keys. Packaging tests extraction and checks every embedded file before replacing the release outputs.
 

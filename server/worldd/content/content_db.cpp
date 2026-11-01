@@ -967,6 +967,23 @@ std::optional<ItemUse> ContentDb::item_use(int64_t item_guid, std::string& error
 }
 // -- CoA . C-Y-B --
 
+std::optional<int64_t> ContentDb::item_cast(int64_t item_guid, std::string& error) const {
+    error.clear();
+    Stmt q(db_, "SELECT ability_guid FROM item_cast WHERE item_guid = ?1");
+    if (!q.ok()) {
+        error = "content.db has no usable item cast table; rebuild it with contentc 38: " + db_message(db_);
+        return std::nullopt;
+    }
+    sqlite3_bind_int64(q.get(), 1, item_guid);
+    const int step = sqlite3_step(q.get());
+    if (step == SQLITE_DONE) return std::nullopt;
+    if (step != SQLITE_ROW || !column_is_int(q.get(), 0) || sqlite3_column_int64(q.get(), 0) == 0) {
+        error = "content.db item cast query failed for " + std::to_string(item_guid);
+        return std::nullopt;
+    }
+    return sqlite3_column_int64(q.get(), 0);
+}
+
 std::optional<ActionResponse> ContentDb::action_response(int64_t guid, std::string& error) const {
     error.clear();
     ActionResponse a;

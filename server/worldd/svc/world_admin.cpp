@@ -114,6 +114,7 @@ grpc::StatusCode code_of(GmStatus s) {
         case GmStatus::NotFound: return grpc::StatusCode::NOT_FOUND;
         case GmStatus::InvalidArgument: return grpc::StatusCode::INVALID_ARGUMENT;
         case GmStatus::FailedPrecondition: return grpc::StatusCode::FAILED_PRECONDITION;
+        case GmStatus::PermissionDenied: return grpc::StatusCode::PERMISSION_DENIED;
     }
     return grpc::StatusCode::INTERNAL;
 }
@@ -133,6 +134,24 @@ struct WorldAdminServer::Service final : adminv1::WorldAdminService::Service {
     std::mutex            log_mu;
     std::chrono::steady_clock::time_point last_log{};
     uint64_t              held_back = 0;
+    grpc::Status AccountCommand(grpc::ServerContext* ctx, const adminv1::AccountCommandRequest* req, adminv1::AccountCommandResponse* resp) override {
+        if (auto s = authorize(ctx, "AccountCommand"); !s.ok()) return s;
+        if (req->account_id() <= 0 || req->command().size() > 1024)
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Invalid GM request");
+        GmCommandResult out;
+        if (auto s = on_net_thread([&] { out = owner.travel_.account_command(req->account_id(), req->command()); }); !s.ok()) return s;
+        if (out.status != GmStatus::Ok) return grpc::Status(code_of(out.status), out.message);
+        resp->set_enabled(out.enabled);
+        resp->set_character(out.character);
+        resp->set_level(out.level);
+        resp->set_panel_revision(out.panel_revision);
+        resp->set_message(out.message);
+        for (const auto& spec : gm_command_specs()) {
+            auto* c = resp->add_commands();
+            c->set_name(spec.name); c->set_category(spec.category); c->set_arguments(spec.arguments);
+        }
+        return grpc::Status::OK;
+    }
 // built by C:Y:B with C.O.A
 
     /// The token check: exactly one "authorization" header, equal to "Bearer <token>", compared without stopping at the first different byte.

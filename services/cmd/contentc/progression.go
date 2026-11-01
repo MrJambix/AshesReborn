@@ -113,6 +113,17 @@ func buildProgression(w *writer, src *source, curves *aocexpr.CurveMap, statName
 			r.Guid, activation, b2i(consume), cooldown, b2i(inCombat)); err != nil {
 			return err
 		}
+		if _, present := r.Fields["ActivationCastId"]; present {
+			cast, _ := f.id("ActivationCastId")
+			if f.err != nil {
+				return f.err
+			}
+			if cast != 0 && activation == "CastAbility" {
+				if err := w.exec(`INSERT INTO item_cast (item_guid, ability_guid) VALUES (?, ?)`, r.Guid, cast); err != nil {
+					return err
+				}
+			}
+		}
 		for i, g := range actions {
 			if err := w.exec(`INSERT INTO item_action (item_guid, ord, action_guid) VALUES (?, ?, ?)`, r.Guid, i, g); err != nil {
 				return err

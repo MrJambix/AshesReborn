@@ -90,7 +90,7 @@
 //  Backpack's and the Equipment's ClientReceiveStoragePayload on the pawn, under a budget of its own.  ServerRequestStorageEvent is
 //  read whole (a Move or a Swap of whole stacks between two slots of the Backpack, its source and target named by the pawn's storage
 //  component, a guid that matches the item in the slot) and answered as the retail server does (a Move: Remove, Add; a Swap: Remove,
-//  Remove, Add, Add); splitting, stacking, destroying and every other storage are refused.
+//  Remove, Add, Add); a Fill joins two stacks and a Move of part of a stack splits it (modelled: Inventory::fill, split); every other storage is refused.
 //
 //  Stats (plan B3).  The character's stats are the stat engine's (stats/character_stats.h): computed at the join from its class, level and
 //  worn items (they fill the StatsComponent's arrays), and recomputed whenever the Equipment changes.  What changed (the stats whose float
@@ -191,9 +191,9 @@
 //  (the player may be back where it started).  A session that never moved saves nothing.
 //
 //  ServerUpdateAccountCombatSettings.  The original answered with a PlayerController property block holding the nine
-//  values that differ from the class defaults (pkt#620: eight equal the request's, PartyVFX does not).  The defaults are
-//  not known to worldd and the other 41 values of the request were never sent in a block, so exactly these nine paths
-//  are echoed, each with the request's value (an absent one is left out).  Not proven in game.
+//  values that differ from the class defaults (pkt#620: eight equal the request's, PartyVFX does not). These nine values
+//  and the five auto attack options are echoed. Auto attack changes are saved per account with the progress and restored
+//  at login; the initial client synchronization cannot replace saved options with stale defaults.
 //
 //  The world's other actors (plan E1, stage 1; world/actor_registry.h, session/actor_view.h, spawns/area_loader.h).  The session owns an
 //  ActorView on the world's registry: once the join and the phase-in are on the wire it gives the view the player's last good position
@@ -283,7 +283,10 @@
 #include "session/leveling.h"
 #include "session/mounts.h"
 #include "session/move_checker.h"
+#include "session/player_presence.h"
+#include "session/player_presence.h"
 #include "session/player_world.h"
+#include "session/player_presence.h"
 #include "session/riding.h"
 #include "session/position_saver.h"
 #include "session/professions.h"
@@ -369,7 +372,16 @@ inline constexpr std::array<std::string_view, 9> kCombatEchoPaths = {
     "CharacterInGameSettings.CombatSettings.Rendering.PartyVFX",
 };
 
+inline constexpr std::array<std::string_view, 5> kAutoAttackPaths = {
+    "CharacterInGameSettings.CombatSettings.Input.AutoAttack.bEnabled",
+    "CharacterInGameSettings.CombatSettings.Input.AutoAttack.bToggle",
+    "CharacterInGameSettings.CombatSettings.Input.AutoAttack.bStartsAfterMeleeAbility",
+    "CharacterInGameSettings.CombatSettings.Input.AutoAttack.bStartsAfterRangedAbility",
+    "CharacterInGameSettings.CombatSettings.Input.AutoAttack.bStopsAfterAbility",
+};
+
 class PlayerSession {
+    friend class GmTravel;
 public:
     /// Reply steps that may wait for the window at once; more are dropped (a client that sends ServerRequestClientLoad
     /// in a loop).
@@ -495,6 +507,17 @@ public:
     size_t corrections_sent() const { return corrections_; }
     size_t positions_handed_over() const { return handed_over_; }
     const std::string& character_id() const { return character_id_; }
+    int64_t account_id() const { return account_id_; }
+    int gm_level() const { return gm_level_; }
+    bool gm_enabled() const { return gm_level_ == 3 && gm_enabled_; }
+    bool gm_rpc_admitted_for_panel(Clock::time_point now) { return gm_level_ == 3 && gm_budget_.take(now); }
+    uint64_t gm_panel_revision() const { return gm_panel_revision_; }
+    bool set_gm_enabled(bool enabled) {
+        if (gm_level_ != 3) return false;
+        gm_enabled_ = enabled;
+        if (enabled) ++gm_panel_revision_;
+        return true;
+    }
     /// Plan B2: the items as the session plays them, whether they changed this session and since the last hand-over to the sink, the requests
     /// applied and refused (ServerItemUsed and ServerRequestStorageEvent), and the inventories handed to the sink.
     const items::Inventory& inventory() const { return inventory_; }
@@ -602,6 +625,7 @@ public:
     size_t zones_closed() const { return zone_closed_; }
     size_t zone_actors() const { return zone_actors_.size(); }
     size_t zone_ops_pending() const { return zone_ops_.size(); }
+    uint64_t summoned_pet() const { return pet_actor_; }
     size_t ability_updates_sent() const { return ability_updates_; }
     size_t ability_ends_sent() const { return ability_ends_; }
     /// ClientEndAbility calls waiting for room in the connection.
@@ -914,6 +938,12 @@ private:
     };
 
     bool allocate_channels(const Connection& conn);
+    void on_chat(Connection& conn, const protocol::repl::ClientRpc& rpc, Clock::time_point now);
+    int64_t account_id_ = 0;
+    int gm_level_ = 0;
+    bool gm_enabled_ = false;
+    uint64_t gm_panel_revision_ = 0;
+    void run_chat(Connection& conn);
     void pump(Connection& conn);
     Outcome send(Connection& conn, bootstrap::Send& send);
     void queue(const char* what, std::function<std::optional<bootstrap::Send>(bootstrap::PlayerBootstrap&)> build,
@@ -1039,12 +1069,18 @@ private:
     double ability_seconds(Clock::time_point now) const;
     /// `on_mount`: the trigger came on the mount's AbilityComponent (the controlled actor's while the player rides), not the pawn's.
     void on_ability_trigger(Connection& conn, const protocol::repl::ClientRpc& rpc, const InBunch& bunch, Clock::time_point now, bool on_mount = false);
+    bool prepare_consumable(Connection& conn, int64_t ability, int32_t instance, int slot, uint32_t location,
+                            const protocol::repl::ItemInstance& claimed, TriggerInfo& info, Clock::time_point now);
     void on_ability_cancel(Connection& conn, const protocol::repl::ClientRpc& rpc, Clock::time_point now);
     void on_branch_request(Connection& conn, const protocol::repl::ClientRpc& rpc, Clock::time_point now);
     void on_hit_request(Connection& conn, const protocol::repl::ClientRpc& rpc, Clock::time_point now);
     void on_ability_end(Connection& conn, const protocol::repl::ClientRpc& rpc, Clock::time_point now);
     /// Advances the runtime to `now` and sends what it produced.
     void run_abilities(Connection& conn, Clock::time_point now);
+    void run_pets(Connection& conn, Clock::time_point now);
+    void clear_pet();
+    void dismiss_pet(Clock::time_point now);
+    void on_pet_command(Connection& conn, const protocol::repl::ClientRpc& rpc, Clock::time_point now);
     /// Applies the runtimes' events to the pawn's state and queues the ClientEndAbility calls: A7's, then the generic runtime's.
     void take_ability_events();
     /// Plan D2: the numbers the formulas give A7's abilities for the ranks the character holds (Sprint's speed, the Stamina regeneration).
@@ -1159,6 +1195,11 @@ private:
     void on_set_map_marker(Connection& conn, const protocol::repl::ClientRpc& rpc, Clock::time_point now);
     /// A fresh instance guid no item of the inventory has (32 lowercase hex digits).
     std::string fresh_guid();
+    /// Takes a price in Glint (`cost` Glint T1) out of the bags, with any of its kinds and with change: `paid` holds the Remove events and then the Adds of the change.  False with `why` when it
+    /// cannot be paid; the caller keeps a copy of the bags and puts it back then, as on any later failure.
+    bool pay_glint(int64_t cost, items::Outcome& paid, std::string& why);
+    /// What the bags hold of Glint, in Glint T1.
+    int64_t glint_held() const;
     /// Tells the client what an applied request did (the events, then the visible gear) and marks the inventory dirty.
     void apply_outcome(Connection& conn, const items::Outcome& outcome, const char* what);
     /// Crates, slice 1: note_cargo_crate() looks at an applied outcome and calls construction_crate_equipped() (the quests' input, declared with the quest functions above) when a
@@ -1397,11 +1438,14 @@ private:
 // [C O A - C Y B]
 
     bootstrap::PlayerBootstrap pb_;
+    std::unique_ptr<PlayerPresence> presence_;
     std::string character_id_;
     MoveChecker checker_;
     GoodPosition saved_;                 // what was loaded, then what was last handed to the sink
     GoodPosition loaded_;                // what the record held: finish() compares with this, not with a hand-over the saver may have lost
     PositionSink* sink_;
+    std::map<std::string, bool> auto_attack_settings_, auto_attack_updates_;
+    bool combat_settings_initialized_ = false;
     std::chrono::seconds save_interval_;
     const content::AbilityRules* ability_rules_;   // plan A7: PlayerWorld's, null in a test that wants no abilities
     items::Inventory inventory_;                   // plan B2
@@ -1415,6 +1459,10 @@ private:
     size_t stat_updates_ = 0, stat_items_changed_ = 0, stat_updates_failed_ = 0, stat_logged_ = 0;
     // plan D1
     const PlayerWorld*   world_ = nullptr;           // the content (item uses, the level curve, the auto grants); null in a test without one
+    std::shared_ptr<chat::Room> chat_room_;
+    std::shared_ptr<chat::Peer> chat_peer_;
+    RequestBudget chat_budget_{4, std::chrono::milliseconds(750)};
+    size_t chat_logged_ = 0;
     int                  class_id_ = 0;              // ECharacterClass, as the session plays it (a class scroll changes it)
     leveling::Progress   progress_;
     bool                 progress_changed_ = false;  // at all this session
@@ -1501,6 +1549,7 @@ private:
     Clock::time_point            origin_{};                 // the session's clock 0 (the first tick or request)
     bool                         origin_set_ = false;
     size_t uses_applied_ = 0, uses_refused_ = 0, levels_gained_ = 0, progress_handed_over_ = 0;
+    std::deque<items::Outcome> pending_consumables_;
     size_t use_logged_ = 0, use_refused_logged_ = 0;
     int64_t next_passive_effect_id_ = kFirstPassiveEffectId;
     RequestBudget item_budget_{kItemBurst, kItemInterval};
@@ -1525,6 +1574,11 @@ private:
     };
     std::map<int64_t, ZoneActor>   zone_actors_;               // by the runtime's zone instance id
     std::deque<bootstrap::ZoneOp>  zone_ops_;                  // opens, fades and closes not done yet, in order
+    std::map<int64_t, int64_t>     pet_effects_;               // effect instance -> summon effect record
+    uint64_t                       pet_actor_ = 0;
+    int64_t                        pet_effect_ = -1;
+    bool                           pet_dirty_ = false, pet_follow_ = true;
+    double                         pet_follow_at_ = 0;
     std::optional<protocol::emit::FIntrepidNetworkGUID> pawn_mesh_;   // the pawn's CharacterMesh0 the zones' actors attach to: one guid for the session
     uint64_t                       zone_random_ = 0;
     size_t                         zone_opened_ = 0, zone_closed_ = 0, zone_logged_ = 0;

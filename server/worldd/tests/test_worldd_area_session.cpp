@@ -270,8 +270,8 @@ struct Harness {
     explicit Harness(svc::Character r = cyb_record()) : record(std::move(r)) { fx.world->set_position_sink(&sink); }
     virtual ~Harness() = default;
     /// The derived harness fills the registry, then joins (a base constructor cannot call the derived populate()).
-    void start() {
-        s = PlayerSession::join(conn, *fx.world, record, identity(), world_time_at(t), error);
+    void start(PlayerWorld* shared = nullptr) {
+        s = PlayerSession::join(conn, shared ? *shared : *fx.world, record, identity(), world_time_at(t), error);
         if (!s) {
             std::printf("  [FAIL] the session does not join: %s\n", error.c_str());
             std::exit(2);
@@ -954,12 +954,21 @@ static void test_crowd_moving() {
         std::printf("  [skip] %s: %s (tools/mapc: mapc build)\n", nav_path.c_str(), err.c_str());
         return;
     }
+    // Chunked navigation opens with an empty tile window. Populate this stationary
+    // player's window before adding the crowd, as world startup does; otherwise
+    // every NPC waits for ground that this standalone fixture never pumps.
+    const bool ground_ready = nav->load_around(kCx, kCy, nav::AreaNav::kLoadRadius);
+    CHECK(ground_ready, "the player's navigation window loads before the walking crowd starts");
+    if (!ground_ready) {
+        for (const std::string& error : nav->take_load_errors()) std::printf("  ground: %s\n", error.c_str());
+        return;
+    }
     CrowdHarness h(300);
     npc::NpcWorld npcs(h.fx.world->registry(), nav.get());
     std::vector<uint64_t> ids;
     h.fx.world->registry().for_each([&](const world::WorldActor& a) { ids.push_back(a.id); });
     std::sort(ids.begin(), ids.end());
-    size_t added = 0;
+    size_t added = 0, grounded = 0, pending_ground = 0;
     for (const uint64_t id : ids) {
         npc::NpcMotionSetup setup;
         setup.ambient = npc::Ambient::Wander;
@@ -969,8 +978,13 @@ static void test_crowd_moving() {
         setup.wander_max = 2000.0;
         setup.wander_delay = 1.0;
         setup.wander_delay_deviation = 0.5;
-        if (npcs.add(id, setup)) ++added;
+        bool found = false, pending = false;
+        if (npcs.add(id, setup, &found, &pending)) ++added;
+        if (found) ++grounded;
+        if (pending) ++pending_ground;
     }
+    CHECK(pending_ground == 0, "no crowd NPC waits for an unloaded ground chunk");
+    CHECK(grounded > 100, "the walking crowd has walkable ground for more than 100 NPCs");
     h.before_tick = [&](Clock::time_point t) {
         const double sec = std::chrono::duration<double>(t - t0).count();
         npcs.note_player(1, kCx, kCy, sec);
@@ -1340,11 +1354,13 @@ static BunchWriter dialogue_choice(const repl::DialogueResponse& response) {
 
 #include "dialogue_session_tests.inc"
 #include "quest_session_tests.inc"
+#include "player_presence_tests.inc"
 
 int main() {
     spdlog::set_level(spdlog::level::off);
     test_view();
     test_removed_actor();
+    test_player_presence();
     test_vendor_flow();
     test_vendor_tax_table();
     test_vendor_refusals();

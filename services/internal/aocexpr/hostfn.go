@@ -90,6 +90,7 @@ const (
 	HostItemRarity        = 182 // GetItemRarity(): the EItemRarity ordinal of the harvest's item (Common 0 ... Artifact 6)
 	HostSourceCertTier    = 183 // GetSourceCertificationTier(): the CertificationTier of the interaction that is harvested (Novice 0 ... GrandMaster 4)
 	HostGatherBaseSecs    = 184 // GetGatheringInteractionBaseDuration(): the BaseGatheringDuration of the interaction, in seconds
+	HostActorClass        = 185 // GetPrimaryArchetype(actor): read the current VM actor's class ordinal
 	// HostGatherFirst and HostGatherLast bound the gathering reads (the answer of one is a quality, a tier or a rating: the numbers it is given are not added to it).
 	HostGatherFirst = HostArtisanStat
 	HostGatherLast  = HostGatherBaseSecs

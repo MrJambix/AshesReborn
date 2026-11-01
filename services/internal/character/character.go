@@ -81,6 +81,8 @@ type New struct {
 	AppearanceJSON string
 	CreateInfo     []byte
 	Level          int32
+	// Position is where the character first appears: its starting zone's place, or nil for worldd's default spawn.
+	Position *Position
 	// Items are the character's first items, its class's starting kit (plan B2), stored in the same transaction as the
 	// character: either both exist or neither.
 	Items []Item
@@ -171,6 +173,14 @@ func (s *Store) Create(ctx context.Context, n New) (Character, error) {
 	if err := ValidateItems(n.Items); err != nil {
 		return Character{}, err
 	}
+	var x, y, z *float64
+	var yaw *float32
+	if p := n.Position; p != nil {
+		if !finite(p.X, p.Y, p.Z, float64(p.Yaw)) {
+			return Character{}, fmt.Errorf("%w: position must be finite", ErrInvalid)
+		}
+		x, y, z, yaw = &p.X, &p.Y, &p.Z, &p.Yaw
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Character{}, err
@@ -196,11 +206,11 @@ func (s *Store) Create(ctx context.Context, n New) (Character, error) {
 	}
 	row := tx.QueryRow(ctx, `
 		INSERT INTO characters (id, account_id, name, race, gender, class_id, archetype_id, class_name,
-		                        appearance, create_info, level, gm_starter_set_granted_at, gm_starter_mounts_granted_at)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6::int, 0), $7, $8, $9::jsonb, $10, $11, CASE WHEN $12 THEN now() ELSE NULL END, CASE WHEN $12 THEN now() ELSE NULL END)
+		                        appearance, create_info, level, gm_starter_set_granted_at, gm_starter_mounts_granted_at, pos_x, pos_y, pos_z, yaw)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6::int, 0), $7, $8, $9::jsonb, $10, $11, CASE WHEN $12 THEN now() ELSE NULL END, CASE WHEN $12 THEN now() ELSE NULL END, $13, $14, $15, $16)
 		RETURNING `+columns,
 		n.ID, n.AccountID, n.Name, n.RaceID, n.GenderID, n.ClassID, n.ArchetypeID, n.ClassName,
-		n.AppearanceJSON, n.CreateInfo, n.Level, n.GMStarterSetGranted)
+		n.AppearanceJSON, n.CreateInfo, n.Level, n.GMStarterSetGranted, x, y, z, yaw)
 	c, err := scan(row)
 	if err == nil {
 		if err = insertItems(ctx, tx, n.ID, n.Items); err != nil {

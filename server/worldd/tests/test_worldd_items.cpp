@@ -33,6 +33,7 @@
 #include "world_stats.h"
 #include "cyb_appearance.h"
 #include "items/acquired.h"
+#include "items/currency.h"
 #include "items/inventory.h"
 #include "protocol/repl/item_codec.h"
 #include "protocol/repl/rep_block.h"
@@ -187,6 +188,61 @@ static bool unchanged_by(const Inv& before, const Inv& after) { return before ==
 
 // ---- guids and times ----------------------------------------------------------------------------------------------------------
 // [C O A x C.Y.B]
+
+static void test_currency_payment() {
+    std::printf("a price paid in the kinds of a tier, with change\n");
+    items::CurrencyTier tier;
+    int64_t value = 1;
+    for (int k = 0; k < 6; ++k) {
+        items::CurrencyKind kind;
+        kind.item = 100 + k;
+        kind.ord = k;
+        kind.rate = 10;
+        kind.value = value;
+        tier.kinds.push_back(kind);
+        value *= 10;
+    }
+    const auto paid = [&](std::vector<int64_t> held, int64_t cost) { return items::CurrencyTable::pay(tier, held, cost); };
+    const auto is = [](const std::vector<std::pair<const items::CurrencyKind*, int64_t>>& got, std::vector<std::pair<int, int64_t>> want) {
+        if (got.size() != want.size()) return false;
+        for (size_t i = 0; i < got.size(); ++i) {
+            if (got[i].first->ord != want[i].first || got[i].second != want[i].second) return false;
+        }
+        return true;
+    };
+
+    auto p = paid({9, 0, 0, 0, 0, 0}, 7);
+    CHECK(p.ok && is(p.take, {{0, 7}}) && p.change.empty(), "the kind of the price alone: no change");
+    p = paid({0, 1, 0, 0, 0, 0}, 7);
+    CHECK(p.ok && is(p.take, {{1, 1}}) && is(p.change, {{0, 3}}), "a Dim for a price of 7 Dull: 3 Dull back");
+    p = paid({3, 1, 0, 0, 0, 0}, 7);
+    CHECK(p.ok && is(p.take, {{0, 3}, {1, 1}}) && is(p.change, {{0, 6}}), "the Dull go first, then a Dim breaks for the 4 still owed");
+    p = paid({0, 0, 0, 0, 0, 1}, 1);
+    CHECK(p.ok && is(p.take, {{5, 1}}) && is(p.change, {{4, 9}, {3, 9}, {2, 9}, {1, 9}, {0, 9}}), "a Radiant for one Dull: the change comes in every kind below it");
+    p = paid({5, 3, 0, 0, 0, 0}, 25);
+    CHECK(p.ok && is(p.take, {{0, 5}, {1, 2}}) && p.change.empty(), "kinds that add up to the price give no change");
+    p = paid({0, 0, 1, 2, 0, 0}, 1050);
+    CHECK(p.ok && is(p.take, {{2, 1}, {3, 1}}) && is(p.change, {{1, 5}}), "the debt breaks the smallest kind with one left");
+    CHECK(!paid({9, 0, 0, 0, 0, 0}, 10).ok, "short by one: refused");
+    CHECK(!paid({0, 0, 0, 0, 0, 0}, 1).ok && !paid({1, 0, 0, 0, 0, 0}, 0).ok, "nothing held, or no price: refused");
+    CHECK(!paid({1, 1}, 1).ok, "a list that is not the tier's kinds: refused");
+
+    // whatever the bags hold, the value that leaves less the value that comes back is the price
+    for (int64_t dull = 0; dull < 25; dull += 3) {
+        for (int64_t dim = 0; dim < 5; ++dim) {
+            for (int64_t glowing = 0; glowing < 3; ++glowing) {
+                const int64_t held = dull + dim * 10 + glowing * 100;
+                for (int64_t cost = 1; cost <= held + 1; cost += 7) {
+                    const auto r = paid({dull, dim, glowing, 0, 0, 0}, cost);
+                    int64_t out = 0;
+                    for (const auto& [kind, n] : r.take) out += kind->value * n;
+                    for (const auto& [kind, n] : r.change) out -= kind->value * n;
+                    CHECK(r.ok == (cost <= held) && (!r.ok || out == cost), "the payment comes to the price");
+                }
+            }
+        }
+    }
+}
 
 static void test_guids_and_ticks() {
     std::printf("guids and times as the wire has them\n");
@@ -1835,6 +1891,7 @@ static void test_acquired_popup() {
 }
 
 int main() {
+    test_currency_payment();
     test_guids_and_ticks();
     test_from_items();
     test_equip_and_unequip();

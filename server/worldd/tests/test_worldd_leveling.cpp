@@ -21,6 +21,7 @@
 #include "content_db_fixture.h"
 #include "session/item_use.h"
 #include "session/leveling.h"
+#include "session/reward_rates.h"
 #include "stats_fixture.h"
 
 #include <sqlite3.h>
@@ -370,6 +371,15 @@ static void test_real() {
 }
 
 int main() {
+    using aoc::worldd::rates::experience;
+    CHECK(experience(125, 5.0) == 625, "five-times deployment XP scales newly earned rewards");
+    CHECK(experience(125, 1.0) == 125 && experience(0, 5.0) == 0, "normal rates and empty rewards keep their values");
+    CHECK(experience(125, 0.0) == 0 && experience(3, 1.5) == 5, "zero and fractional testing rates are well-defined");
+    CHECK(experience(-7, 5.0) == -7, "an XP penalty is not increased by the reward rate");
+    CHECK(experience(std::numeric_limits<int64_t>::max(), 5.0) == std::numeric_limits<int64_t>::max(), "large scaled rewards saturate without overflowing");
+    CHECK(experience(std::numeric_limits<int64_t>::max() - 1, 1.0) == std::numeric_limits<int64_t>::max() - 1, "normal rates preserve large XP rewards exactly");
+    CHECK(!aoc::worldd::rates::valid(std::numeric_limits<double>::infinity()) &&
+          !aoc::worldd::rates::valid(std::numeric_limits<double>::quiet_NaN()), "non-finite deployment rates are refused");
     const fs::path dir = cf::make_temp_dir("aoc_worldd_leveling_test_");
     {
         auto db = open_fixture(dir, "fixture.db");

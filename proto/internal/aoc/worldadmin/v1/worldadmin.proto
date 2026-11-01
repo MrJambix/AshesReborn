@@ -19,6 +19,9 @@ option go_package = "aocrop/services/gen/aoc/worldadmin/v1;worldadminv1";
 // that is not known; InvalidArgument for input worldd refuses (a speed outside its bounds, a point with no ground height and no z,
 // a number that is not finite), with its reason; FailedPrecondition for a character that cannot be moved now (dead).
 service WorldAdminService {
+  // Authenticated overlay bridge. account_id comes from the HTTPS login token,
+  // and worldd independently checks the joined session's account grant and mode.
+  rpc AccountCommand(AccountCommandRequest) returns (AccountCommandResponse);
   // Every player in the world now, in the order they joined.
   rpc ListPlayers(ListPlayersRequest) returns (ListPlayersResponse);
   // The places Teleport takes by name: every city node (by its record name, the same without Verra_, or its display name) and
@@ -87,6 +90,24 @@ service WorldAdminService {
   // Puts a living creature at a point at once. It stands there, and its leash and its walk home are centred on the point from now on, so a fight leashes it back to the point and not
   // to where it came from. Its spawn point, where it is made again after a death, stays its own. With no z the creature stands on the ground under the point.
   rpc MoveNpc(MoveNpcRequest) returns (MoveNpcResponse);
+}
+
+message AccountCommandRequest {
+  int64 account_id = 1;
+  string command = 2; // empty: inspect the account's GM session
+}
+message GmCommandSpec {
+  string name = 1;
+  string category = 2;
+  string arguments = 3; // whitespace-separated names; ? suffix means optional
+}
+message AccountCommandResponse {
+  bool enabled = 1;
+  string character = 2;
+  int32 level = 3;
+  uint64 panel_revision = 4;
+  string message = 5;
+  repeated GmCommandSpec commands = 6;
 }
 
 message Position {

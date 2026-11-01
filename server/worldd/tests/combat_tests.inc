@@ -9,6 +9,18 @@ namespace repl = ::aoc::protocol::repl;
 
 // ---- the hit rules ------------------------------------------------------------------------------------------------------------------
 
+void test_session_dice_seed() {
+    std::printf("the dice of a session\n");
+    using combat::session_dice_seed;
+    CHECK(session_dice_seed(0, 3) == 3 * 7919u + 1u, "a test's world (seed 0) keeps the plain function of the player id");
+    CHECK(session_dice_seed(11, 3) == session_dice_seed(11, 3), "the same run seed and player repeat their rolls (--combat-seed)");
+    CHECK(session_dice_seed(11, 3) != session_dice_seed(12, 3), "another start rolls another sequence for the same player");
+    CHECK(session_dice_seed(11, 3) != session_dice_seed(11, 4), "two players of one run do not share a sequence");
+    bool none_zero = true;
+    for (uint64_t run = 1; run < 2000; ++run) none_zero = none_zero && session_dice_seed(run, run * 3) != 0;
+    CHECK(none_zero, "a seed is never 0");
+}
+
 void test_aspect() {
     std::printf("the element and aspect of a hit\n");
     using combat::aspect_of;
@@ -168,6 +180,65 @@ void test_hit_rules(Fixture& f) {
 // C O A.C.Y.B
 
 // ---- the fight ---------------------------------------------------------------------------------------------------------------------
+
+void test_pack(Fixture& f) {
+    std::printf("a pack: creatures next to one that begins a fight join it\n");
+    Rig rig(4, 20, {});
+    CHECKF(rig.ok(), "the rig: %s", rig.problem.c_str());
+    if (!rig.ok()) return;
+    std::string wolf_path;
+    for (const auto& [path, row] : f.motion.rows()) {
+        if (path.find("/Beast/Canine/Wolf.Default__Wolf_C") != std::string::npos) wolf_path = path;
+    }
+    if (wolf_path.empty()) return;
+    const auto fighting = [](const std::optional<npc::ai::State>& st) { return st && (*st == npc::ai::State::Chase || *st == npc::ai::State::Attack); };
+
+    for (const bool linked : {true, false}) {
+        combat_rig::World w;
+        CHECKF(w.problem.empty() && w.captured, "the world: %s", w.problem.c_str());
+        if (!w.problem.empty()) return;
+        combat::NpcStatBook book(*f.ctx->bundle, *f.ctx->gear);
+        combat::CombatWorldConfig cfg;
+        cfg.seed = 5;
+        cfg.default_link_cm = linked ? 600.0 : 0.0;
+        combat::CombatWorld world(w.registry, w.npcs.get(), &navfix::shared_nav(), *f.data, *f.catalog, book, f.motion, cfg);
+        // only the first would notice the player by itself; the second stands 4 m from it, the third 4 m further on (6 m from the second, 8 m from the first)
+        const uint64_t first = w.spawn(wolf_path, 0, 0, 10, 900);
+        const uint64_t second = w.spawn(wolf_path, -400, 0, 10, 1);
+        const uint64_t third = w.spawn(wolf_path, -800, 0, 10, 1);
+        CHECK(first != 0 && second != 0 && third != 0, "three Wolves stand in a row");
+        if (first == 0 || second == 0 || third == 0) return;
+        combat_rig::FakePlayer player(rig, 77, {5000, 0, 1098});
+        world.add_player(&player);
+        std::vector<combat::DeathEvent> deaths;
+        world.set_death_hook([&](const combat::DeathEvent& e) { deaths.push_back(e); });
+        double now = 0;
+        const double step = 1.0 / 15.0;
+        auto run = [&](double seconds) {
+            const double end = now + seconds;
+            while (now < end) {
+                now += step;
+                w.npcs->note_player(77, player.rig_fighter().position().x, player.rig_fighter().position().y, now);
+                w.npcs->tick(now);
+                world.tick(now);
+            }
+        };
+        run(0.6);
+        CHECK(!fighting(world.ai_state(first)) && !fighting(world.ai_state(second)), "the player is far away: the pack stands");
+        player.rig_fighter().move_to({600, 0, 1098});
+        run(0.6);
+        CHECK(fighting(world.ai_state(first)), "the first Wolf notices the player");
+        if (!linked) {
+            CHECK(!fighting(world.ai_state(second)), "with no link radius the Wolf next to it does not join");
+            continue;
+        }
+        CHECK(fighting(world.ai_state(second)), "the Wolf within its link radius joins, though it would not have noticed the player");
+        CHECK(!fighting(world.ai_state(third)), "the one beyond the radius does not: a Wolf that joined calls nobody in");
+        std::string why;
+        CHECK(world.gm_kill(second, now, why), "the Wolf that joined can be killed");
+        CHECK(deaths.size() == 1 && deaths[0].attackers.empty(), "joining a fight is no attack on it: the player that never hit it has no claim on its loot");
+    }
+}
 
 void test_fight(Fixture& f) {
     std::printf("a fight: aggro, chase, attack, leash, reset, death\n");

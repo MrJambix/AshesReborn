@@ -1516,6 +1516,9 @@ public:
 
     /// Plan D1: how an item is used. nullopt with `error` empty for an item that is not used; with `error` set when a query failed.
     std::optional<ItemUse> item_use(int64_t item_guid, std::string& error) const;
+    /// The ability configured by an item's CastAbility activation (contentc 38).
+    /// No row means this item grants no cast; the client never chooses this mapping.
+    std::optional<int64_t> item_cast(int64_t item_guid, std::string& error) const;
     /// Plan D1: an ActionResponse; nullopt with `error` empty when there is none.
     std::optional<ActionResponse> action_response(int64_t guid, std::string& error) const;
     /// Plan D1: a RewardTable; nullopt with `error` empty when there is none. A row of another storage class than its column's is an error.

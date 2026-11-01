@@ -142,7 +142,7 @@ func TestLobby(t *testing.T) {
 		t.Errorf("CheckGameVersionReply = %v, ftag %q", &ver, ftag(m))
 	}
 
-	wantWorld := &icsxclient.WorldInfo{WorldId: worldID, WorldDisplayName: "[EMU] Local Server", Available: true, CharacterCount: 2}
+	wantWorld := &icsxclient.WorldInfo{WorldId: worldID, WorldDisplayName: "Ashes Reborn", Available: true, CharacterCount: 2}
 	tr = h.send("ics_xclient.GetWorldsRequest", &icsxclient.GetWorldsRequest{}, "")
 	var worlds icsxclient.GetWorldsReply
 	m = h.expect("ics_xclient.GetWorldsReply", success, tr, &worlds)

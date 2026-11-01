@@ -388,6 +388,47 @@ static void test_move() {
 }
 // [C.Y.B ~ CoA]
 
+static void test_join_and_split() {
+    std::printf("stacks: joining two and splitting one\n");
+    auto inv = build(with(worn_kit(true), {make_item(R0, 0, fr::kCoal, 1, 15), make_item(R0, 1, fr::kCoal, 2, 8), make_item(R0, 2, fr::kOak, 3, 4), make_item(R0, 3, fr::kCoal, 4, 20)}));
+    const std::string a = guid_n(1), b = guid_n(2);
+    std::vector<svc::InventoryItem> snapshot = inv->items();
+    const auto refused = [&](const items::Outcome& r, const char* what) {
+        const bool ok = !r.ok && r.events.empty() && !r.refusal.empty() && inv->items() == snapshot;
+        if (!ok) std::printf("    (%s: ok %d, refusal '%s')\n", what, r.ok ? 1 : 0, r.refusal.c_str());
+        return ok;
+    };
+    CHECK(refused(inv->fill(R0, 1, 8, b, R0, 2, *g_catalog), "another item"), "coal onto oak does not join");
+    CHECK(refused(inv->fill(R0, 1, 8, b, R0, 3, *g_catalog), "a full stack"), "a full stack takes no more");
+    CHECK(refused(inv->fill(R0, 1, 8, b, R0, 1, *g_catalog), "itself"), "a stack does not join itself");
+    CHECK(refused(inv->fill(R0, 1, 9, b, R0, 0, *g_catalog), "too many"), "more than the stack holds: refused");
+    CHECK(refused(inv->fill(R0, 1, 0, b, R0, 0, *g_catalog), "none"), "none of it: refused");
+    CHECK(refused(inv->fill(R0, 1, 8, guid_n(77), R0, 0, *g_catalog), "guid"), "a guid that is not the stack's: refused");
+    CHECK(refused(inv->fill(R0, 1, 8, b, R0, 10, *g_catalog), "an empty slot"), "no stack in the target slot: refused");
+    CHECK(refused(inv->fill(R0, 1, 8, b, Bag, 0, *g_catalog), "the Backpack"), "a material and the Backpack: refused");
+
+    // 8 onto 15, whose room is 5: 5 go, 3 stay
+    auto o = inv->fill(R0, 1, 8, b, R0, 0, *g_catalog);
+    using SE = aoc::protocol::repl::StorageEventType;
+    CHECK(o.ok && o.events.size() == 3 && o.events[0].type == SE::Remove && o.events[0].slot == 1 && o.events[0].count == 5 && o.events[1].type == SE::Remove && o.events[1].slot == 0 && o.events[2].type == SE::Add &&
+              o.events[2].slot == 0 && o.events[2].item.quantity == 20 && o.events[2].item.instance_guid == a && inv->at(R0, 0)->quantity == 20 && inv->at(R0, 1)->quantity == 3,
+          "the target fills to 20 and the 3 that do not fit stay in their stack");
+    // a part of a stack, then all of it
+    snapshot = inv->items();
+    const std::string fresh = guid_n(50);
+    CHECK(refused(inv->split(R0, 1, 3, b, R0, 10, fresh, *g_catalog), "all of it"), "a split of the whole stack is a move: refused");
+    CHECK(refused(inv->split(R0, 1, 0, b, R0, 10, fresh, *g_catalog), "none"), "a split of none: refused");
+    CHECK(refused(inv->split(R0, 1, 2, b, R0, 2, fresh, *g_catalog), "occupied"), "onto another item: refused");
+    CHECK(refused(inv->split(R0, 1, 2, b, R0, 10, a, *g_catalog), "a used guid"), "a guid the inventory holds: refused");
+    CHECK(refused(inv->split(R0, 1, 2, b, R0, 99, fresh, *g_catalog), "past the grid"), "past the grid: refused");
+    o = inv->split(R0, 1, 2, b, R0, 10, fresh, *g_catalog);
+    CHECK(o.ok && o.events.size() == 2 && o.events[0].type == SE::Remove && o.events[0].count == 2 && o.events[1].type == SE::Add && o.events[1].slot == 10 && o.events[1].item.instance_guid == fresh &&
+              inv->at(R0, 1)->quantity == 1 && inv->at(R0, 10)->quantity == 2 && inv->count_of(fr::kCoal) == 43,
+          "2 of the 3 become a stack of their own, and no coal is made or lost");
+    o = inv->fill(R0, 10, 2, fresh, R0, 1, *g_catalog);
+    CHECK(o.ok && o.events[0].count == 0 && !inv->at(R0, 10) && inv->at(R0, 1)->quantity == 3 && inv->count_of(fr::kCoal) == 43, "joining a whole stack empties its slot");
+}
+
 static void test_bags_stay() {
     std::printf("bags: a bag is worn, replaced and taken off during the session unless its container holds items\n");
     auto inv = build(with(worn_kit(), {make_item(Bag, 0, fr::kBagMining, 1), make_item(R0, 0, fr::kOak, 2, 4)}));
@@ -619,6 +660,7 @@ int main() {
         test_merge();
         test_full();
         test_move();
+    test_join_and_split();
         test_bags_stay();
         test_consume();
         test_repair();

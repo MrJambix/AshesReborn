@@ -96,8 +96,10 @@ CharacterResult GrpcServices::get_character(const std::string& id) {
     r.status = map_grpc_status(stubs_->character->GetCharacter(&ctx, req, &resp));
     if (r.status != CallStatus::Ok) return r;
     const auto& c = resp.character();
+    for (const auto& [key, value] : c.auto_attack_settings()) r.character.auto_attack_settings[key] = value;
     r.character.id = c.id();
     r.character.account_id = c.account_id();
+    r.character.gm_level = c.gm_level();
     r.character.name = c.name();
     r.character.race_id = c.race_id();
     r.character.gender_id = c.gender_id();
@@ -280,6 +282,7 @@ CallStatus GrpcServices::save_progress(const std::string& id, const Progress& pr
     for (const int32_t n : progress.attunements) req.add_attunements(n);
     req.set_home_attunement(progress.home_attunement);
     req.set_home_last_used_ms(progress.home_last_used_ms);
+    for (const auto& [key, value] : progress.auto_attack_settings) (*req.mutable_auto_attack_settings())[key] = value;
     characterv1::SaveProgressResponse resp;
     return map_grpc_status(stubs_->character->SaveProgress(&ctx, req, &resp));
 }

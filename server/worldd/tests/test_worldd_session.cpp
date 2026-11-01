@@ -826,8 +826,8 @@ struct Harness {
 
     explicit Harness(bs::GameStateMode mode = bs::GameStateMode::Tier2, const std::string& real_db = "") : fx(mode, true, real_db) {}
 
-    bool join(const svc::Character& rec = cyb_record()) {
-        s = PlayerSession::join(conn, *fx.world, rec, identity(), world_time_at(t), error);
+    bool join(const svc::Character& rec = cyb_record(), PlayerWorld* shared_world = nullptr) {
+        s = PlayerSession::join(conn, shared_world ? *shared_world : *fx.world, rec, identity(), world_time_at(t), error);
         return s != nullptr;
     }
     void take(const fake::Received& r) {
@@ -1122,7 +1122,7 @@ static void test_possession_bunch_and_requests() {
         size_t p = (*ob)[0].payload_pos;
         orig = repl::read_rep_block(pc_cls, original.data(), (*ob)[0].payload_pos + (*ob)[0].payload_bits, p);
     }
-    CHECK(echo && orig && echo->values().size() == 9 && pc[0]->reliable && pc[0]->exports.empty(), "the echo is one reliable PlayerController block of nine values");
+    CHECK(echo && orig && echo->values().size() == 14 && pc[0]->reliable && pc[0]->exports.empty(), "the echo is one reliable PlayerController block of nine captured values and five auto attack options");
     if (echo && orig) {
         int equal = 0, party_vfx_differs = 0;
         for (const std::string_view path : kCombatEchoPaths) {
@@ -1816,6 +1816,9 @@ static void test_real_content_db() {
     }
 }
 
+#include "chat_session_tests.inc"
+#include "combat_settings_session_tests.inc"
+
 int main() {
     auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
     logger->set_level(spdlog::level::debug);
@@ -1840,6 +1843,8 @@ int main() {
     test_request_budget();
     test_client_driven_log_lines();
     test_two_players();
+    test_chat();
+    test_auto_attack_settings_persist();
     test_kicked_session_answers_nothing();
     test_unsendable_join();
     test_acks_before_requests();

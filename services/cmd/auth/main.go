@@ -17,13 +17,17 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	authv1 "aocrop/services/gen/aoc/auth/v1"
+	adminv1 "aocrop/services/gen/aoc/worldadmin/v1"
 	"aocrop/services/internal/account"
 	"aocrop/services/internal/authgrpc"
 	"aocrop/services/internal/authhttp"
+	"aocrop/services/internal/character"
 	"aocrop/services/internal/config"
 	"aocrop/services/internal/db"
+	"aocrop/services/internal/gmhttp"
 	"aocrop/services/internal/svcauth"
 )
 
@@ -55,6 +59,14 @@ func run() error {
 		return startupErr(ctx, err)
 	}
 	store := account.NewStore(pool, cfg.TokenTTL)
+	worldConn, err := grpc.NewClient(cfg.WorldAdminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), token.DialOption())
+	if err != nil {
+		return err
+	}
+	defer worldConn.Close()
+	api := http.NewServeMux()
+	api.Handle("/api/v1/gm", gmhttp.Handler(store, character.NewStore(pool), adminv1.NewWorldAdminServiceClient(worldConn)))
+	api.Handle("/", authhttp.Handler(store))
 
 	// Bind both ports before saying "listening", so a taken port fails here.
 	httpLis, err := net.Listen("tcp", cfg.AuthHTTPAddr)
@@ -67,7 +79,7 @@ func run() error {
 		return err
 	}
 	httpSrv := &http.Server{
-		Handler:           authhttp.Handler(store),
+		Handler:           api,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -93,7 +105,7 @@ func run() error {
 			return err
 		}
 		publicSrv = &http.Server{
-			Handler:           authhttp.Limit(authhttp.Handler(store), authhttp.DefaultLimits()),
+			Handler:           authhttp.Limit(api, authhttp.DefaultLimits()),
 			TLSConfig:         &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
 			ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout:       10 * time.Second,

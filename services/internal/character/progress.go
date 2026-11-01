@@ -31,9 +31,10 @@ type Experience struct {
 // Progress is what SaveProgress writes: a zero Level or ClassID leaves that value alone; every Experience replaces the
 // character's row of its leveling type (plan D1, stage 2: and the ranks and the action bar, whole, when asked).
 type Progress struct {
-	Level      int32
-	ClassID    int32
-	Experience []Experience
+	AutoAttackSettings map[string]bool
+	Level              int32
+	ClassID            int32
+	Experience         []Experience
 	// Plan D1, stage 2: with ReplaceSkillRanks the character's bought ranks become exactly SkillRanks (a tree not listed has none left),
 	// with ReplaceActionBar its action bar becomes exactly ActionBar; without them they are left alone.
 	ReplaceSkillRanks bool
@@ -66,6 +67,9 @@ func ValidateLevel(level int32) error {
 
 // Validate says what is wrong with the progress.
 func (p Progress) Validate() error {
+	if err := validateAutoAttackSettings(p.AutoAttackSettings); err != nil {
+		return err
+	}
 	if p.Level < 0 || p.Level > MaxLevel {
 		return fmt.Errorf("%w: level %d is not 1 to %d (0 leaves it)", ErrInvalid, p.Level, MaxLevel)
 	}
@@ -221,6 +225,9 @@ func (s *Store) SaveProgress(ctx context.Context, characterID string, p Progress
 		if err := replaceAttunements(ctx, tx, characterID, p.Attunements); err != nil {
 			return Character{}, itemsError(err)
 		}
+	}
+	if err := saveAutoAttackSettings(ctx, tx, c.AccountID, p.AutoAttackSettings); err != nil {
+		return Character{}, itemsError(err)
 	}
 	return c, tx.Commit(ctx)
 }

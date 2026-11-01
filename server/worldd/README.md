@@ -293,7 +293,7 @@ bunch exported (`mark_exported`), so later chains name those objects without the
 |---|---|
 | PlayerController `ServerAcknowledgePossession` | logged |
 | `ServerRequestClientLoad` | the four storage payloads on the PlayerController (Backpack, Equipment, QuestStorage, resource, holding the character's items), `ClientUpdateGroup` (empty) and the default action bar (pkt#597-607) |
-| `ServerUpdateAccountCombatSettings` | the nine `CharacterInGameSettings.CombatSettings` values of pkt#620 with the request's values, as a PlayerController update (`kCombatEchoPaths`; the other 41 values are not echoed: the class defaults are not known to worldd) |
+| `ServerUpdateAccountCombatSettings` | the nine captured combat settings plus all five auto attack options, as a reliable PlayerController update. Auto attack options are saved per account and restored at login; the first client synchronization cannot overwrite saved options with stale defaults. |
 | pawn `ServerClientIsReadyToPhaseIn` | the phase-in update (`bHidden` 0, `bIsPhasedOut` 0, `bClientIsReadyToPhaseIn` 1), once |
 | `ServerRequestStorageData` | the named container's storage payload, with its items, on the pawn (pkt#773) |
 | pawn `ServerItemUsed` | wears the item in a bag slot or takes off the item in an equipment slot (plan B2, below): the storage events and the gear's update in one packet, or, refused, the Backpack's and the Equipment's payloads |
@@ -484,7 +484,7 @@ changes the character's stats; "Stats" below). **There is no class rule**: the d
 and the record's `bCanEquip` is not one either (the three starter armor pieces of every class have it 0 and are worn), so any character may wear anything content.db lists a slot for.
 
 **Moving** (`ServerRequestStorageEvent` on the PlayerController): a `Move` of a whole stack inside the Backpack to an empty slot is `Remove`, `Add` (both with the character as the instigator); a `Swap` of two whole stacks is `Remove`, `Remove`, `Add`, `Add`. The event's item
-must be the instance in its source slot, and a Swap's target guid and count must be the target slot's. Splitting, stacking, destroying (types Add, Remove and Fill), a move onto an occupied slot that is not a Swap, a partial stack, every storage but the Backpack, a container that is none of the
+must be the instance in its source slot, and a Swap's target guid and count must be the target slot's. A `Fill` joins a stack to one of the same record and quality, as many as its room takes, and a `Move` of part of a stack onto a free slot makes a new stack under a fresh instance guid (both modelled: no capture shows them, `Inventory::fill` and `split`). A move onto an occupied slot that is not a Swap, every storage but the Backpack, a container that is none of the
 character's, two targets or none, and every slot outside 0-69 are refused.
 
 **A refused request changes nothing**: the inventory, the saving flags and the pawn are as they were, and no event is sent. The client is corrected the way it was told at the join, the Backpack's and the Equipment's `ClientReceiveStoragePayload` on the pawn, so a client
@@ -1485,6 +1485,12 @@ every hint was reported again at every matching event, hundreds of times in one 
 with the progress (`SaveProgress` with `replace_completed_ftues`, table `character_completed_ftues`, migration 0015) and is sent back 84 ms later as the whole list (`PlayerBootstrap::set_completed_ftues` and `ftue_update`). The
 list is loaded by `GetCharacter` (with items) and sent with the join. `worldctl tutorials reset <character>` (`WorldAdmin.ResetTutorials`) empties a player's list: the client is told and its hints can start again. The hints the
 server starts itself (a level reached, becoming a citizen) are not sent yet (`Client_ReceiveFTUEToTrigger`).
+
+### Dice, packs and change
+
+- **The dice** (`combat::session_dice_seed`): the combat world's rolls and every session's start from one number drawn at each start (`--combat-seed` / `AOC_COMBAT_SEED` repeats a run), mixed with the player id, so no two runs and no two logins roll alike.
+- **Packs** (`CombatWorld::think`): when a creature begins a fight, creatures of its side within its `AggroProximityLinkRadius` (the senses table's `link_radius`), on the plane and vertically and in line of sight, that start fights by themselves join it. Modelled: the data gives the radius, not who answers. A joiner calls nobody in, and gets threat through the AI only, so `attackers` (who may loot) stays those who fought it.
+- **Paying with change** (`items::CurrencyTable::pay`, `PlayerSession::pay_glint`): a price in Glint takes the smallest kinds first; what is still owed breaks one item of the smallest kind left, and the difference comes back by `break_down`. The Removes come first and the change's Adds follow in the same answer. Modelled: no capture shows it.
 
 ### Glint tiers: a full stack turns into the next kind, and kills pay in kinds (stacking, step 1)
 

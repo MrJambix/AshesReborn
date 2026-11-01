@@ -110,6 +110,10 @@ message Character {
   // Storage clerks, step 0: the items the character keeps in the warehouse (migration 0017), with the items (include_items): the item chunks (the same in every town), the material tabs and
   // the cargo tab of each town it stored in. A character that stored nothing has none.
   repeated WarehouseItem warehouse_items = 30;
+  // Account-wide auto attack options; absent keys retain the client's defaults.
+  map<string, bool> auto_attack_settings = 31;
+  // Server-owned account privilege. 0 player; 3 sole owner. Never accepted on writes.
+  int32 gm_level = 32;
 }
 
 // One item instance in a character's warehouse (storage clerks, step 0, migration 0017). area is "Items" (the item chunks, the same in every town: node_guid 0, container_guid the
@@ -349,6 +353,8 @@ message SaveProgressRequest {
   repeated int32 attunements = 13;
   int32 home_attunement = 14;
   int64 home_last_used_ms = 15;
+  // Patch the owning account's auto attack options. Empty leaves them unchanged.
+  map<string, bool> auto_attack_settings = 16;
 }
 
 message SaveProgressResponse {

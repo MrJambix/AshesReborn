@@ -266,7 +266,7 @@ public:
     /// The reply to ServerUpdateAccountCombatSettings (pkt#620): the PlayerController's
     /// CharacterInGameSettings.CombatSettings.* properties the caller extracted from the client's request, as an update
     /// (nothing when none changed). Reliable, as phase_in().
-    std::optional<Send> combat_settings_echo(std::span<const PropertyValue> values);
+    std::optional<Send> combat_settings_echo(std::span<const PropertyValue> values, bool restore_auto_attack = false);
 
     /// ClientReceiveStoragePayload of an empty storage, on the pawn (the first state, and the reply to
     /// ServerRequestStorageData) or on the PlayerController (the reply to ServerRequestClientLoad). `target` is
@@ -312,8 +312,9 @@ public:
     std::optional<Send> interact_done(const emit::FIntrepidNetworkGUID& component, const emit::FIntrepidNetworkGUID& actor);
     /// The pawn's ClientNotifyHomeAttune(shrine) (only when `result`) and SendClientHomeAttuneResult(place, result), in one send.
     std::optional<Send> home_attuned(const emit::FIntrepidNetworkGUID& shrine, int64_t place, bool result);
-    /// The PlayerController's ClientReceiveChatMessages with one line.
-    std::optional<Send> chat_line(const std::string& text, int category);
+    /// The PlayerController's ClientReceiveChatMessages with one line. An empty
+    /// `from` is a system notification; player chat supplies the session's name.
+    std::optional<Send> chat_line(const std::string& text, int category, const std::string& from = {});
 
     /// Plan E1: ClientOpenVendor on the PlayerController (reliable): the client opens its window for the VendorDef `merch_set` (the vendor's
     /// stock and prices are the client's own tables'), `vendor` the NPC's actor. nullopt before the pawn's second state or when the RPC does
@@ -537,6 +538,9 @@ public:
     /// UseActionbarSlot 0x6b12700 and CanEverUseActionbarSlot 0x6a91a10 take GetActionbarInstigator 0x6aba180 -> the player character's GetMountablePet): without it the
     /// mount's dash (bank 18) cannot be used, nothing is sent and nothing is said (stage 3 fix 3).  The InteractInfo must exist (ensure_interact_info).  One pawn update.
     std::optional<Send> pawn_mountable_pet(const emit::FIntrepidNetworkGUID& mount);
+    /// The player's summoned combat pet, tracked by its spawning effect instance.
+    /// An empty GUID clears PetArray. Requires ensure_interact_info().
+    std::optional<Send> pawn_combat_pet(const emit::FIntrepidNetworkGUID& pet, int64_t effect_id);
     /// Gathering stage 2 (the fix after the user's test 1): the pawn's InteractInfo.ChannelingData = `data` [R: 1427 packet 67 sets it with the node's wake, packet 674 clears it
     /// 2 ms after the result frame; nine more harvests and a corpse harvest the same].  The client plays the gather animation and shows the bar from it, and sends its own
     /// ServerInterruptChannel when the player moves.  The InteractInfo must exist (ensure_interact_info).  One pawn update; nothing when `data` is what the client holds.
@@ -671,6 +675,8 @@ public:
     /// component the client finds by name and outer: `lingering_mesh_export` is the export that goes with the actor's open.
     std::optional<repl::Actor> lingering_actor_of(const LingeringSpec& spec);
     repl::ExportChain          lingering_mesh_export(const emit::FIntrepidNetworkGUID& pawn_mesh) const;
+    /// Active montage assets needed by a nearby player's public AbilityComponent.
+    std::vector<repl::ExportChain> public_ability_exports() const;
     /// The open of the actor's channel (reliable, Send::effect_actor = its ObjectId). nullopt for an actor that is not added or does not build.
     std::optional<Send> lingering_open(uint64_t actor_id);
     /// bFadingOut = 1, as the retail server sends it 0.6 s before the actor is destroyed (one update, reliable).

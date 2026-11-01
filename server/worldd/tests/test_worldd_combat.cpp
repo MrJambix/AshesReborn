@@ -280,9 +280,11 @@ int main() {
     test_data(f);
     test_npc_stats(f);
     test_captured_npcs(f);
+    test_session_dice_seed();
     test_aspect();
     test_hit_rules(f);
     test_fight(f);
+    test_pack(f);
     test_hostile(f);
     test_player_cast(f);
     test_npc_hits_player(f);

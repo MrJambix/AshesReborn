@@ -62,6 +62,12 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
         auto row = db->effect(g, error);
         if (!row) return std::nullopt;
         d.row = std::move(*row);
+        const auto extra = nlohmann::json::parse(d.row.extra, nullptr, false);
+        if (extra.is_object()) {
+            if (const auto it = extra.find("EffectGroupGuid"); it != extra.end() && it->is_number_integer()) d.group = it->get<int64_t>();
+            if (const auto it = extra.find("EffectGroupLimit"); it != extra.end() && it->is_number_integer()) d.group_limit = it->get<int>();
+            if (const auto it = extra.find("EffectGroupStackType"); it != extra.end() && it->is_string()) d.group_stack_type = it->get<std::string>();
+        }
         if (!db->mods("effect", g, d.mods, error)) return std::nullopt;
         std::vector<content::EffectHitRow> hits;
         if (!db->effect_hits(g, hits, error)) return std::nullopt;

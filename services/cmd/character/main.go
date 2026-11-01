@@ -100,7 +100,11 @@ func run(contentDB string, backfill bool, starterSet bool) error {
 	if starterSet {
 		backfillStarterSets(ctx, store, starter)
 	}
-	srv := newServer(token, store, check, kits, starter)
+	var opts []charactergrpc.Option
+	if starts := loadStarts(contentDB); starts != nil {
+		opts = append(opts, charactergrpc.WithStarts(starts))
+	}
+	srv := newServer(token, store, check, kits, starter, opts...)
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(lis) }()
@@ -121,9 +125,8 @@ func run(contentDB string, backfill bool, starterSet bool) error {
 
 // newServer is the gRPC server the gateway and worldd call. It requires the
 // service token.
-func newServer(token svcauth.Token, store charactergrpc.Store, check charactergrpc.Checker, kits charactergrpc.Kits, starter charactergrpc.StarterSets) *grpc.Server {
+func newServer(token svcauth.Token, store charactergrpc.Store, check charactergrpc.Checker, kits charactergrpc.Kits, starter charactergrpc.StarterSets, opts ...charactergrpc.Option) *grpc.Server {
 	s := grpc.NewServer(token.ServerOptions()...)
-	var opts []charactergrpc.Option
 	if kits != nil {
 		opts = append(opts, charactergrpc.WithKits(kits))
 	}
@@ -182,6 +185,9 @@ func loadContent(path string, starterSet bool) (charactergrpc.Checker, character
 		if err = db.RequireVersion(); err == nil {
 			if rules, err = customization.Load(db); err == nil {
 				kits, err = kit.Load(db)
+				if err == nil {
+					err = kits.EnableWelcomeMount(db)
+				}
 			}
 		}
 		if err == nil && starterSet {
@@ -202,6 +208,23 @@ func loadContent(path string, starterSet bool) (charactergrpc.Checker, character
 	}
 	slog.Info("character creation is checked against content.db, and new characters start with their class's kit", "path", path)
 	return rules, kits, nil, func() { db.Close() }
+}
+
+// loadStarts reads the starting zones' places from the content.db at path; they stay in memory. nil, logged, when they
+// cannot be read: new characters then appear at worldd's default spawn, whichever zone they chose.
+func loadStarts(path string) *kit.Starts {
+	db, err := content.Open(path)
+	if err != nil {
+		slog.Warn("character: new characters appear at the default spawn, whichever starting zone they choose", "path", path, "err", err)
+		return nil
+	}
+	defer db.Close()
+	starts, err := kit.LoadStarts(db)
+	if err != nil {
+		slog.Warn("character: new characters appear at the default spawn, whichever starting zone they choose", "path", path, "err", err)
+		return nil
+	}
+	return starts
 }
 
 // unavailable is the Checker of a service with no usable content.db: it

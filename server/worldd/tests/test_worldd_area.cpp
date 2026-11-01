@@ -712,7 +712,7 @@ static void test_player_world(const content::ContentDb& db) {
         return;
     }
     std::printf("    %s in %s\n", world.area_report()->describe().c_str(), ms_since(t0).c_str());
-    CHECK(world.registry().size() == world.area_report()->total() && world.gm_vendors() && world.gm_vendors()->vendors().size() == 26, "the registry holds what the report counts; the GM catalog is the world's");
+    CHECK(world.registry().size() == world.area_report()->total() && !world.gm_vendors(), "the registry holds what the report counts; the world loads no GM vendors of its own");
     CHECK(world.area().radius_cm == 40000.0 && !world.load_area(small, error), "the area is the world's, and loading it twice is refused");
     std::set<uint64_t> ids;
     bool unique = true;
@@ -830,7 +830,7 @@ static void test_ground(const content::ContentDb& db) {
     });
     std::printf("    %zu NPCs stand on the terrain exactly, %zu elsewhere (a floor, no ground; the most %.0f cm off the terrain)\n", on_terrain, off_terrain, worst);
     CHECK(on_terrain >= npcs * 0.80, "most NPCs stand on the terrain: origin = its height + the half height times the scale (to 1.5 cm)");
-    CHECK(gm_checked == 26 && gm_exact == 26, "all 26 GM vendors stand on the ground (the terrain or a floor) at the login spot");
+    CHECK(gm_checked == 0 && gm_exact == 0, "the public area has no GM vendors: GM supplies come through the command panel");
     // replicated state agrees with the registry's
     size_t rm_bad = 0;
     w->registry().for_each([&](const world::WorldActor& a) {

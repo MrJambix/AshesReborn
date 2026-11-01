@@ -49,6 +49,11 @@ public:
         for (const auto& [name, level] : levels) levels_[lower(name)] = level;
     }
     bool moving() const override { return moving_; }
+    double consumed_item_stat(const RecordRef& ref) const override {
+        const auto it = consumed_.find(ref.guid);
+        return it == consumed_.end() ? 0.0 : it->second;
+    }
+    void set_consumed(const std::map<int64_t, double>& values) { consumed_ = values; }
     double npc_elite_rank() const override { return npc_.elite_rank; }
     double npc_stat_distribution(int i) const override { return i >= 0 && i < 8 ? npc_.dist[static_cast<size_t>(i)] : 0; }
 
@@ -60,6 +65,7 @@ private:
     bool moving_, in_combat_;
     NpcShape npc_;
     std::map<std::string, int> levels_;   // by lower-case name
+    std::map<int64_t, double> consumed_;
 };
 
 }  // namespace
@@ -88,6 +94,7 @@ bool CharacterStats::Evaluation::eval(int64_t program, ExprHost& host, double& o
 }
 
 void CharacterStats::Evaluation::set_profession_levels(const std::map<std::string, int>& levels) { state_->flags.set_levels(levels); }
+void CharacterStats::Evaluation::set_consumed_item_stats(const std::map<int64_t, double>& values) { state_->flags.set_consumed(values); }
 
 double CharacterStats::Evaluation::stat(int64_t guid) const {
     for (const StatOut& s : result_.stats) {

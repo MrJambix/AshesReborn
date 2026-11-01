@@ -297,6 +297,32 @@ func buildProgressionSynthetic(t *testing.T, src *source) (*content.DB, map[stri
 	return db, meta, nil
 }
 
+func TestConsumableItemCastMapping(t *testing.T) {
+	src := progressionSource(t)
+	const item, archetype, ability int64 = 8100000000000000501, 8100000000000000502, 8100000000000000503
+	fields := st{}
+	for key, value := range src.rows["ItemRecordBase"][0].Fields {
+		fields[key] = value
+	}
+	fields["ActivationArchetypeId"] = idv(archetype, content.TypeItemActivationArchetype, "None")
+	fields["ActivationCastId"] = idv(ability, 1841048597116038327, "None")
+	fields["ActivationActionsIds"] = list{}
+	src.rows["ItemRecordBase"] = append(src.rows["ItemRecordBase"], mkRow(item, "Consumable_TestPotion", fields))
+	src.rows["ItemActivationArchetypeRecordBase"] = append(src.rows["ItemActivationArchetypeRecordBase"],
+		mkRow(archetype, "Potion", st{"ActivationAction": "EItemActivationAction::CastAbility", "ConsumeOnUse": true, "Cooldown": int64(0), "DisabledInCombat": false}))
+	db, _, err := buildProgressionSynthetic(t, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.ItemCast(item)
+	if err != nil || got != ability {
+		t.Fatalf("item cast = %d, %v; want %d", got, err, ability)
+	}
+	if _, err := db.ItemCast(synthLevelScroll); err == nil {
+		t.Fatal("an action-response scroll must not authorize an ability cast")
+	}
+}
+
 func TestSyntheticProgression(t *testing.T) {
 	db, meta, err := buildProgressionSynthetic(t, progressionSource(t))
 	if err != nil {

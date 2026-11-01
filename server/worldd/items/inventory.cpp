@@ -964,7 +964,7 @@ Outcome Inventory::move_resource(svc::ItemContainer from, int from_slot, int32_t
     const svc::InventoryItem* item = at(from, from_slot);
     if (!item) return refuse(std::string("no item in ") + container_name(from) + " slot " + std::to_string(from_slot));
     if (!guid_of(guid) || item->instance_guid != guid) return refuse(std::string("the item in ") + container_name(from) + " slot " + std::to_string(from_slot) + " is not the instance the client named");
-    if (count != item->quantity) return refuse("the move names " + std::to_string(count) + " of a stack of " + std::to_string(item->quantity) + " (splitting is not made)");
+    if (count != item->quantity) return refuse("the move names " + std::to_string(count) + " of a stack of " + std::to_string(item->quantity) + " (a part of a stack goes by split)");
     if (from == to && from_slot == to_slot) return refuse("the item is moved onto its own slot");
     const ResourceGrid& g = grid(to);
     if (g.empty()) return refuse(std::string(container_name(to)) + " has no bag: it has no cells");
@@ -1014,7 +1014,7 @@ Outcome Inventory::move(svc::ItemContainer from, int from_slot, int32_t count, c
     if (!item) return refuse("no item in Backpack slot " + std::to_string(from_slot));
     if (to_slot < 0 || to_slot >= kBackpackSlots) return refuse("Backpack slot " + std::to_string(to_slot) + " does not exist");
     if (!guid_of(guid) || item->instance_guid != guid) return refuse("the item in Backpack slot " + std::to_string(from_slot) + " is not the instance the client named");
-    if (count != item->quantity) return refuse("the move names " + std::to_string(count) + " of a stack of " + std::to_string(item->quantity) + " (splitting is not made)");
+    if (count != item->quantity) return refuse("the move names " + std::to_string(count) + " of a stack of " + std::to_string(item->quantity) + " (a part of a stack goes by split)");
     if (find(to, to_slot)) return refuse("Backpack slot " + std::to_string(to_slot) + " is not empty (a move onto an item is a swap)");
     svc::InventoryItem moved = *item;
     Event remove;
@@ -1035,6 +1035,103 @@ Outcome Inventory::move(svc::ItemContainer from, int from_slot, int32_t count, c
     return out;
 }
 // [C.O.A x Cyb]
+
+Outcome Inventory::fill(svc::ItemContainer from, int from_slot, int32_t count, const std::string& guid, svc::ItemContainer to, int to_slot, const ItemCatalog& catalog) {
+    Outcome out;
+    const auto refuse = [&](std::string why) {
+        out.refusal = std::move(why);
+        return out;
+    };
+    const bool bags = (from == svc::ItemContainer::Backpack && to == svc::ItemContainer::Backpack) || (is_resource(from) && is_resource(to));
+    if (!bags) return refuse("stacks are joined inside the Backpack or inside the resource containers");
+    if (from == to && from_slot == to_slot) return refuse("the stack is joined to itself");
+    const svc::InventoryItem* source = at(from, from_slot);
+    const svc::InventoryItem* target = at(to, to_slot);
+    if (!source) return refuse(std::string("no item in ") + container_name(from) + " slot " + std::to_string(from_slot));
+    if (!target) return refuse(std::string("no stack to join in ") + container_name(to) + " slot " + std::to_string(to_slot));
+    if (!guid_of(guid) || source->instance_guid != guid) return refuse(std::string("the item in ") + container_name(from) + " slot " + std::to_string(from_slot) + " is not the instance the client named");
+    if (count < 1 || count > source->quantity) return refuse("the fill names " + std::to_string(count) + " of a stack of " + std::to_string(source->quantity));
+    if (source->item_record_id != target->item_record_id || source->quality != target->quality) return refuse("only stacks of the same item and quality join");
+    const auto info = catalog.info(source->item_record_id);
+    if (!info) return refuse("the item's record is not one this server knows");
+    const int32_t room = std::max(1, info->max_stack) - target->quantity;
+    if (room <= 0) return refuse("the target stack is full");
+    const int32_t moved = std::min(count, room);
+    const svc::InventoryItem source_before = *source;
+    const svc::InventoryItem target_before = *target;
+    Event leave;
+    leave.type = repl::StorageEventType::Remove;
+    leave.container = from;
+    leave.slot = from_slot;
+    leave.item = source_before;
+    leave.count = moved < source_before.quantity ? moved : 0;
+    Event remove;
+    remove.type = repl::StorageEventType::Remove;
+    remove.container = to;
+    remove.slot = to_slot;
+    remove.item = target_before;
+    svc::InventoryItem joined = target_before;
+    joined.quantity += moved;
+    Event add;
+    add.type = repl::StorageEventType::Add;
+    add.container = to;
+    add.slot = to_slot;
+    add.item = joined;
+    if (moved < source_before.quantity) slots_[{static_cast<uint8_t>(from), from_slot}].quantity = source_before.quantity - moved;
+    else slots_.erase({static_cast<uint8_t>(from), from_slot});
+    slots_[{static_cast<uint8_t>(to), to_slot}] = joined;
+    out.events = {std::move(leave), std::move(remove), std::move(add)};
+    out.ok = true;
+    return out;
+}
+
+Outcome Inventory::split(svc::ItemContainer from, int from_slot, int32_t count, const std::string& guid, svc::ItemContainer to, int to_slot, const std::string& new_guid, const ItemCatalog& catalog) {
+    Outcome out;
+    const auto refuse = [&](std::string why) {
+        out.refusal = std::move(why);
+        return out;
+    };
+    const bool bags = (from == svc::ItemContainer::Backpack && to == svc::ItemContainer::Backpack) || (is_resource(from) && is_resource(to));
+    if (!bags) return refuse("stacks are split inside the Backpack or inside the resource containers");
+    const svc::InventoryItem* source = at(from, from_slot);
+    if (!source) return refuse(std::string("no item in ") + container_name(from) + " slot " + std::to_string(from_slot));
+    if (!guid_of(guid) || source->instance_guid != guid) return refuse(std::string("the item in ") + container_name(from) + " slot " + std::to_string(from_slot) + " is not the instance the client named");
+    if (count < 1 || count >= source->quantity) return refuse("a split of " + std::to_string(count) + " from a stack of " + std::to_string(source->quantity));
+    if (!guid_of(new_guid) || find_guid(new_guid)) return refuse("the new stack needs an instance guid of its own");
+    const auto info = catalog.info(source->item_record_id);
+    if (!info) return refuse("the item's record is not one this server knows");
+    if (to == svc::ItemContainer::Backpack) {
+        if (to_slot < 0 || to_slot >= kBackpackSlots) return refuse("Backpack slot " + std::to_string(to_slot) + " does not exist");
+        if (find(to, to_slot)) return refuse("Backpack slot " + std::to_string(to_slot) + " is not empty");
+    } else {
+        const ResourceGrid& g = grid(to);
+        if (g.empty()) return refuse(std::string(container_name(to)) + " has no bag: it has no cells");
+        if (!g.contains(to_slot)) return refuse(std::string(container_name(to)) + " slot " + std::to_string(to_slot) + " does not exist");
+        if (!g.fits(to_slot, info->inv_w, info->inv_h, covered_cells(to, catalog))) return refuse("the new stack does not fit " + std::string(container_name(to)) + " slot " + std::to_string(to_slot));
+    }
+    const svc::InventoryItem before = *source;
+    Event leave;
+    leave.type = repl::StorageEventType::Remove;
+    leave.container = from;
+    leave.slot = from_slot;
+    leave.item = before;
+    leave.count = count;
+    svc::InventoryItem made = before;
+    made.instance_guid = new_guid;
+    made.container = to;
+    made.slot = to_slot;
+    made.quantity = count;
+    Event add;
+    add.type = repl::StorageEventType::Add;
+    add.container = to;
+    add.slot = to_slot;
+    add.item = made;
+    slots_[{static_cast<uint8_t>(from), from_slot}].quantity = before.quantity - count;
+    slots_[{static_cast<uint8_t>(to), to_slot}] = made;
+    out.events = {std::move(leave), std::move(add)};
+    out.ok = true;
+    return out;
+}
 
 Outcome Inventory::add_at(svc::ItemContainer container, int slot, svc::InventoryItem item, const ItemCatalog& catalog) {
     Outcome out;

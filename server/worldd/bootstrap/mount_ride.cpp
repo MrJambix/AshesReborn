@@ -172,6 +172,23 @@ std::optional<Send> PlayerBootstrap::pawn_mountable_pet(const FIntrepidNetworkGU
     return update(Role::Pawn, "the pawn's mountable pet", pawn_, pawn_shadow_);
 }
 
+std::optional<Send> PlayerBootstrap::pawn_combat_pet(const FIntrepidNetworkGUID& pet, int64_t effect_id) {
+    if (!ok_ || !second_state_sent_) return std::nullopt;
+    for (repl::Subobject& s : pawn_.subobjects) {
+        if (s.name != "InteractInfo" || !s.obj.schema) continue;
+        repl::ArrayValue list;
+        if (pet.is_valid()) {
+            repl::ElementState element;
+            element.values[1] = object(pet);
+            element.values[2] = Value::i64(effect_id);
+            list.elements.push_back(std::move(element));
+        }
+        if (!s.obj.state.set(*s.obj.schema, "PetArray", Value(std::move(list)))) return std::nullopt;
+        return update(Role::Pawn, "the pawn's combat pet", pawn_, pawn_shadow_);
+    }
+    return std::nullopt;
+}
+
 std::optional<Send> PlayerBootstrap::pawn_channeling(const repl::ChannelingData& data) {
     if (!ok_ || !second_state_sent_) return std::nullopt;
     repl::Subobject* info = nullptr;

@@ -81,12 +81,12 @@ type Config struct {
 	MaxCharacters int           // cached per-stream guard; the character service enforces the shared account cap
 }
 
-// DefaultConfig matches the legacy server, so a client that last played there
-// keeps its world selection.
+// DefaultConfig keeps the legacy world identity so existing characters and
+// remembered world selection survive changes to the advertised display name.
 func DefaultConfig() Config {
 	return Config{
 		WorldID:       "aoc-release-useast2-local",
-		WorldName:     "[EMU] Local Server",
+		WorldName:     "Ashes Reborn",
 		ServerTag:     "aoc-gateway",
 		PlayPause:     400 * time.Millisecond,
 		MaxCharacters: character.DefaultMaxCharacters,

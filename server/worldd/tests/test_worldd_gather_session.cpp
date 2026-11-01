@@ -1269,6 +1269,32 @@ static void test_levels() {
     CHECK(q.s->professions().level(id::kHerbalism) == 10 && q.s->professions().xp(id::kHerbalism) >= held && q.s->professions().xp(id::kHerbalism) <= 49999, "a Novice at level 10 stays at level 10; the XP is held below the Apprentice's first level");
 }
 
+static void test_testing_rate() {
+    std::printf("deployment XP rate: the player, client and saved profession progress agree\n");
+    Rig rig;
+    if (!rig.open(g_path)) { CHECK(false, "testing-rate fixture opens"); return; }
+    rig.world->set_experience_rate(5.0);
+    const uint64_t node = rig.add_node(id::kDaffodil, 200, 0, 201);
+    Player& p = rig.add_player(record_of("bbec5c86eb101fe5f38c87f0fa22e7d0", "RateTester"));
+    play(p);
+    const int64_t before = p.s->professions().xp(id::kHerbalism);
+    const size_t from = p.got.size();
+    p.send_now(interact(rig.component_of(node)), p.pawn_ch);
+    const bool ended = run_until(rig, [&] { return p.s->harvests_completed() == 1; }, seconds(20));
+    CHECK(ended, "the five-times-XP harvest completes");
+    rig.run(seconds(1));
+    CHECK(p.s->professions().xp(id::kHerbalism) == before + 400, "five-times XP grants 400 from the baseline 80, once");
+    Tracker tracker;
+    tracker.absorb(p, from);
+    const auto received = tracker.state.experience(leveling_id(id::kLtHerbalist));
+    CHECK(received && *received == before + 400, "the game client receives the scaled XP total");
+    bool saved = false;
+    for (const auto& entry : rig.sink.progress)
+        for (const svc::ProfessionState& profession : entry.progress.professions)
+            saved = saved || profession.xp == before + 400;
+    CHECK(saved, "the scaled XP is handed to persistence");
+}
+
 int main() {
     {   // the lines of the log (info and above) go to g_log: the tests read what the user's test would
         auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
@@ -1296,6 +1322,7 @@ int main() {
     test_backpack_full_blocks_nothing();
     test_relog_keeps_the_resource_bag();
     test_levels();
+    test_testing_rate();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

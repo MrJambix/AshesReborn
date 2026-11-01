@@ -175,6 +175,7 @@ func (c refCtx) InitRunningTotal() (float64, error) {
 	return c.e.total, nil
 }
 func (c refCtx) CharacterLevel() float64 { return float64(c.e.in.Level) }
+func (c refCtx) CharacterClass() int     { return c.e.in.Class }
 func (c refCtx) Equation(r aocexpr.Ref) (float64, error) {
 	if r.Kind != "" || r.TypeID != TypeStatEquation {
 		return 0, fmt.Errorf("%v is not a StatEquation reference", r)

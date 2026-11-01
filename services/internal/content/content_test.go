@@ -71,7 +71,7 @@ func TestCreateMakesTheDocumentedTables(t *testing.T) {
 		"item_set", "item_tag", "meta", "owner_stat_mod", "quality_curve", "record", "record_table", "set_bonus", "stamina_regen_disable",
 		"stamina_rule", "starting_equipment", "stat_block_stat", "stat_curve", "stat_curve_def", "stat_def", "stat_init", "stat_program",
 		// plan D1 (contentc version 5)
-		"item_use", "item_action", "action_response", "action_reward", "reward_table", "reward_item", "reward_xp", "leveling_type", "leveling_curve",
+		"item_use", "item_cast", "item_action", "action_response", "action_reward", "reward_table", "reward_item", "reward_xp", "leveling_type", "leveling_curve",
 		"skill_auto_grant", "skill_rank_stat_mod",
 		// plan D1, stage 2: the talents
 		"skill_point_type", "leveling_point", "skill_tree", "skill_node", "skill_node_require", "skill_node_exclusive", "skill_rank", "skill_rank_cost",

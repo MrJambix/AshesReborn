@@ -246,6 +246,8 @@ add_library(worldd_core STATIC
     session/move_checker.h
     session/player_foliage.cpp
     session/player_gather.cpp
+    session/player_presence.cpp
+    session/player_presence.h
     session/player_session.cpp
     session/player_session.h
     session/player_world.cpp

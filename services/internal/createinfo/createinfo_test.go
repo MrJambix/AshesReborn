@@ -78,6 +78,23 @@ func TestParseTheRealClientsPayload(t *testing.T) {
 	if len(got.Customization) == 0 || got.Appearance == "" {
 		t.Errorf("no customization: %d bytes, %d characters of JSON", len(got.Customization), len(got.Appearance))
 	}
+	if got.StartingLocation != "Riverlands" {
+		t.Errorf("starting location %q, want Riverlands", got.StartingLocation)
+	}
+}
+
+// The tag of field 5, as it comes; a payload without one has none, and a field 5 of another wire type is skipped.
+func TestParseTheStartingLocation(t *testing.T) {
+	anvils := protowire.AppendString(protowire.AppendTag(nil, 5, protowire.BytesType), "Anvils")
+	if got := Parse(cat(varintField(4, 7), anvils)); got.StartingLocation != "Anvils" || got.Class != 7 {
+		t.Errorf("got %+v", got)
+	}
+	if got := Parse(varintField(4, 7)); got.StartingLocation != "" {
+		t.Errorf("no field 5: %q", got.StartingLocation)
+	}
+	if got := Parse(cat(varintField(5, 3), anvils)); got.StartingLocation != "Anvils" {
+		t.Errorf("after a field 5 of another type: %q", got.StartingLocation)
+	}
 }
 
 // [C-Y-B x CoA]

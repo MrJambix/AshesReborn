@@ -35,6 +35,9 @@
 // ============================================================================
 #pragma once
 
+#include "session/reward_rates.h"
+#include "session/chat.h"
+
 #include "bootstrap/bootstrap.h"
 #include "bootstrap/character_setup.h"
 #include "combat/aftermath.h"
@@ -106,6 +109,7 @@ struct MovementConfig {
 
 class PlayerWorld {
 public:
+    std::shared_ptr<chat::Room> chat_room() const { return chat_room_; }
     /// `content` is null when content.db did not open (`content_problem` then says why). `guids` must outlive
     /// this object and mint under `server_id`, the id mesh gave worldd.
     PlayerWorld(const content::ContentDb* content, std::string content_problem, bootstrap::GameStateMode mode,
@@ -176,6 +180,10 @@ public:
     /// Plan A6: the movement limits and the save interval of every session started from now on.
     void                  set_movement(const MovementConfig& config) { movement_ = config; }
     const MovementConfig& movement() const { return movement_; }
+    /// Applied once to earned Adventuring, weapon and profession XP. Set before sessions start.
+    void set_experience_rate(double multiplier) { experience_rate_ = rates::valid(multiplier) ? multiplier : 1.0; }
+    double experience_rate() const { return experience_rate_; }
+    int64_t reward_experience(int64_t amount) const { return rates::experience(amount, experience_rate_); }
     /// Where the sessions hand positions to be saved; null (the default) saves nothing. Must outlive the sessions.
     void          set_position_sink(PositionSink* sink) { sink_ = sink; }
     PositionSink* position_sink() const { return sink_; }
@@ -281,7 +289,7 @@ public:
     /// are not placed (populate is load_ground's); a test adds its own to `npcs()`. False, with `error`, when there is one already.
     bool                         adopt_ground(std::unique_ptr<nav::AreaNav> nav, std::string& error);
     const nav::AreaNav*          nav() const { return nav_.get(); }
-    npc::NpcWorld*               npcs() { return npcs_.get(); }
+    npc::NpcWorld*               npcs() const { return npcs_.get(); }
     const npc::GroundReport*     ground_report() const { return ground_report_ ? &*ground_report_ : nullptr; }
     /// The world clock the last tick set (seconds): what the aftermath's corpses and respawns run on.
     double                       world_clock() const { return world_clock_; }
@@ -391,6 +399,9 @@ public:
     /// The game's reactions (a weapon's finisher effects, the Bard's Resonance and melodies) run unless this is turned off (--no-reactions / AOC_NO_REACTIONS=1).
     void set_reactions_enabled(bool on) { reactions_enabled_ = on; }
     bool reactions_enabled() const { return reactions_enabled_; }
+    /// The number every session's dice are made from (combat::session_dice_seed); 0, the default of a test's world, keeps them a plain function of the player id.
+    void set_dice_seed(uint64_t seed) { dice_seed_ = seed; }
+    uint64_t dice_seed() const { return dice_seed_; }
     /// What a session asks of the rest of the world for a GM command that names other characters (ServerTeleportPlayer); null: only the session itself can be moved.  Not owned.
     void   set_gm_port(GmPort* port) { gm_port_ = port; }
     GmPort* gm_port() const { return gm_port_; }
@@ -480,6 +491,7 @@ public:
 // built by Cyb with C | O | A
 
 private:
+    std::shared_ptr<chat::Room> chat_room_ = std::make_shared<chat::Room>();
     void log_npc_types() const;
     void log_huntables() const;
     void log_hunting_kinds();
@@ -560,6 +572,7 @@ private:
     protocol::emit::FIntrepidNetworkGUID game_state_;
     int32_t                              next_player_id_ = 1;
     MovementConfig                       movement_;
+    double                               experience_rate_ = 1.0;
     PositionSink*                        sink_ = nullptr;
     world::ActorRegistry                 registry_;
     spawns::AreaConfig                   area_;
@@ -622,6 +635,7 @@ private:
     mutable uint64_t                     town_floor_stamp_ = ~0ull;   // the node people it was built from (their made + removed counts)
     bool                                 gm_commands_ = false;
     bool                                 reactions_enabled_ = true;
+    uint64_t                             dice_seed_ = 0;
     GmPort*                              gm_port_ = nullptr;
     uint64_t                             respawns_made_ = 0;
     mutable std::map<int64_t, int>       quality_cache_;

@@ -84,6 +84,22 @@ func TestCreateListGetSave(t *testing.T) {
 		t.Errorf("Get unknown: %v", err)
 	}
 
+	// a character of another starting zone is stored at that zone's place; nothing else about it changes
+	at := &Position{X: -1057812.5, Y: -694683.5, Z: 5370.25, Yaw: 90}
+	placed, err := s.Create(ctx, New{AccountID: c.AccountID, Name: "Anvilborn", ClassName: "Bard", Position: at})
+	if err != nil || placed.Position == nil || *placed.Position != *at {
+		t.Fatalf("Create with a position: %+v %v", placed, err)
+	}
+	if got, err := s.Get(ctx, placed.ID); err != nil || got.Position == nil || *got.Position != *at {
+		t.Fatalf("Get of a character created with a position: %+v %v", got, err)
+	}
+	if _, err := s.Create(ctx, New{AccountID: c.AccountID, Name: "Nowhere", ClassName: "Bard", Position: &Position{X: math.NaN()}}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("Create at NaN: %v", err)
+	}
+	if err := s.Delete(ctx, c.AccountID, placed.ID); err != nil {
+		t.Fatal(err)
+	}
+
 	saved, err := s.SaveState(ctx, c.ID, State{
 		Position: &Position{X: -777664.5, Y: 616578.7, Z: 15952.05, Yaw: 90}, LastRegion: "Riverlands", Level: 2,
 	})

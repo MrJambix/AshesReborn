@@ -56,10 +56,11 @@ const (
 	tFlags // the flags of a hit on a target (GetHitFlags): only HitFlagsContains reads them
 	// tPlayer is GetPlayer() or GetPlayerGuid() (Nodes 1): the character the expression is for; only the city node reads take it
 	tPlayer
+	tConsumedItem
 )
 
 func (t vtype) String() string {
-	return [...]string{"a number", "a boolean", "an object", "a record reference", "a string", "an enum value", "an actor id", "the flags of a hit", "the player"}[t]
+	return [...]string{"a number", "a boolean", "an object", "a record reference", "a string", "an enum value", "an actor id", "the flags of a hit", "the player", "the consumed item"}[t]
 }
 
 // == C | Y | B | C O A ==
@@ -1222,6 +1223,29 @@ func (f *fnc) call(e aocexpr.Call) (val, error) {
 			return val{}, err
 		}
 		return val{t: tObj}, nil
+	case "GetAbilityItemInstance":
+		if err := argc(e, 0); err != nil {
+			return val{}, err
+		}
+		return val{t: tConsumedItem}, nil
+	case "GetItemInstanceStat":
+		if err := check(tConsumedItem, tRef); err != nil {
+			return val{}, err
+		}
+		i, err := f.c.ref(args[1].ref)
+		if err != nil {
+			return val{}, errAt(e.At, "%v", err)
+		}
+		v, _ := ctx(OpConsumed, tNum, i)
+		v.float = true
+		return v, nil
+	case "GetPrimaryArchetype":
+		if err := check(tObj); err != nil {
+			return val{}, err
+		}
+		v, err := f.hostCall(e, aocexpr.HostActorClass, "", tNum)
+		v.etype = "ECharacterClass"
+		return f.actor(args[0].role, v), err
 	case "GetTarget":
 		// An ability expression's target is the caster until there are other actors (self and party hits).
 		if f.kind != unitExpr {

@@ -539,6 +539,11 @@ CREATE TABLE item_use (
     cooldown           REAL NOT NULL,
     disabled_in_combat INTEGER NOT NULL
 );
+-- The server-owned ability an item's CastAbility activation may trigger.
+CREATE TABLE item_cast (
+    item_guid    INTEGER PRIMARY KEY,
+    ability_guid INTEGER NOT NULL
+);
 -- The item's ActivationActionsIds, in the record's order.
 CREATE TABLE item_action (
     item_guid   INTEGER NOT NULL,

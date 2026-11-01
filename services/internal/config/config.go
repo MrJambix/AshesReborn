@@ -34,6 +34,7 @@ type Config struct {
 	MeshHeartbeatTTL time.Duration // AOC_MESH_HEARTBEAT_TTL: a world server silent this long is not placed
 
 	GatewayICSAddr    string        // AOC_GATEWAY_ICS_ADDR: the game client's ICS gRPC, over TLS
+	WorldName         string        // AOC_WORLD_NAME: the player-facing world-list name; world identity is unchanged
 	GatewayGRPCAddr   string        // AOC_GATEWAY_GRPC_ADDR: internal (RedeemTicket), on loopback unless GatewayGRPCPublic
 	GatewayGRPCPublic bool          // AOC_GATEWAY_GRPC_PUBLIC=1: allow any GatewayGRPCAddr (the ticket crosses the network in clear text)
 	GatewayTLSCert    string        // AOC_GATEWAY_TLS_CERT: PEM certificate for the ICS listener
@@ -65,6 +66,7 @@ func Load() Config {
 		MeshHeartbeatTTL: duration("AOC_MESH_HEARTBEAT_TTL", 15*time.Second),
 
 		GatewayICSAddr:    str("AOC_GATEWAY_ICS_ADDR", "127.0.0.1:443"),
+		WorldName:         str("AOC_WORLD_NAME", "Ashes Reborn"),
 		GatewayGRPCAddr:   str("AOC_GATEWAY_GRPC_ADDR", "127.0.0.1:50054"),
 		GatewayGRPCPublic: os.Getenv("AOC_GATEWAY_GRPC_PUBLIC") == "1",
 		GatewayTLSCert:    str("AOC_GATEWAY_TLS_CERT", "certs/server.pem"),

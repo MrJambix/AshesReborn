@@ -515,6 +515,7 @@ private:
         int64_t                  targeting = 0;
         bool                     reaches = false;   // the hit's mask names the caster
         bool                     aims_others = false;   // plan E1, stage 3: its mask names enemies or allies other than the caster
+        bool                     server_self_use = false; // authorized consumable: scheduled only after its item cost is paid
         int                      requests = 0;
         double                   last_request = -1e9;
         std::vector<Pending>     due;          // when a request's application runs
@@ -522,6 +523,7 @@ private:
     };
     /// A cast that takes hit requests until its window ends.
     struct CastRecord {
+        std::map<int64_t, double>     item_stats;
         int32_t                      client_id = 0;
         int64_t                      ability = 0;
         double                       trigger_at = 0;
@@ -537,6 +539,8 @@ private:
         std::map<int64_t, std::pair<int, double>> asked;   // hit guid -> (requests, time of the last) for the hits that are no slot
     };
     struct Cast {
+        std::function<bool()>                consume_item;
+        std::map<int64_t, double>            item_stats;
         int32_t                               client_id = 0;
         const abilities::AbilityDef*          def = nullptr;
         double                                trigger_at = 0;
@@ -571,6 +575,7 @@ private:
         std::set<uint64_t>                    struck;                     // a Strike: the enemies its areas hurt already (the area hit lets none of them be hurt again by the same cast)
         bootstrap::ActiveAbilityItem          item;
         std::vector<const abilities::EffectDef*> own_effects;   // the infinite effects the ability puts on its caster itself (no hit applies them)
+        std::optional<double>                 held_release_due;   // a release heard before the held effect's delayed start
         bool                                  toggle_off = false;   // the ability is a loop that is on: this trigger ends it
         int64_t                               chain_owner = 0;      // a chain (Cleric_Mend's five projectiles that fire one hit): the one projectile this cast fires
         int64_t                               instance = -1;
@@ -591,6 +596,7 @@ private:
         double                                heard_at = -1;              // ... and when it came (the cast bar's end); the projectiles of a cast bar are launched from there (land_by_flight)
     };
     struct EffectInst {
+        std::map<int64_t, double>    item_stats;
         int64_t                     owner = 0;                    // plan D2, stage 2: the looping ability whose effect this is (0: none)
         int64_t                     zone = 0;                     // plan D2, review: the lingering zone (instance) whose overlap hit put this on the caster: it ends with the zone
         bool                        has_shield = false;           // plan D2, stage 2: one of its mods is on TempHealth
@@ -636,6 +642,7 @@ private:
     };
     bool dead_ = false;   // plan E1, stage 3, part 2
     class Host;   // the ExprHost the programs run with
+    struct ItemScope;
 // -- C-O-A . C-Y-B --
 
     void   advance(double now);
@@ -722,6 +729,7 @@ private:
     void   end_zone_effects(bootstrap::AbilityChange& c, int64_t zone_id, double t);
 
     void   step_own(Cast& cast, double t);
+    void   release_held(int32_t client_id, double t);
     void   end_held(size_t index, double t);
     /// The effects some hit of the ability's closure applies (to its caster or its targets).
     std::set<int64_t> effects_applied_by_hits(const abilities::AbilityDef& def) const;
@@ -783,6 +791,7 @@ private:
     double                    world_time_at_zero_;
     stats::SplitMix           rng_;
     std::unique_ptr<stats::CharacterStats::Evaluation> evaluation_;
+    const std::map<int64_t, double>* consumed_item_stats_ = nullptr;
 
     double                    now_ = 0;
     double                    clock_ = 0;                           // the time of the step that runs (what the host's progress and the formulas read)

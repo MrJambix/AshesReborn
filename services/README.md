@@ -149,6 +149,10 @@ primary_class 6}`.
 | gender (`ECharacterGender`) | 0 Male, 1 Female |
 | class (`ECharacterClass`) | 1 Ranger, 2 Bard, 3 Cleric, 4 Fighter, 5 Rogue, 6 Summoner, 7 Tank, 8 Mage |
 
+`starting_location` is a string, the tag of the zone's `PlayerStartsRecordBase` (`Riverlands`, `Anvils`). The
+character service stores a new character of another zone at a random place of that zone's list, and a Riverlands
+character with no position, which is worldd's default spawn.
+
 proto3 leaves a zero out of the wire, so a Kaelar male Bard (cyb) sends field 4 = 2 and nothing else. Until
 plan B1 the services read field 4 as the *race* and wrote it back at the field the client reads as the
 race, with the class's archetype record id there: the "races" 2, 7 and 8 that worldd accepted were the
@@ -569,6 +573,18 @@ BEGIN;
 DROP TABLE character_home_attunement;
 DROP TABLE character_attunements;
 DELETE FROM schema_migrations WHERE version = 18;
+COMMIT;
+```
+
+**Account combat settings (migration 0019).** `account_combat_settings` stores the five auto attack options for an account. `GetCharacter` with `include_items` returns them, and `SaveProgress.auto_attack_settings` patches only the named options for the character's owner. Explicit false values are saved. worldd saves changes immediately through its existing save worker and restores them in a new session, including when the client's initial settings request carries old defaults. Deploy the updated character service and worldd together; the character service applies migration 0019 at startup.
+
+To roll back, stop the updated services, restore their previous binaries, and remove the new table and migration record. This discards saved auto attack options:
+
+```sql
+-- rollback of migration 0019 (account auto attack options)
+BEGIN;
+DROP TABLE account_combat_settings;
+DELETE FROM schema_migrations WHERE version = 19;
 COMMIT;
 ```
 

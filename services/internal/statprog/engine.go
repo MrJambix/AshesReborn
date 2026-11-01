@@ -496,7 +496,11 @@ func (m *machine) run(p *Program) float64 {
 				sp--
 				args[i] = m.stack[sp]
 			}
-			m.stack[sp] = m.host.HostFn(fn, name, args[:n])
+			if fn == aocexpr.HostActorClass && n == 0 {
+				m.stack[sp] = float64(m.in.Class)
+			} else {
+				m.stack[sp] = m.host.HostFn(fn, name, args[:n])
+			}
 			sp++
 			pc += 5
 		case OpRet:

@@ -169,6 +169,9 @@ bool PlayerBootstrap::build_actors() {
     all(set(pc_.obj, "SpawnLocation", Value(repl::Vec3d{s.x, s.y, s.z})));
     all(set(pc_.obj, "CaravanLaunchNode", Value::i64(0)));
     all(set(pc_.obj, "SummonCooldownTimer", Value::f32(static_cast<float>(s.world_time))));
+    for (const auto& [key, value] : s.auto_attack_settings) {
+        all(set(pc_.obj, "CharacterInGameSettings.CombatSettings.Input.AutoAttack." + key, Value::boolean(value)));
+    }
     pc_.open.archetype = pc_archetype_export();
     pc_.open.level = persistent_level_export();
     pc_.open.spawn.location = spawn;
@@ -318,6 +321,17 @@ bool PlayerBootstrap::build_actors() {
 
     if (!pc_.obj.schema || !gs_.obj.schema || !pawn_.obj.schema || !ps_.obj.schema) all(fail("a class schema is missing"));
     return ok;
+}
+
+std::vector<repl::ExportChain> PlayerBootstrap::public_ability_exports() const {
+    std::vector<repl::ExportChain> out;
+    std::set<std::string> done;
+    for (const auto& [key, montage] : ability_montages_) {
+        if (montage.first.empty() || !done.insert(montage.first).second) continue;
+        const auto asset = montage.second ? montage_for(montage.first, montage.second) : montage_for(montage.first);
+        if (asset) out.push_back(asset->chain);
+    }
+    return out;
 }
 
 PlayerBootstrap::Checkpoint PlayerBootstrap::checkpoint() {
@@ -1104,10 +1118,13 @@ std::optional<Send> PlayerBootstrap::phase_in() {
     return update(Role::Pawn, "phase-in", pawn_, pawn_shadow_);
 }
 
-std::optional<Send> PlayerBootstrap::combat_settings_echo(std::span<const PropertyValue> values) {
+std::optional<Send> PlayerBootstrap::combat_settings_echo(std::span<const PropertyValue> values, bool restore_auto_attack) {
     if (!ok_) return std::nullopt;
     for (const PropertyValue& v : values) {
         if (!pc_.obj.state.set(*pc_.obj.schema, v.path, v.value)) return std::nullopt;
+        if (restore_auto_attack && v.path.starts_with("CharacterInGameSettings.CombatSettings.Input.AutoAttack.")) {
+            if (const auto* command = pc_.obj.schema->command(v.path)) pc_shadow_.actor.invalidate(command->handle);
+        }
     }
     return update(Role::PlayerController, "combat settings echo", pc_, pc_shadow_);
 }

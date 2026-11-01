@@ -115,6 +115,8 @@ public:
     double                                 stand_off_cm = -1;   // a creature whose attacks launch projectiles closes in on its target to this distance (its tree's arrival distance) between two casts; -1: it does not
     double                                 shot_reach_cm = -1;  // ... and starts casting once its target is within this reach (the distance its tree lets it cast from)
     double                                 fight_began = 0;  // when its fight began (the tree asks how long it has gone on)
+    double                                 link_radius_cm = 0;   // its pack: friends this close join when it begins a fight (the Blueprint's AggroProximityLinkRadius)
+    bool                                   joined_pack = false;  // the fight it is about to begin is a pack-mate's: it calls nobody in, so a fight does not run on through a whole camp
     std::map<std::string, double>          fight_rolls;      // the numbers its tree rolled when this fight began, by the tree's variable (a first special attack comes only after one of them)
     uint64_t                               killer = 0;
     std::set<uint64_t>                     attackers;
@@ -195,7 +197,9 @@ CombatWorld::Npc* CombatWorld::make_combatant(const world::WorldActor& a) {
     // huntable, whose alignment is Friendly, never attack first)
     p.proximity_aggro = notices_players(n->hostile, a.npc);
     p.leash_radius_cm = a.npc.leash_radius_cm > 0 ? a.npc.leash_radius_cm : std::max(cfg_.default_leash_cm, p.aggro_radius_cm * 3.0);
+    n->link_radius_cm = cfg_.default_link_cm;
     if (const npc::SensesRow* row = senses_ ? senses_->find(a.npc.archetype) : nullptr) {
+        n->link_radius_cm = std::max(0.0, row->link_radius);
         // what its Blueprint says: the aggro radius (the population's own when it gives one) scaled by the creature's level, the senses, how often it looks, where its fights anchor and how far they
         // may go.  A setting no Blueprint on its chain makes stands at the game's default.
         const double radius = a.npc.aggro_radius_cm > 0 ? a.npc.aggro_radius_cm : (row->aggro_radius >= 0 ? row->aggro_radius : kBlueprintAggroDefaultCm);
@@ -1428,6 +1432,29 @@ void CombatWorld::think(Npc& n, double now) {
         ++stats_.aggros;
         n.fight_began = now;
         n.fight_rolls.clear();
+        // its pack joins in: creatures of its side within its link radius that would start a fight by themselves and can reach it (modelled: the data gives the radius, not who answers).  They
+        // get threat through the AI only: joining is no attack on them, and `attackers` is who may loot.
+        if (!n.joined_pack && n.link_radius_cm > 0 && o.target != 0) {
+            std::vector<uint64_t> near;   // (from the registry: a neighbour may not be a combatant yet, the player having just come into the scan's reach)
+            registry_.query(s.self.x, s.self.y, n.link_radius_cm, near);
+            for (const uint64_t id : near) {
+                const world::WorldActor* mate = registry_.find(id);
+                if (id == n.actor_id || !mate || mate->kind != world::ActorKind::Npc || (huntable_ && huntable_(mate->npc))) continue;
+                const npc::MotionStats bp = motion_.get(mate->npc.archetype);
+                const std::vector<int64_t> side(bp.alignments.begin(), bp.alignments.end());
+                if (side != n.aligns && data_.relation(n.aligns, side) != Relation::Friendly) continue;
+                const Vec3 at{mate->x, mate->y, mate->z};
+                if (distance_xy_cm(at, s.self) > n.link_radius_cm || std::fabs(at.z - s.self.z) > n.link_radius_cm) continue;
+                if (s.line_of_sight && !s.line_of_sight(s.self, at)) continue;
+                Npc* made = combatant(id);
+                if (!made) continue;
+                Npc& m = *made;
+                if (m.dead || m.returning || m.ai.state() != npc::ai::State::Idle || !m.ai.params().proximity_aggro) continue;
+                m.joined_pack = true;
+                m.ai.notice(o.target, m.ai.params().proximity_threat, now);
+            }
+        }
+        n.joined_pack = false;
         if (n.ai.params().senses.enabled) {
             const npc::ai::Params& pr = n.ai.params();
             PlayerPort* who = player(o.target);

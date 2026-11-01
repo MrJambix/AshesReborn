@@ -347,7 +347,9 @@ public:
                     const int n = code[pc] - op::Host0;
                     double args[2] = {0, 0};
                     for (int i = n - 1; i >= 0; --i) args[i] = stack_[--sp];
-                    stack_[sp++] = host_->host_fn(rd16(code, pc + 1), b_.strings[rd16(code, pc + 3)], args, n);
+                    const int fn = rd16(code, pc + 1);
+                    stack_[sp++] = fn == kHostActorClass && n == 0 ? static_cast<double>(cur_->in->class_enum)
+                        : host_->host_fn(fn, b_.strings[rd16(code, pc + 3)], args, n);
                     pc += 5;
                     break;
                 }

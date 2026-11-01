@@ -88,7 +88,7 @@ func run() error {
 		Characters: characters{characterv1.NewCharacterServiceClient(conns.character)},
 		Placer:     placer{meshv1.NewMeshServiceClient(conns.mesh)},
 		Tickets:    issuer{ticketStore},
-	}, ics.DefaultConfig()))
+	}, clientWorldConfig(cfg)))
 	internal := newInternalServer(ticketStore, token)
 
 	// Bind both ports before saying "listening", so a taken port fails here.
@@ -106,7 +106,7 @@ func run() error {
 	go func() { errc <- icsSrv.Serve(icsLis) }()
 	go func() { errc <- internal.Serve(grpcLis) }()
 	go purgeTickets(ctx, ticketStore)
-	slog.Info("gateway listening", "ics", icsLis.Addr().String(), "grpc", grpcLis.Addr().String())
+	slog.Info("gateway listening", "world_name", cfg.WorldName, "ics", icsLis.Addr().String(), "grpc", grpcLis.Addr().String())
 
 	select {
 	case <-ctx.Done():

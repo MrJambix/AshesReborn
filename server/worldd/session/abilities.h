@@ -66,6 +66,7 @@
 #include "content/content_db.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -121,7 +122,11 @@ struct TriggerInfo {
     int32_t  animation_index = 0;
     double   input_x = 0, input_y = 0;
     uint32_t target_count = 0;   // plan D2: how many targets the call names (an ability that needs one is aimed at the caster: nothing else is there)
-    bool     item = false;       // plan D2: the call names an item (a consumable's ability): not run by the generic runtime
+    bool     item = false;
+    /// Set only by the session after checking the owned instance and its configured cast.
+    /// Runs once at the cost step; a missing or moved item cancels the unpaid cast.
+    std::function<bool()> consume_item;
+    std::map<int64_t, double> item_stats;
     /// plan E1, stage 3: the actors the call's Targets name other than the caster's own components, as the session resolved them (an NPC's ObjectId).
     std::vector<uint64_t> target_actors;
 };

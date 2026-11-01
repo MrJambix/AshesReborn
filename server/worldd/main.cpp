@@ -67,7 +67,7 @@ void sleep_unless_stopped(std::chrono::milliseconds d) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    CLI::App app{"worldd: the AoC world server"};
+    CLI::App app{"Ashes Reborn world server"};
     std::string bind = "127.0.0.1:7777";
     std::string public_address;
     std::string mesh = "127.0.0.1:50053";
@@ -115,10 +115,14 @@ int main(int argc, char** argv) {
         ->capture_default_str();
     app.add_flag("--no-world-stream", no_world_stream, "do not serve the world stream")->envname("AOC_NO_WORLD_STREAM");
     app.add_flag("--gm-commands", gm_commands,
-                 "answer the game client's own GM teleport commands (ServerTeleportXYZ, ServerTeleport, ServerTeleportPlayer on the PlayerController); off by default. Each one the client sends is logged either way")
+                 "legacy compatibility flag; client GM commands require an account owner grant and .GM On regardless of this flag")
         ->envname("AOC_GM_COMMANDS");
     app.add_flag("--no-reactions", no_reactions, "the game's reactions do not run (the extra effects of a weapon's finisher, the Bard's Resonance and melodies): abilities and hits land as before reactions were built")
         ->envname("AOC_NO_REACTIONS");
+    uint64_t combat_seed = 0;
+    app.add_option("--combat-seed", combat_seed,
+                   "the number the hit, block and critical rolls start from: 0 (the default) takes a new one on every start, so each run rolls differently; any other number repeats the same rolls for the same fights")
+        ->envname("AOC_COMBAT_SEED")->capture_default_str();
     app.add_option("--service-token-file", token_file, "the internal services' shared token");
     app.add_option("--log-file", log_file, "also write the log to this file");
     app.add_option("--content-db", content_db_path,
@@ -269,6 +273,9 @@ int main(int argc, char** argv) {
     // plan E1, stage 3, part 2: what follows a death (combat/aftermath.h)
     bool no_loot = false, no_respawn = false, no_death_loss = false;
     double corpse_seconds = 15.0, loot_corpse_seconds = 120.0, loot_chance_mult = 1.0, loot_rarity_boost = 1.0;
+    double exp_rate = 1.0;
+    app.add_option("--exp-rate", exp_rate, "multiplies earned Adventuring, weapon and profession XP; does not change saved progress or level scrolls")
+        ->envname("AOC_EXP_RATE")->check(CLI::Range(0.0, 1000.0))->capture_default_str();
     app.add_flag("--no-loot", no_loot, "the kill switch for what follows a death: no experience, no loot, no respawn (the corpse still goes)")->envname("AOC_NO_LOOT");
     app.add_flag("--no-death-loss", no_death_loss, "a player's death takes no materials (retail: about half of each stack, into a pile where it fell)")->envname("AOC_NO_DEATH_LOSS");
     app.add_flag("--no-respawn", no_respawn, "the kill switch for respawns: a dead NPC stays dead")->envname("AOC_NO_RESPAWN");
@@ -311,6 +318,7 @@ int main(int argc, char** argv) {
                    "the most client sessions at once; further handshakes are ignored (0: no limit)")
         ->capture_default_str();
     CLI11_PARSE(app, argc, argv);
+    if (!rates::valid(exp_rate)) { spdlog::error("--exp-rate must be finite and between 0 and 1000"); return 1; }
 // (C.Y.B | CoA)
 
     std::vector<spdlog::sink_ptr> sinks{std::make_shared<spdlog::sinks::stderr_color_sink_mt>()};
@@ -399,6 +407,8 @@ int main(int argc, char** argv) {
     quest::GrpcQuestApi quest_api(quests_addr, *token);
     quest::QuestWorker quest_worker(quest_api);
     PlayerWorld players(content ? &*content : nullptr, content_problem, mode, reg.server_id, guids);
+    players.set_experience_rate(exp_rate);
+    spdlog::info("Ashes Reborn rates: earned XP x{}, loot chance x{} (capped at 100 percent per roll)", exp_rate, loot_chance_mult);
     if (content && !players.ready()) {
         // content.db opened, but its ability rows are not what this worldd runs (plan A7): the same refusal as a missing file
         spdlog::error("worldd refuses every login: {}", players.content_problem());
@@ -408,8 +418,11 @@ int main(int argc, char** argv) {
     players.set_gm_commands(gm_commands);
     players.set_reactions_enabled(!no_reactions);
     if (no_reactions) spdlog::info("[abilities] the game's reactions are OFF (--no-reactions)");
+    const uint64_t dice_seed = combat_seed != 0 ? combat_seed : gather::fresh_seed();
+    players.set_dice_seed(dice_seed);
+    spdlog::info("[combat] the hit, block and critical rolls start from seed {}{}", dice_seed, combat_seed != 0 ? " (--combat-seed: the same rolls for the same fights)" : " (new on every start)");
     players.set_quest_worker(&quest_worker);
-    spdlog::info("[gm] the client's own GM teleport commands are {}", gm_commands ? "ON (--gm-commands)" : "off (--gm-commands, or AOC_GM_COMMANDS=1, turns them on); each one the client sends is logged");
+    spdlog::info("[gm] client GM commands require an account owner grant and .GM On; the legacy --gm-commands switch grants no privileges");
     // Nodes 1, stage 1: the registry from content.db, the seed's levels at once (login never waits for the service), then the stream.  The feed is declared
     // after the world, so it stops first.
     std::unique_ptr<svc::CityNodeFeed> city_feed;
@@ -521,6 +534,7 @@ int main(int argc, char** argv) {
             players.set_spawn_context(std::move(context));
             combat::CombatWorldConfig combat_config;
             combat_config.enabled = !no_combat;
+            combat_config.seed = dice_seed;
             combat_config.default_aggro_cm = npc_aggro_cm;
             combat_config.default_leash_cm = npc_leash_cm;
             combat_config.npc_damage_mult = npc_damage_mult;

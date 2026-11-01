@@ -348,6 +348,24 @@ func buildAbilities(w *writer, src *source, opt *Options, meta map[string]string
 		return err
 	}
 	opt.logf("ability_names.tsv: %d more abilities", named)
+	// Item casts are not granted by talent trees. Every referenced cast must bring
+	// its effects, hits and expressions into the same closure as learned abilities.
+	for _, item := range src.rows["ItemRecordBase"] {
+		if _, present := item.Fields["ActivationCastId"]; !present {
+			continue
+		}
+		f := newFields(fmt.Sprintf("Item %s (%d)", item.Name, item.Guid), item.Fields)
+		cast, _ := f.id("ActivationCastId")
+		if f.err != nil {
+			return f.err
+		}
+		if cast != 0 {
+			if b.abilities[cast] == nil {
+				return fmt.Errorf("item %s casts missing ability %d", item.Name, cast)
+			}
+			abilitySeed[cast] = true
+		}
+	}
 	opt.logf("skill_rank: %d distinct ability/effect pairs, %d abilities, %d effects granted by ranks (and the always-on ones)", nranks, len(abilitySeed), len(effectSeed))
 
 	// ---- the closure ----
@@ -1171,7 +1189,23 @@ func (b *abBuilder) writeEffect(r *designdb.Row) error {
 	persDeath, persRelog, dispel, significant := f.boolean("bPersistsThroughDeath"), f.boolean("bPersistsRelog"), f.boolean("bDispellable"), f.boolean("bSignificant")
 	durT, reqT, inPlaceT := f.str("EffectDuration"), f.str("ApplicationRequirements"), f.str("InPlaceStackLimit")
 	cc, _ := f.id("CrowdControlId")
-	extra := map[string][]int64{"ReactionsIds": refGuids(f, "ReactionsIds"), "HitModsIds": refGuids(f, "HitModsIds"), "FragilityDefinitionsIds": refGuids(f, "FragilityDefinitionsIds")}
+	extra := map[string]any{"ReactionsIds": refGuids(f, "ReactionsIds"), "HitModsIds": refGuids(f, "HitModsIds"), "FragilityDefinitionsIds": refGuids(f, "FragilityDefinitionsIds")}
+	if _, present := r.Fields["EffectGroupId"]; present {
+		groupID, _ := f.id("EffectGroupId")
+		for _, group := range b.src.rows["EffectGroupRecordBase"] {
+			if group.Guid != groupID || groupID == 0 {
+				continue
+			}
+			gf := newFields(fmt.Sprintf("EffectGroup %s (%d)", group.Name, group.Guid), group.Fields)
+			extra["EffectGroupGuid"] = groupID
+			extra["EffectGroupLimit"] = gf.int("GlobalStackLimit")
+			extra["EffectGroupStackType"] = gf.str("EffectStackType")
+			if gf.err != nil {
+				return gf.err
+			}
+			break
+		}
+	}
 	if f.err != nil {
 		return f.err
 	}

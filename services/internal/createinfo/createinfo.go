@@ -47,6 +47,10 @@ type Info struct {
 	// single entry. The client parses the wrapper as a protobuf map, where the
 	// last duplicate wins, so this only pins the rule for malformed ones.)
 	Appearance string
+	// StartingLocation is the first field 5 that is a string: the starting
+	// zone's tag ("Riverlands", "Anvils", as PlayerStartsRecordBase names them);
+	// "" when absent.
+	StartingLocation string
 }
 
 // (Cyb ~ C-O-A)
@@ -58,8 +62,8 @@ type Info struct {
 // skipped.
 func Parse(info []byte) Info {
 	var out Info
-	var sawGender, sawRace, sawClass, sawCustomization bool
-	for b := info; len(b) > 0 && !(sawGender && sawRace && sawClass && sawCustomization); {
+	var sawGender, sawRace, sawClass, sawCustomization, sawLocation bool
+	for b := info; len(b) > 0 && !(sawGender && sawRace && sawClass && sawCustomization && sawLocation); {
 		num, typ, n := protowire.ConsumeTag(b)
 		if n < 0 {
 			return out
@@ -93,6 +97,14 @@ func Parse(info []byte) Info {
 			sawCustomization = true
 			out.Customization = v
 			out.Appearance = customizationJSON(v)
+			b = b[n:]
+		case num == 5 && typ == protowire.BytesType && !sawLocation:
+			v, n := protowire.ConsumeBytes(b)
+			if n < 0 {
+				return out
+			}
+			sawLocation = true
+			out.StartingLocation = string(v)
 			b = b[n:]
 		default:
 			n := protowire.ConsumeFieldValue(num, typ, b)

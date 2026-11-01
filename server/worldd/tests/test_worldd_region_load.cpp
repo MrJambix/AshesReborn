@@ -191,6 +191,8 @@ int main() {
     const double ms_area = since_ms(t_step);
     const tests::MemoryNow m1 = tests::memory_now();
     CHECK(area_ok, "the Riverlands load (load_area)");
+    CHECK(world.area_report() && world.area_report()->gm_vendors == 0,
+          "public starting areas contain no runtime GM vendor NPCs");
     if (!area_ok) {
         std::printf("    %s\n", error.c_str());
         return 2;

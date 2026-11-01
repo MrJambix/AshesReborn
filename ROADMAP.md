@@ -54,8 +54,8 @@ Milestones 1-8 and 10 (login, world bootstrap, stats, talents, combat and abilit
 ### Left
 - Quests: the speech bubbles over NPCs who have an objective for you; the choose-one reward window and the Quest bag; hand-ins that ask for items by tag or rarity, and the pendant of The Great Mirage; objects that stand in the map itself (the Harbinger quests); the Destiny window, group quests, events and boards.
 - Reactions: the Bard's Cheerful, Pensive and Epic melodies at a finisher, the statuses of its damage melodies, checking the other classes' finisher effects and the weapon-tree finisher procs against the game, and the reactions that wait for you being hit or for other events.
-- Summoner pets.
-- Stacks: joining, splitting and dragging stacks; the gathering bags' bigger stacks; paying with change.
+- Summoner pet combat and special abilities (summoning, ownership, following, Stay and Dismiss are implemented).
+- Stacks: joining and splitting stacks in the warehouse; the gathering bags' bigger stacks.
 - Storage: buying more room, tab jobs, crates and guild storage.
 - Embersprings: the map markers, the respawn effect, and the siege, war and corruption respawns.
 - NPCs: face variety, names for rare creatures, and the other hostile humanoids (the bandit archers and healers, and the cultists).
@@ -65,7 +65,7 @@ Milestones 1-8 and 10 (login, world bootstrap, stats, talents, combat and abilit
 - The world: spawns that follow node levels, a world clock with day and night spawns, lava, world events and weather, treasure hunts, fishing, random gatherables, and camp props (tents, totems, caches, doors).
 - Nodes: the Camp's stations, harvesting a node's own trees, node experience and vassals, citizenship and mayor, and node taxes.
 - Economy: player trading, marketplaces, node currency and crates.
-- Social: seeing other players, guilds, parties and raids, chat and mail.
+- Social: seeing other players, guilds, parties and raids, group/guild/node/custom chat, ignore lists, chat history and mail. Basic nearby/public chat and online whispers were deployed on 31 October; the player confirmed chat works in game after deployment.
 - Node sieges and territory wars.
 - Caravans and trade routes.
 - Conversations: NPC voice and animation while they talk.

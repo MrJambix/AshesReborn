@@ -18,6 +18,14 @@ function Find($n) { Get-Process -Name $n -ErrorAction SilentlyContinue | Where-O
 function Running { @($names | ForEach-Object { Find $_ } | Where-Object { $_ }) }
 function Use-Db { $env:PGPASSWORD = [IO.File]::ReadAllText("$root\secrets\db.password") }
 
+function Notify([string] $Message, [string] $Level = 'info') {
+    # Optional for older installations; delivery failures never prevent maintenance.
+    try {
+        $sender = Join-Path $PSScriptRoot 'notify-discord.ps1'
+        if (Test-Path -LiteralPath $sender) { & $sender -Message $Message -Level $Level -Root $root | Out-Null }
+    } catch { Write-Warning 'Discord notification failed; maintenance will continue.' }
+}
+
 function Stop-Stack {
     if ((Get-ScheduledTask $task).State -eq 'Running') {
         Set-Content "$run\stop.flag" 'stop'
@@ -64,10 +72,14 @@ function Show-Status {
     Write-Host ('memory  : {0:n0} MB free, commit {1:n0} of {2:n0} MB' -f ($os.FreePhysicalMemory / 1KB), (($os.TotalVirtualMemorySize - $os.FreeVirtualMemory) / 1KB), ($os.TotalVirtualMemorySize / 1KB))
 }
 
+$notifyAction = $Action -in @('start', 'stop', 'restart', 'restore', 'update', 'allow-ip', 'open', 'close')
+$failureMessage = "Server operation '$Action' failed. Check the server status and logs before retrying."
+if ($notifyAction) { Notify "Server operation '$Action' is starting. Service may be interrupted during maintenance." }
+try {
 switch ($Action) {
-    'start' { if (-not (Start-Stack)) { exit 1 } }
+    'start' { if (-not (Start-Stack)) { throw 'The server did not start.' } }
     'stop' { Stop-Stack; Write-Host 'stopped' }
-    'restart' { Stop-Stack; if (-not (Start-Stack)) { exit 1 } }
+    'restart' { Stop-Stack; if (-not (Start-Stack)) { throw 'The server did not restart.' } }
     'status' { Show-Status }
     'logs' {
         $n = if ($Arg) { $Arg } else { 'worldd' }
@@ -101,8 +113,8 @@ switch ($Action) {
         cmd /c "`"$pg\pg_restore.exe`" -h 127.0.0.1 -U aoc -d aoc --clean --if-exists `"$Arg`" 2>&1"
         $rc = $LASTEXITCODE
         if ($rc -ne 0) { Write-Host "pg_restore reported problems (exit $rc). The backup taken first: $safety" }
-        if (-not (Start-Stack)) { exit 1 }
-        if ($rc -ne 0) { exit 1 }
+        if (-not (Start-Stack)) { throw 'The server did not start after restore.' }
+        if ($rc -ne 0) { throw "pg_restore reported problems (exit $rc)." }
     }
     'update' {
         if (-not $Arg -or -not (Test-Path $Arg)) { throw "update needs a package: $Arg" }
@@ -119,15 +131,24 @@ switch ($Action) {
         New-Item -ItemType Directory -Force $logs | Out-Null
         Copy-Item "$new\ops\*" "$root\ops" -Exclude site.json -Force
         Copy-Item "$new\deploy\*" "$root\deploy" -Force
+        # Seed deployment settings once; later program updates preserve operator rate/name changes.
+        New-Item -ItemType Directory -Force "$root\config" | Out-Null
+        foreach ($setting in @('realm.json', 'rates.json')) {
+            if ((Test-Path -LiteralPath "$new\config\$setting") -and -not (Test-Path -LiteralPath "$root\config\$setting")) {
+                Copy-Item -LiteralPath "$new\config\$setting" -Destination "$root\config\$setting"
+            }
+        }
         Copy-Item "$new\VERSION.txt" $root -Force
         Remove-Item -Recurse -Force $new
         if (Start-Stack) { Write-Host "updated; the old programs are in $root\dist.prev"; break }
         Write-Host 'the new version did not come up: going back'
+        Notify 'The updated server did not start. Rolling back to the previous programs.' 'warning'
+        $failureMessage = 'Server update failed. Rollback did not complete; check the server status and logs immediately.'
         Stop-Stack
         Move-Item "$root\dist" "$root\dist.failed"
         Move-Item "$root\dist.prev" "$root\dist"
-        Start-Stack | Out-Null
-        exit 1
+        if (Start-Stack) { $failureMessage = 'Server update failed. The previous programs were restored and the server is running.' }
+        throw $failureMessage
     }
     'allow-ip' {
         if (-not $Arg) { throw 'allow-ip needs the IP address' }
@@ -143,4 +164,21 @@ switch ($Action) {
         Get-NetFirewallRule -DisplayName 'SandalCore-*' | Set-NetFirewallRule -RemoteAddress $site.owner_ip
         Write-Host "SandalCore's game ports now answer only $($site.owner_ip)"
     }
+}
+} catch {
+    if ($notifyAction) { Notify $failureMessage 'error' }
+    throw
+}
+if ($notifyAction) {
+    $completed = switch ($Action) {
+        'start' { 'Server started. All programs are running.' }
+        'stop' { 'Server stopped for maintenance.' }
+        'restart' { 'Server restart completed. All programs are running.' }
+        'restore' { 'Database restore completed. All programs are running.' }
+        'update' { 'Server update completed. All programs are running.' }
+        'open' { 'Server access is open to players.' }
+        'close' { 'Server access is restricted to the owner for maintenance.' }
+        'allow-ip' { 'Server access is restricted to the configured IP address.' }
+    }
+    Notify $completed 'success'
 }

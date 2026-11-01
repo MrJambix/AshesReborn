@@ -12,6 +12,7 @@ package aocexpr
 // the C++ host (server/worldd/world/city_nodes.h) answers with the same numbers: contentc writes them into the node tables
 // (city_node.node_type_ord, city_zoi.biome_ord ...) so that the C++ side never needs the names.
 var enumValues = map[string][]string{
+	"ECharacterClass": {"None", "Ranger", "Bard", "Cleric", "Fighter", "Rogue", "Summoner", "Tank", "Mage", "cCount"},
 	"EBiomeType": {"Default", "AlpineForest", "AncientForest", "ArcticTundra", "Asian", "Badlands", "Desert", "Fjords", "Glacier", "Grasslands",
 		"Iceland", "Jungle", "MagicalForest", "RedwoodForest", "Riverlands", "Swamp", "Taiga", "TabletopMountains", "Tropics", "Volcano",
 		"UnderRealm", "Highlands", "cCount"},

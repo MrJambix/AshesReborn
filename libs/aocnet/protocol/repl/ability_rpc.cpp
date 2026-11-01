@@ -69,6 +69,11 @@ std::optional<TriggerAbility> parse_trigger_ability(const RpcCall& call) {
     }
     t.target_transform_count = count_param(call, "TargetTransforms");
     t.item_slot = static_cast<int32_t>(int_param(call, "ItemData.Slot", -1));
+    if (const Value* v = param(call, "ItemData.ItemInstance")) {
+        const ItemInstance* item = v->get_if<ItemInstance>();
+        if (!item) return std::nullopt;
+        t.item = *item;
+    }
     if (const Value* v = param(call, "ItemData.Location")) {
         const uint64_t* u = v->get_if<uint64_t>();
         if (!u) return std::nullopt;

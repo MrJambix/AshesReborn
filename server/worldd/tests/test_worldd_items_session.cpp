@@ -12,7 +12,7 @@
 //  wearing and taking off        ServerItemUsed (with ServerActivateItem, as the retail client sends both): the answer is the retail one, two
 //                                events on the PlayerController and the pawn's HeldItems (all 23 items, the array key 23 on) and AppearanceIDs
 //                                in the same packet, and no stats; taking the chest off changes the look, putting it on restores it
-//  the bag                       ServerRequestStorageEvent: a move is Remove, Add; a swap Remove, Remove, Add, Add; a split, a stack, a destroy and
+//  the bag                       ServerRequestStorageEvent: a move is Remove, Add; a swap Remove, Remove, Add, Add; a split onto an occupied slot, a stack onto an empty one and
 //                                the other storages are refused
 //  refusals                      nothing changes, nothing but the storages' payloads is sent, and only a few times; unknown containers, garbage
 //                                and hostile numbers never fail the session
@@ -367,8 +367,13 @@ struct Mirror {
                         events.push_back(*ev);
                         const int s = storage_of(guids, ev->targets[0].object);
                         const std::pair<int, int> key{s, ev->targets[0].slots[0].slot};
+                        const int32_t leaving = ev->targets[0].slots[0].count;
                         if (ev->type == static_cast<uint8_t>(repl::StorageEventType::Add)) storage[key] = ev->item;
-                        else storage.erase(key);
+                        else if (leaving > 0 && leaving < static_cast<int32_t>(ev->item.quantity)) {   // part of the stack leaves: the rest stays in the slot
+                            repl::ItemInstance rest = ev->item;
+                            rest.quantity = ev->item.quantity - static_cast<decltype(rest.quantity)>(leaving);
+                            storage[key] = std::move(rest);
+                        } else storage.erase(key);
                     } else if (std::string(c.rpc->name) == "ClientReceiveStoragePayload") {
                         absorb_payload(repl::parse_storage_payload(c));
                     }
@@ -1040,7 +1045,8 @@ static void test_refusals() {
     {
         MoveSpec m = potion_move(h);
         m.from_count = 2;
-        move("a partial stack (a split)", m);
+        m.to_slot = 0;
+        move("a partial stack onto an occupied slot", m);
     }
     {
         MoveSpec m = potion_move(h);
@@ -1969,7 +1975,8 @@ static void test_item_trigger() {
     CHECK(found, "it reads whole: the item is decoded, the call is not half-read any more");
     if (found) {
         const auto t = repl::parse_trigger_ability(parsed->rpcs[0].call);
-        CHECK(t && t->ability_guid == kQuickWit && t->client_instance_id == 3 && t->item_slot == 15 && t->item_location == 4, "with the ability, the client's id, the item's slot 15 and its location 4");
+        CHECK(t && t->ability_guid == kQuickWit && t->client_instance_id == 3 && t->item_slot == 15 && t->item_location == 4
+              && t->item == items::to_instance(*scepter), "with the ability, the client's id, the item's slot, location and full instance identity");
     }
     h.request(bunch, h.pawn_ch);
     CHECK(h.s->ability_triggers() == 1 && h.s->ability_ends_sent() == 1 && !h.s->failed(), "the session handles it as any trigger: an ability worldd does not run is answered with ClientEndAbility");
@@ -4447,6 +4454,28 @@ static void test_resource_requests() {
     CHECK(expect_refused(third, "third container"), "a drag to Resource2, which the character has no bag for, is refused");
     CHECK(h.s->item_requests_refused() == refused + 7, "seven refusals counted");
     CHECK(h.mirror.payloads > payloads && mirror_matches(h), "the client was sent its containers again after the refusals, and agrees");
+
+    // part of the coal becomes a stack of its own, and joins again: the client's copy follows every step
+    h.step(milliseconds(2100));   // the budgets refill
+    MoveSpec part = m;
+    part.from_slot = 2;
+    part.from_count = 5;
+    part.source_guid = part.event_guid = coal;
+    part.to_slot = 10;
+    const int64_t all_coal = h.s->inventory().at(R0, 2)->quantity;
+    h.request(storage_move(part), h.pc_ch);
+    const svc::InventoryItem* parted = h.s->inventory().at(R0, 10);
+    CHECK(parted && parted->quantity == 5 && parted->instance_guid != coal && h.s->inventory().at(R0, 2)->quantity == all_coal - 5 && mirror_matches(h), "a Move of part of a stack splits it, and the client agrees");
+    if (parted) {
+        MoveSpec join = part;
+        join.type = static_cast<uint8_t>(repl::StorageEventType::Fill);
+        join.from_slot = 10;
+        join.source_guid = join.event_guid = parted->instance_guid;
+        join.to_slot = 2;
+        join.target_guid = coal;
+        h.request(storage_move(join), h.pc_ch);
+        CHECK(!h.s->inventory().at(R0, 10) && h.s->inventory().at(R0, 2)->quantity == all_coal && mirror_matches(h), "a Fill joins it again, and the client agrees");
+    }
 }
 
 static void test_resource_repair() {
@@ -4490,6 +4519,8 @@ static void test_resource_no_room_at_login() {
     CHECK(inv.size() == bard_items().size() + 7, "every item is still there");
 }
 
+#include "consumable_session_tests.inc"
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // (a crash must not take the last results with it)
     auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
@@ -4510,6 +4541,7 @@ int main() {
     test_saver_inventories();
     test_endpoint_saves();
     test_item_trigger();
+    test_real_consumables();
     test_held_items_update_waits_for_the_window();
     test_review_naked_join_then_equip();
     test_review_unequip_everything_and_back();

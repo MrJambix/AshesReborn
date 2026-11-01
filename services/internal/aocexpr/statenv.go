@@ -138,6 +138,7 @@ var StatFloatFuncs = map[string]bool{
 	"EvalF":                   true,
 	"GetTerm":                 true,
 	"GetConsumedItemStat":     true,
+	"GetItemInstanceStat":     true,
 	"GetNpcStatDistribution":  true,
 }
 
@@ -149,6 +150,7 @@ const HasValidEquipmentTag = "Item"
 func StatFuncNames() []string {
 	return []string{
 		"GetOwner", "GetInstigator", "GetSource", "GetSelf",
+		"GetAbilityItemInstance", "GetItemInstanceStat", "GetPrimaryArchetype",
 		"GetCharacterLevel", "GetNPCLevel", "GetStat", "GetStatInitRunningTotal", "EvalE", "EvalEquation", "EvalFormula", "EvalF", "GetTerm",
 		"GetEffectCount", "GetEffectCountByTag", "GetSkillPurchased", "IsInCombat", "IsMoving", "IsUnkillable",
 		"EquippedItemInSlotHasTag", "HasValidEquipment", "GetActorGuid", "GetPlayerProfessionLevel", "GetConsumedItemStat", "GetNpcEliteRank", "GetNpcStatDistribution",
@@ -259,10 +261,34 @@ func StatEnv(ctx StatContext, curves CurveSource) *Env {
 		Curves:     curves,
 		FloatFuncs: StatFloatFuncs,
 		Funcs: map[string]Func{
-			"GetOwner":          obj("owner"),
-			"GetInstigator":     obj("instigator"),
-			"GetSource":         obj("source"),
-			"GetSelf":           obj("self"),
+			"GetOwner":               obj("owner"),
+			"GetInstigator":          obj("instigator"),
+			"GetSource":              obj("source"),
+			"GetSelf":                obj("self"),
+			"GetAbilityItemInstance": obj("consumed_item"),
+			"GetItemInstanceStat": num(func(a []Value) (float64, error) {
+				if err := argsOf(a, "or"); err != nil {
+					return 0, err
+				}
+				if a[0].(Object).Kind != "consumed_item" {
+					return 0, fmt.Errorf("GetItemInstanceStat requires the consumed item")
+				}
+				return ctx.ConsumedItemStat(a[1].(Ref)), nil
+			}),
+			"GetPrimaryArchetype": func(a []Value) (Value, error) {
+				if err := argsOf(a, "o"); err != nil {
+					return nil, err
+				}
+				class := 0
+				if source, ok := of(a[0].(Object)).(interface{ CharacterClass() int }); ok {
+					class = source.CharacterClass()
+				}
+				name, ok := EnumName("ECharacterClass", class)
+				if !ok {
+					name = "None"
+				}
+				return Enum{Type: "ECharacterClass", Value: name}, nil
+			},
 			"GetCharacterLevel": num(level),
 			"GetNPCLevel":       num(level),
 			"GetStat": num(func(a []Value) (float64, error) {

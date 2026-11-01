@@ -1451,9 +1451,40 @@ static void send_player(Harness& h, const char* names, double x, double y, doubl
     h.run(milliseconds(300));
 }
 
+static void test_account_gm_commands() {
+    std::printf("account GM commands: grants, disabled mode, parser, and owner isolation\n");
+    auto normal = cyb_on_the_ground(); normal.name = "Jambix";
+    Harness player(normal, on_the_ground); player.play();
+    auto ordinary = make_travel(player);
+    player.fx.world->set_gm_commands(true);
+    CHECK(ordinary.command(*player.s, player.conn, ".GM On").status == GmStatus::PermissionDenied,
+          "a character called Jambix and the legacy global switch grant no GM access");
+    CHECK(!player.s->gm_enabled(), "a refused activation leaves GM mode off");
+    CHECK(ordinary.account_command(normal.account_id, "").status == GmStatus::PermissionDenied, "overlay polling also checks the account grant");
+    auto record = cyb_on_the_ground(); record.gm_level = 3;
+    Harness owner(record, on_the_ground); owner.play();
+    auto gm = make_travel(owner);
+    CHECK(!owner.s->gm_enabled(), "a verified owner starts with GM mode off");
+    CHECK(gm.command(*owner.s, owner.conn, ".GM speed self 2").status == GmStatus::PermissionDenied, "an owner cannot mutate while GM mode is off");
+    auto enabled = gm.command(*owner.s, owner.conn, ".gM oN");
+    CHECK(enabled.status == GmStatus::Ok && enabled.enabled && enabled.level == 3 && enabled.panel_revision != 0, "case-insensitive .GM On enables the owner and opens the panel");
+    CHECK(gm.account_command(99999, ".GM On").status == GmStatus::NotFound, "the overlay cannot borrow another account's joined character");
+    const auto speed = gm.command(*owner.s, owner.conn, ".GM speed self 2");
+    CHECK(speed.status == GmStatus::Ok && near_to(owner.s->gm_speed(), 2), "a command from the verified owner reaches the existing speed implementation");
+    CHECK(gm.command(*owner.s, owner.conn, ".GM speed self nan").status == GmStatus::InvalidArgument, "non-finite numeric arguments are refused");
+    CHECK(gm.command(*owner.s, owner.conn, ".GM item self missing 4294967297").status == GmStatus::InvalidArgument, "item counts cannot wrap into int32");
+    CHECK(gm.command(*owner.s, owner.conn, ".GM speed self 2 extra").status == GmStatus::InvalidArgument, "extra arguments are refused");
+    CHECK(gm.command(*owner.s, owner.conn, ".GM teleport self \"unterminated").status == GmStatus::InvalidArgument, "unterminated quotes are refused");
+    // Disabling is available even when the action budget has been spent.
+    auto disabled = gm.command(*owner.s, owner.conn, ".GM Off");
+    CHECK(disabled.status == GmStatus::Ok && !owner.s->gm_enabled() && near_to(owner.s->gm_speed(), 1), ".GM Off disables commands and restores ordinary movement speed");
+}
+
 static void test_client_rpcs() {
     std::printf("the client's own GM RPCs: ServerTeleportXYZ, ServerTeleport, ServerTeleportPlayer, behind the switch\n");
-    Harness h(cyb_on_the_ground(), on_the_ground);
+    auto record = cyb_on_the_ground();
+    record.gm_level = 3;
+    Harness h(record, on_the_ground);
     h.play();
     GmTravel travel = make_travel(h);
     h.fx.world->set_gm_port(&travel);
@@ -1466,7 +1497,7 @@ static void test_client_rpcs() {
     CHECK(h.s->gm_rpcs_received() == 3, "with the switch off the three RPCs are received (and logged) ...");
     CHECK(h.s->gm_rpcs_answered() == 0 && h.s->gm_teleports() == 0 && near_to(h.s->movement().good().x, start.x) && near_to(h.s->movement().good().y, start.y), "... and none moves the player");
     // on
-    h.fx.world->set_gm_commands(true);
+    h.s->set_gm_enabled(true);
     send_xyz(h, 5000, 3000, 1500);
     CHECK(h.s->gm_rpcs_answered() == 1 && near_to(h.s->movement().good().x, 5000) && near_to(h.s->movement().good().y, 3000) && near_to(h.s->movement().good().z, 1500),
           "ServerTeleportXYZ with the switch on: the player is at (5000, 3000, 1500)");
@@ -1482,7 +1513,7 @@ static void test_client_rpcs() {
     CHECK(h.s->gm_rpcs_answered() == 3 && near_to(h.s->movement().good().x, 7000) && near_to(h.s->movement().good().y, 2000), "ServerTeleportPlayer 'nobody, cyb' moves cyb");
     CHECK(h.s->gm_rpcs_received() == 8, "(every RPC was received and counted)");
     // a dead player is not moved by its own console
-    h.fx.world->set_gm_commands(false);
+    h.s->set_gm_enabled(false);
     send_xyz(h, 100, 100, 1500);
     CHECK(near_to(h.s->movement().good().x, 7000), "switched off again, the next one is refused");
 }
@@ -1497,7 +1528,8 @@ static void test_client_text_in_the_log() {
     logger->set_level(spdlog::level::info);
     spdlog::set_default_logger(logger);
     {
-        Harness h(cyb_on_the_ground(), on_the_ground);
+        auto record = cyb_on_the_ground(); record.gm_level = 3;
+        Harness h(record, on_the_ground);
         h.play();
         GmTravel travel = make_travel(h);
         h.fx.world->set_gm_port(&travel);
@@ -1523,7 +1555,7 @@ static void test_client_text_in_the_log() {
         CHECK(lines_that("[2026-10-10 20:00:00.000]") == 0, "switch off: no line of the player's making reaches the log");
         CHECK(has_line_with("the client sent ServerTeleport (", "a line the player made") && has_line_with("the client sent ServerTeleportPlayer (", "a line the player made"),
               "... the text is there, on the one line of the RPC");
-        h.fx.world->set_gm_commands(true);
+        h.s->set_gm_enabled(true);
         log.str("");
         send_key(h, forged);
         send_player(h, forged, 0, 0, 0);
@@ -1778,6 +1810,7 @@ int main() {
     test_speed_on_foot();
     test_speed_mounted();
     test_speed_before_mounting();
+    test_account_gm_commands();
     test_client_rpcs();
     test_client_text_in_the_log();
     test_admin_api();

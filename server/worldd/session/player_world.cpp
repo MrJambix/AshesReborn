@@ -274,13 +274,7 @@ bool PlayerWorld::load_area(const spawns::AreaConfig& area, std::string& error) 
         error = "the captured spawns do not load: " + e;
         return false;
     }
-    auto gm = vendor::GmVendors::load(*content_, e);
-    if (!gm) {
-        error = "the GM vendors do not load: " + e;
-        return false;
-    }
     captured_ = std::move(*captured);
-    gm_ = std::move(*gm);
     {   // quests, slice 0: the NPC conversations; a content.db of an older version has none and the NPCs keep their answer
         std::string de;
         if (auto data = content_->dialogue_data(de)) {
@@ -388,7 +382,9 @@ bool PlayerWorld::load_area(const spawns::AreaConfig& area, std::string& error) 
     spawns::AreaSources sources;
     sources.db = content_;
     sources.captured = &*captured_;
-    sources.gm = &*gm_;
+    // Public starting areas contain ordinary NPCs only. GM supplies are available
+    // through the authenticated command panel, without shared vendor actors.
+    sources.gm = nullptr;
     sources.generic = &*generic_;
     sources.looks = looks_.get();
     sources.objects = objects_ ? &*objects_ : nullptr;
@@ -423,12 +419,13 @@ bool PlayerWorld::load_area(const spawns::AreaConfig& area, std::string& error) 
         }
         spdlog::info("[area] data NPCs by zone of influence: {}", line);
     }
-    spdlog::info("[area] GM vendors: {} PTR vendor defs, {} item records in their stock; of the {} GM/PTR item records, {} are in a stock and {} are in none",
-                 gm_->vendors().size(), gm_->stocked_records(), gm_->gm_item_count(), gm_->gm_items_stocked(), gm_->unstocked().size());
-    if (!gm_->mount_error().empty()) spdlog::warn("[area] the GM mounts vendor sells only what its def lists: {}", gm_->mount_error());
-    else spdlog::info("[area] the GM mounts vendor sells all {} mount items ({} added to the {} its def lists)", gm_->mounts_total(), gm_->mounts_added(), gm_->mounts_total() - gm_->mounts_added());
-    // the legend of the vendors: each NPC's nameplate is its def's label, laid out in two arcs in front of the login spot (the first 12 near, the rest further out)
-    {
+    // (the world loads no GM vendors of its own: only a test's set_gm_vendors gives it any)
+    if (gm_) {
+        spdlog::info("[area] GM vendors: {} PTR vendor defs, {} item records in their stock; of the {} GM/PTR item records, {} are in a stock and {} are in none",
+                     gm_->vendors().size(), gm_->stocked_records(), gm_->gm_item_count(), gm_->gm_items_stocked(), gm_->unstocked().size());
+        if (!gm_->mount_error().empty()) spdlog::warn("[area] the GM mounts vendor sells only what its def lists: {}", gm_->mount_error());
+        else spdlog::info("[area] the GM mounts vendor sells all {} mount items ({} added to the {} its def lists)", gm_->mounts_total(), gm_->mounts_added(), gm_->mounts_total() - gm_->mounts_added());
+        // the legend of the vendors: each NPC's nameplate is its def's label, laid out in two arcs in front of the login spot (the first 12 near, the rest further out)
         std::string legend;
         const auto& defs = gm_->vendors();
         for (size_t i = 0; i < defs.size(); ++i) {

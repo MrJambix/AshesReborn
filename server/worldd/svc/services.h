@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -231,6 +232,7 @@ struct QuestLogResult {
 struct Character {
     std::string id;
     int64_t account_id = 0;
+    int32_t gm_level = 0; // server-owned account grant, never the character name
     std::string name;
     int32_t race_id = 0;
     int32_t gender_id = 0;
@@ -277,6 +279,7 @@ struct Character {
     /// Nodes 1, stage 2: the characters of the same account (id, name), this one included, for OwnerInfo.CharactersNodeData.  Empty when the list is not known
     /// (a service that does not answer ListCharacters, a fake): the join lists this character alone.
     std::vector<AccountCharacter> account_characters;
+    std::map<std::string, bool> auto_attack_settings;
 };
 
 /// Plan D1: what SaveProgress writes: a zero level or class leaves that value; every row replaces the character's row of its type.
@@ -303,8 +306,9 @@ struct Progress {
     std::vector<int32_t>         attunements;
     int32_t                      home_attunement = 0;
     int64_t                      home_last_used_ms = 0;
+    std::map<std::string, bool> auto_attack_settings;
     bool operator==(const Progress& o) const {
-        if (level != o.level || class_id != o.class_id || experience.size() != o.experience.size()) return false;
+        if (auto_attack_settings != o.auto_attack_settings || level != o.level || class_id != o.class_id || experience.size() != o.experience.size()) return false;
         for (size_t i = 0; i < experience.size(); ++i) {
             if (!(experience[i] == o.experience[i])) return false;
         }

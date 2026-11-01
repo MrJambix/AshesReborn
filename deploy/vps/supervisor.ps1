@@ -19,6 +19,25 @@ New-Item -ItemType Directory -Force $logs, $run | Out-Null
 function Log($m) { Add-Content $svLog ('{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), $m) }
 
 $site = Get-Content "$root\ops\site.json" -Raw | ConvertFrom-Json
+$worldName = 'Ashes Reborn'; $expRate = 5.0; $dropRate = 3.0
+if (Test-Path -LiteralPath "$root\config\realm.json") {
+    $realm = Get-Content -LiteralPath "$root\config\realm.json" -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    if (-not [string]::IsNullOrWhiteSpace($realm.world_display_name)) { $worldName = [string]$realm.world_display_name }
+}
+if (Test-Path -LiteralPath "$root\config\rates.json") {
+    $rates = Get-Content -LiteralPath "$root\config\rates.json" -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    if ($null -ne $rates.exp_rate) { $expRate = [double]$rates.exp_rate }
+    if ($null -ne $rates.drop_rate) { $dropRate = [double]$rates.drop_rate }
+}
+foreach ($rate in @($expRate, $dropRate)) {
+    if ([double]::IsNaN($rate) -or [double]::IsInfinity($rate) -or $rate -lt 0 -or $rate -gt 1000) {
+        throw 'Experience and drop rates must be finite numbers between 0 and 1000.'
+    }
+}
+$expArgument = $expRate.ToString('G', [Globalization.CultureInfo]::InvariantCulture)
+$dropArgument = $dropRate.ToString('G', [Globalization.CultureInfo]::InvariantCulture)
+$env:AOC_WORLD_NAME = $worldName
+Log "Ashes Reborn settings: world '$worldName', earned XP x$expArgument, loot chance x$dropArgument"
 $content = "$root\dist\content\content.db"; $token = "$root\secrets\service.token"
 $pw = [IO.File]::ReadAllText("$root\secrets\db.password")
 $env:AOC_DATABASE_URL = "postgres://aoc:$pw@127.0.0.1:5432/aoc?sslmode=disable"
@@ -41,7 +60,7 @@ function Find($n) { Get-Process -Name $n -ErrorAction SilentlyContinue | Where-O
 
 function Start-Svc($n) {
     $a = switch ($n) {
-        'worldd' { " --bind 0.0.0.0:7777 --public-address $($site.public_ip):7777 --content-db `"$content`" --service-token-file `"$token`" --max-sessions $MaxPlayers" }
+        'worldd' { " --bind 0.0.0.0:7777 --public-address $($site.public_ip):7777 --content-db `"$content`" --service-token-file `"$token`" --max-sessions $MaxPlayers --exp-rate $expArgument --loot-chance-mult $dropArgument" }
         'character' { " --content-db `"$content`"" }
         default { '' }
     }

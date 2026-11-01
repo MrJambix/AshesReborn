@@ -148,6 +148,8 @@ public:
         bool eval(int64_t program, ExprHost& host, double& out, std::string& err);
         /// Gathering stage 2: the professions' levels the next programs read (GetPlayerProfessionLevel; a profession not listed is level 1).
         void set_profession_levels(const std::map<std::string, int>& levels);
+        /// Stats of the server-owned item that supplied the current consumable cast.
+        void set_consumed_item_stats(const std::map<int64_t, double>& values);
         /// The run's settled value of a stat (0 when the class has no such stat).
         double stat(int64_t guid) const;
         int faults() const;

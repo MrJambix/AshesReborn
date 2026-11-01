@@ -187,6 +187,7 @@ constexpr int kHostRolledItemQuality = 181;  // GetRolledItemQuality(): the qual
 constexpr int kHostItemRarity = 182;         // GetItemRarity(): the EItemRarity ordinal of the harvest's item (Common 0 ... Artifact 6)
 constexpr int kHostSourceCertTier = 183;     // GetSourceCertificationTier(): the CertificationTier of the harvested interaction (Novice 0 ... GrandMaster 4)
 constexpr int kHostGatherBaseSecs = 184;     // GetGatheringInteractionBaseDuration(): the interaction's BaseGatheringDuration, seconds
+constexpr int kHostActorClass = 185;         // GetPrimaryArchetype(actor): the current VM actor's class ordinal
 // Reactions (contentc version 35; aocexpr/hostfn.go has the same numbers): what a reaction's expression asks of the event in progress.
 constexpr int kHostConsumedAbilityHasTag = 190;   // AbilityHasTag(GetConsumedAbility(), tag): name: the tag
 constexpr int kHostConsumedAbilityNameHas = 191;  // RecordNameContains(GetConsumedAbility(), text): name: the text

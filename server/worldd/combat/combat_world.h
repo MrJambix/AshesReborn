@@ -147,6 +147,7 @@ struct CombatWorldConfig {
     double stats_seconds = 1.0;
     double default_aggro_cm = 800.0;
     double default_leash_cm = 3000.0;
+    double default_link_cm = 0.0;           // how close a pack-mate has to be to join a fight, for a creature whose Blueprint the senses table does not list (0: it fights alone)
     double default_attack_range_cm = 220.0; // a creature with no kit ability: the generic slash
     double default_attack_interval = 2.5;   // seconds between two of its attacks when the captures give none
     double default_windup = 0.5;

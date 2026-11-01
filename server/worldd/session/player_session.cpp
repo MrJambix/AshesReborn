@@ -24,6 +24,8 @@
 #include "protocol/repl/move_packed.h"
 #include "protocol/repl/storage_rpc.h"
 #include "session/gm_travel.h"
+#include "session/player_presence.h"
+#include "session/summoner_pets.h"
 #include "protocol/repl/rpc_fields.h"
 #include "items/acquired.h"
 #include "vendor/node_tax.h"
@@ -46,6 +48,7 @@
 #include <map>
 #include <random>
 #include <set>
+#include <sstream>
 
 namespace aoc { namespace worldd {
 
@@ -209,6 +212,8 @@ private:
 };
 
 PlayerSession::~PlayerSession() {
+    presence_.reset();
+    clear_pet();
     cancel_quick_make(nullptr, "the session is destroyed");
     cancel_gather(nullptr, "the session is destroyed");
     leave_combat();
@@ -355,6 +360,9 @@ std::unique_ptr<PlayerSession> PlayerSession::join(Connection& conn, PlayerWorld
                           world.ability_rules(), std::move(*built.inventory), world.item_catalog(), std::move(built.character_stats), &world,
                           character.class_id, built.progress));
     p->wallet_ = purse;
+    p->account_id_ = character.account_id;
+    p->gm_level_ = character.gm_level;
+    p->auto_attack_settings_ = character.auto_attack_settings;
     p->jobs_ = character.processing_jobs;   // crafting, step 1: the jobs run on the wall clock, whether the character was logged in or not
     for (const svc::ProcessingJob& j : p->jobs_) p->job_seen_[j.job_guid] = crafting::status_at(j, wall_ms());   // (step 2: a window opened now shows them so; the changes after are sent)
     p->sync_active_stations(wall_ms());
@@ -504,6 +512,12 @@ std::unique_ptr<PlayerSession> PlayerSession::join(Connection& conn, PlayerWorld
     }
     p->list_item_chunk(conn);   // storage clerks, step 0: the base item chunk is on the pawn from the join, listed in OwnerInfo (queued behind the join)
     p->pump(conn);
+    if (!p->failed_) {
+        p->chat_room_ = world.chat_room();
+        p->chat_peer_ = p->chat_room_->connect(p->name());
+        const auto at = p->checker_.good();
+        p->chat_peer_->x = at.x; p->chat_peer_->y = at.y; p->chat_peer_->z = at.z;
+    }
     if (refusal) *refusal = bootstrap::SetupRefusal::None;
     return p;
 }
@@ -548,6 +562,7 @@ void PlayerSession::tally_speed(const GoodPosition& before, const GoodPosition& 
 void PlayerSession::fail(std::string why) {
     if (failed_) return;
     failed_ = true;
+    chat_peer_.reset();
     failure_ = std::move(why);
     spdlog::error("[session] {}: {}", name(), failure_);
 }
@@ -649,14 +664,16 @@ void PlayerSession::pump(Connection& conn) {
     }
 }
 
-void PlayerSession::tick(Connection& conn) { pump(conn); }
+void PlayerSession::tick(Connection& conn) { pump(conn); run_chat(conn); }
 
 void PlayerSession::tick(Connection& conn, Clock::time_point now) {
     last_now_ = now;
     pump(conn);
     if (finished_ || failed_) return;
+    run_chat(conn);
     session_seconds(now);   // the clock starts at the first tick
     run_abilities(conn, now);
+    run_pets(conn, now);
     run_mounts(conn, now);
     run_ride(conn, now);
     run_timers(conn, now);
@@ -693,6 +710,11 @@ void PlayerSession::tick(Connection& conn, Clock::time_point now) {
             scenery_opened_ += opened;
             scenery_at_ = session_seconds(now);
         }
+    }
+    // Publish after phase-in, independently of congestion on the owning connection.
+    if (registry_ && phase_in_done_ && join_.empty() && !finished_ && !failed_) {
+        if (!presence_) presence_ = std::make_unique<PlayerPresence>(*registry_);
+        presence_->update(pb_, last_position(), stats_ ? &*stats_ : nullptr, ability_seconds(now));
     }
     // plan E1: the other actors, once the join and the phase-in are out (their opens need the client's world to exist)
     if (view_ && phase_in_done_ && join_.empty() && replies_.empty() && delayed_.empty()) {
@@ -789,6 +811,9 @@ void PlayerSession::hand_over(const char* why, bool periodic) {
 void PlayerSession::finish(const char* why) {
     if (finished_) return;
     finished_ = true;
+    presence_.reset();
+    clear_pet();
+    chat_peer_.reset();
     cancel_quick_make(nullptr, why);   // Crafting, step 3: nothing was taken, so nothing is given back
     cancel_gather(nullptr, why);   // Gathering stage 2: a node this player channels is available again
     // this player's lingering zones leave the world with it (the actor system closes them for a connection that is still there)
@@ -854,6 +879,7 @@ void PlayerSession::finish(const char* why) {
 void PlayerSession::hand_over_progress(const char* why) {
     if (!sink_) return;
     svc::Progress p;
+    p.auto_attack_settings = auto_attack_updates_;
     p.level = progress_.level;
     p.class_id = class_id_;
     p.experience.push_back({content::kGuidAdventuring, progress_.xp, progress_.debt});
@@ -1094,6 +1120,7 @@ void PlayerSession::note_unserved_blocks(Role role, const repl::ClientBunch& par
 void PlayerSession::dispatch(Connection& conn, Role role, const repl::ClientRpc& rpc, const InBunch& bunch, Clock::time_point now) {
     const std::string_view name_of_rpc = rpc.call.rpc->name;
     if (rpc.on_actor && role == Role::PlayerController) {
+        if (name_of_rpc == "SendChatMessage") return on_chat(conn, rpc, now);
         if (name_of_rpc == "ServerAcknowledgePossession") {
             const auto it = rpc.call.params.values.find(1);
             const auto* pawn = it != rpc.call.params.values.end() ? it->second.get_if<FIntrepidNetworkGUID>() : nullptr;
@@ -1199,6 +1226,7 @@ void PlayerSession::dispatch(Connection& conn, Role role, const repl::ClientRpc&
         if (name_of_rpc == "SendServerRespawnChoice") return on_respawn_choice(conn, rpc, now);
         if (name_of_rpc == "ServerSetUseRangedWeapon") return on_set_ranged(conn, rpc, now);
         if (name_of_rpc == "ServerSetActiveTarget") return on_set_active_target(conn, rpc, now);
+        if (name_of_rpc == "ServerSendPetCommand") return on_pet_command(conn, rpc, now);
         if (name_of_rpc == "ServerSetHoverTargetGuid") return on_set_hover_target(conn, rpc, now);
         if (name_of_rpc == "ServerActivateItem") {
             // the retail client sends it with every ServerItemUsed of an item that can be worn, with the same parameters; the answer to the
@@ -1380,7 +1408,7 @@ AbilityRuntime* PlayerSession::ability_runtime(Clock::time_point now) {
         // plan D2: the generic runtime beside it (Health and Mana's regeneration runs there even without the ability tables)
         if (stats_ && stats_->started()) {
             pipeline_.emplace(world_ ? world_->ability_catalog() : nullptr, *stats_, *abilities_,
-                              [this] { return bootstrap::worn_items_of(inventory_); }, pb_.setup().world_time, static_cast<uint64_t>(pb_.setup().player_id) * 7919u + 1u);
+                              [this] { return bootstrap::worn_items_of(inventory_); }, pb_.setup().world_time, combat::session_dice_seed(world_ ? world_->dice_seed() : 0, static_cast<uint64_t>(pb_.setup().player_id)));
             pipeline_->set_known(known_);
             if (book_) pipeline_->set_reaction_carriers(book_->reaction_carriers(wielded_line_));
             if (world_) pipeline_->set_reactions_enabled(world_->reactions_enabled());
@@ -1456,6 +1484,10 @@ void PlayerSession::take_ability_events() {
                 return;
             }
             abilities_dirty_ = true;
+        }
+        for (const int64_t id : e.change.effects_removed) pet_effects_.erase(id);
+        for (const auto& effect : e.change.effects_added) {
+            if (pets::for_effect(effect.effect_guid)) pet_effects_[effect.effect_id] = effect.effect_guid;
         }
         for (bootstrap::HitConfirm& h : e.confirmations) {
             if (pending_confirms_.size() >= kMaxPendingConfirms) pending_confirms_.pop_front();
@@ -1565,6 +1597,11 @@ void PlayerSession::flush_zones(Connection& conn) {
 // ~ C | Y | B & C-O-A ~
 
 void PlayerSession::flush_abilities(Connection& conn) {
+    while (!pending_consumables_.empty()) {
+        items::Outcome outcome = std::move(pending_consumables_.front());
+        pending_consumables_.pop_front();
+        apply_outcome(conn, outcome, "a consumable is used");
+    }
     if (abilities_failed_ || failed_ || !join_.empty()) return;   // the join's chains go first: the pawn's second state is theirs
     flush_zones(conn);
     if (blocked_ && conn.unacked_reliable(blocked_channel_) >= blocked_unacked_) return;
@@ -1693,6 +1730,7 @@ void PlayerSession::on_ability_trigger(Connection& conn, const repl::ClientRpc& 
     int32_t instance = 0;
     int32_t item_slot = -1;
     uint32_t item_location = 0;
+    repl::ItemInstance requested_item;
     TriggerInfo info;
     if (const auto t = repl::parse_trigger_ability(rpc.call)) {
         ability = t->ability_guid;
@@ -1700,6 +1738,7 @@ void PlayerSession::on_ability_trigger(Connection& conn, const repl::ClientRpc& 
         pb_.note_trigger_pvp_flag(instance, t->pvp_force);   // (the item this trigger makes carries the flag the trigger carried)
         item_slot = t->item_slot;
         item_location = t->item_location;
+        requested_item = t->item;
         info.animation_index = t->animation_index;
         info.input_x = t->input_x;
         info.input_y = t->input_y;
@@ -1739,7 +1778,8 @@ void PlayerSession::on_ability_trigger(Connection& conn, const repl::ClientRpc& 
     }
     // the mounts milestone: Summon_Mount is the mount controller's (the pipeline refuses an ability that names an item)
     if (mounts_ && ability != 0 && ability == mounts_->book().summon_ability()) return on_summon_trigger(conn, instance, item_slot, item_location, now);
-    if (pipeline_ && pipeline_->handles(ability)) {
+    if (info.item && !prepare_consumable(conn, ability, instance, item_slot, item_location, requested_item, info, now)) return;
+    if (pipeline_ && (pipeline_->handles(ability) || info.item)) {
         const Refusal accepted = pipeline_->trigger(ability, instance, ability_seconds(now), info);
         // Drop Crate: the cast plays its montage and the crate leaves the back at the montage's notify, whatever the place (the original drops nothing at a place a crate cannot lie)
         if (ability == content::kGuidDropCrate && accepted == Refusal::None) {
@@ -2703,6 +2743,17 @@ void PlayerSession::on_item_activated(Connection& conn, const repl::ItemUse& use
     const content::ContentDb* db = world_ ? world_->content() : nullptr;
     const leveling::LevelCurve* curve = world_ ? world_->level_curve() : nullptr;
     if (!db) return refuse("worldd has no content.db to read the item's actions from");
+    // The retail client follows a CastAbility item activation with its item-bearing
+    // ServerTriggerAbility. Authorize and consume it there, once, at the cost step.
+    std::string activation_error;
+    const auto activation = db->item_use(item.item_record_id, activation_error);
+    if (!activation_error.empty()) return refuse(activation_error);
+    if (activation && activation->activation == "CastAbility") {
+        const auto cast = db->item_cast(item.item_record_id, activation_error);
+        if (!activation_error.empty()) return refuse(activation_error);
+        if (!cast) return refuse("this item's activation names no ability");
+        return;
+    }
     use::Context ctx;
     ctx.class_enum = class_id_;
     ctx.progress = progress_;
@@ -3341,9 +3392,8 @@ void PlayerSession::on_storage_event_request(Connection& conn, const repl::Clien
                     *where == svc::ItemContainer::Backpack ? "the item bag" : "a material bag", slot.slot);
         return;
     }
-    if (type != repl::StorageEventType::Move && type != repl::StorageEventType::Swap) {
-        // (a Fill, dragging a stack onto another: Gathering stage 3 refuses it; the backlog has it)
-        return refuse_item_request(conn, what, "an event of type " + std::to_string(event->type) + " is not made (only a Move and a Swap of whole stacks, and the destroy)", now);
+    if (type != repl::StorageEventType::Move && type != repl::StorageEventType::Swap && type != repl::StorageEventType::Fill) {
+        return refuse_item_request(conn, what, "an event of type " + std::to_string(event->type) + " is not made (only a Move, a Swap, a Fill and the destroy)", now);
     }
     if (event->move_source.slots.size() != 1 || event->targets.size() != 1 || event->targets[0].slots.size() != 1) {
         return refuse_item_request(conn, what, "a move names one source slot and one target slot", now);
@@ -3355,6 +3405,17 @@ void PlayerSession::on_storage_event_request(Connection& conn, const repl::Clien
     const repl::StorageEventSlot& dst = event->targets[0].slots[0];
     if (!(src.item_guid == event->item.guid)) return refuse_item_request(conn, what, "the item of the event is not the instance of its source slot", now);
     const std::string guid = items::guid_hex(src.item_guid);
+    if (type == repl::StorageEventType::Fill) {
+        const items::Outcome joined = inventory_.fill(*from, src.slot, src.count, guid, *to, dst.slot, item_catalog());
+        if (!joined.ok) return refuse_item_request(conn, what, joined.refusal, now);
+        return apply_outcome(conn, joined, "two stacks join in the bag");
+    }
+    const svc::InventoryItem* held = inventory_.at(*from, src.slot);
+    if (type == repl::StorageEventType::Move && held && held->instance_guid == guid && src.count > 0 && src.count < held->quantity) {   // a part of the stack: a stack of its own
+        const items::Outcome parted = inventory_.split(*from, src.slot, src.count, guid, *to, dst.slot, fresh_guid(), item_catalog());
+        if (!parted.ok) return refuse_item_request(conn, what, parted.refusal, now);
+        return apply_outcome(conn, parted, "a stack is split in the bag");
+    }
     const items::Outcome outcome = type == repl::StorageEventType::Move
                                        ? inventory_.move(*from, src.slot, src.count, guid, *to, dst.slot, &item_catalog())
                                        : inventory_.swap(*from, src.slot, src.count, guid, *to, dst.slot, items::guid_hex(dst.item_guid), dst.count);
@@ -3364,6 +3425,7 @@ void PlayerSession::on_storage_event_request(Connection& conn, const repl::Clien
 
 void PlayerSession::on_combat_settings(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
     constexpr std::string_view kPrefix = "CharacterInGameSettings.";
+    if (!rpc.call.decoded || !within_budget(combat_budget_, "ServerUpdateAccountCombatSettings", now) || !room_for(1)) return;
     std::vector<bootstrap::PropertyValue> values;
     if (rpc.call.decoded) {
         for (const std::string_view path : kCombatEchoPaths) {
@@ -3373,16 +3435,44 @@ void PlayerSession::on_combat_settings(Connection& conn, const repl::ClientRpc& 
             if (it != rpc.call.params.values.end()) values.push_back({path, it->second});
         }
     }
+    // The first call is the client's login synchronization. Saved account options
+    // take precedence over stale defaults sent by a freshly launched client.
+    const bool restoring = !combat_settings_initialized_;
+    bool changed = false, received_auto_attack = false;
+    for (const std::string_view path : kAutoAttackPaths) {
+        const schema::RepCommand* c = repl::rpc_command(*rpc.call.rpc, path.substr(kPrefix.size()));
+        if (!c) continue;
+        const auto it = rpc.call.params.values.find(c->handle);
+        if (it == rpc.call.params.values.end()) continue;
+        const bool* requested = it->second.get_if<bool>();
+        if (!requested) continue;
+        received_auto_attack = true;
+        const std::string key(path.substr(path.rfind('.') + 1));
+        const auto saved = auto_attack_settings_.find(key);
+        if (restoring && saved != auto_attack_settings_.end()) {
+            values.push_back({path, repl::Value::boolean(saved->second)});
+        } else {
+            values.push_back({path, it->second});
+            if (saved == auto_attack_settings_.end() || saved->second != *requested) {
+                auto_attack_settings_[key] = *requested;
+                auto_attack_updates_[key] = *requested;
+                changed = true;
+            }
+        }
+    }
+    if (received_auto_attack) combat_settings_initialized_ = true;
+    if (changed) {
+        progress_changed_ = true;
+        hand_over_progress("auto attack settings");
+    }
     if (values.empty()) {
         spdlog::log(level_for(combat_empty_logged_), "[session] {}: the client's combat settings carry none of the {} values worldd echoes",
                     name(), kCombatEchoPaths.size());
         return;
     }
-    if (!within_budget(combat_budget_, "ServerUpdateAccountCombatSettings", now) || !room_for(1)) return;
-    spdlog::log(level_for(combat_logged_), "[session] {}: the client's combat settings: echoing {} of the {} values worldd sends", name(),
-                values.size(), kCombatEchoPaths.size());
+    spdlog::log(level_for(combat_logged_), "[session] {}: the client's combat settings: echoing {} values", name(), values.size());
     queue("combat settings echo",
-          [values = std::move(values)](bootstrap::PlayerBootstrap& pb) { return pb.combat_settings_echo(values); }, conn);
+          [values = std::move(values), restoring](bootstrap::PlayerBootstrap& pb) { return pb.combat_settings_echo(values, restoring); }, conn);
 }
 
 void PlayerSession::on_storage_request(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
@@ -3635,6 +3725,7 @@ void PlayerSession::on_start_craft(Connection& conn, const repl::ClientRpc& rpc,
     }
     facts.tier_of = [this](int64_t profession) { return professions_.valid() ? professions_.tier(profession) : 0; };
     facts.inventory = &inventory_;
+    facts.glint = world_->currencies() ? world_->currencies()->tier(items::kGlintTier) : nullptr;
     facts.rarity_facts = [this](int64_t item) { return world_->item_rarity_facts(item); };   // (the rarity the client shows for a stack: the inputs are found by it)
     facts.copper = wallet_.copper();
     facts.unfinished_here = crafting::unfinished_at(jobs_, key, now_ms);
@@ -3750,6 +3841,7 @@ void PlayerSession::on_quick_start(Connection& conn, const repl::StartCraft& req
     }
     facts.tier_of = [this](int64_t profession) { return professions_.valid() ? professions_.tier(profession) : 0; };
     facts.inventory = &inventory_;
+    facts.glint = world_->currencies() ? world_->currencies()->tier(items::kGlintTier) : nullptr;
     facts.rarity_facts = [this](int64_t item) { return world_->item_rarity_facts(item); };   // (the rarity the client shows for a stack: the inputs are found by it)
     facts.copper = wallet_.copper();
     facts.node_currency = wallet_.balance(items::kNodeCurrency);
@@ -3883,6 +3975,7 @@ bool PlayerSession::complete_quick_make(Connection& conn, Clock::time_point now)
     }
     facts.tier_of = [this](int64_t profession) { return professions_.valid() ? professions_.tier(profession) : 0; };
     facts.inventory = &inventory_;
+    facts.glint = world_->currencies() ? world_->currencies()->tier(items::kGlintTier) : nullptr;
     facts.rarity_facts = [this](int64_t item) { return world_->item_rarity_facts(item); };   // (the rarity the client shows for a stack: the inputs are found by it)
     facts.copper = wallet_.copper();
     facts.node_currency = wallet_.balance(items::kNodeCurrency);
@@ -3916,11 +4009,11 @@ bool PlayerSession::complete_quick_make(Connection& conn, Clock::time_point now)
     items::Outcome glint_paid;   // the Glint T1 stacks that pay a price in Glint (the Remove events of the answer)
     if (plan.cost > 0) {   // (checked by the plan: none of them can be short)
         if (plan.currency == items::kGlintTier) {
-            glint_paid = inventory_.take(items::kGlintT1Item, plan.cost);
-            if (!glint_paid.ok) {
+            std::string why;
+            if (!pay_glint(plan.cost, glint_paid, why)) {
                 inventory_ = kept_bags;
                 wallet_ = kept_purse;
-                return fail(glint_paid.refusal);
+                return fail(why);
             }
             if (glint_paid.events.size() > 8 * bootstrap::kMaxEventsPerChain) {
                 inventory_ = kept_bags;
@@ -4039,14 +4132,14 @@ bool PlayerSession::complete_quick_make(Connection& conn, Clock::time_point now)
     ++quick_made_;
     if (cargo) apply_gear_stats("a crate was made");   // the worn stats (the crate's stat block is among them): before the replies are queued, which are built later and carry the stats' deltas
     professions::Professions after = professions_;
-    if (professions_.valid() && rewards.profession_xp > 0 && rewards.profession != 0) after.add_xp(rewards.profession, rewards.profession_xp);
+    if (professions_.valid() && world_->reward_experience(rewards.profession_xp) > 0 && rewards.profession != 0) after.add_xp(rewards.profession, world_->reward_experience(rewards.profession_xp));
     const std::vector<professions::Change> changes = professions_.valid() ? set_professions(after) : std::vector<professions::Change>();
     const leveling::LevelCurve* curve = world_->level_curve();
     const std::span<const content::AutoGrant> grant_list = world_->auto_grants();
     leveling::XpResult xp;
     xp.before = xp.after = progress_;
-    if (curve && rewards.adventuring_xp > 0) {
-        xp = leveling::add_xp(*curve, grant_list, progress_, rewards.adventuring_xp);
+    if (curve && world_->reward_experience(rewards.adventuring_xp) > 0) {
+        xp = leveling::add_xp(*curve, grant_list, progress_, world_->reward_experience(rewards.adventuring_xp));
         progress_ = xp.after;
         progress_changed_ = true;
     }
@@ -4168,8 +4261,8 @@ bool PlayerSession::complete_quick_make(Connection& conn, Clock::time_point now)
         const professions::Profession* pf = professions_.book()->find(c.profession);
         if (pf) line += "; " + pf->name + " +" + std::to_string(c.after.xp - c.before.xp) + " XP (now " + std::to_string(c.after.xp) + ", level " + std::to_string(c.after.level) + ")";
     }
-    if (rewards.adventuring_xp > 0) {
-        line += "; Adventuring +" + std::to_string(rewards.adventuring_xp) + " XP offered (debt " + std::to_string(xp.before.debt) + " -> " + std::to_string(xp.after.debt) + ", total " +
+    if (world_->reward_experience(rewards.adventuring_xp) > 0) {
+        line += "; Adventuring +" + std::to_string(world_->reward_experience(rewards.adventuring_xp)) + " XP offered (debt " + std::to_string(xp.before.debt) + " -> " + std::to_string(xp.after.debt) + ", total " +
                 std::to_string(xp.after.xp) + (leveled ? ", level " + std::to_string(xp.before.level) + " -> " + std::to_string(xp.after.level) : std::string()) + ")";
     }
     spdlog::log(level_for(quick_made_logged_, kMadeLogged), "[session] {}: {}", name(), line);
@@ -4688,14 +4781,14 @@ void PlayerSession::on_processing_request(Connection& conn, const repl::ClientRp
 
     // the experience: the profession's, then Adventuring's (the debt first), as a harvest pays it
     professions::Professions after = professions_;
-    if (professions_.valid() && rewards.profession_xp > 0 && rewards.profession != 0) after.add_xp(rewards.profession, rewards.profession_xp);
+    if (professions_.valid() && world_->reward_experience(rewards.profession_xp) > 0 && rewards.profession != 0) after.add_xp(rewards.profession, world_->reward_experience(rewards.profession_xp));
     const std::vector<professions::Change> changes = professions_.valid() ? set_professions(after) : std::vector<professions::Change>();
     const leveling::LevelCurve* curve = world_->level_curve();
     const std::span<const content::AutoGrant> grant_list = world_->auto_grants();
     leveling::XpResult xp;
     xp.before = xp.after = progress_;
-    if (curve && rewards.adventuring_xp > 0) {
-        xp = leveling::add_xp(*curve, grant_list, progress_, rewards.adventuring_xp);
+    if (curve && world_->reward_experience(rewards.adventuring_xp) > 0) {
+        xp = leveling::add_xp(*curve, grant_list, progress_, world_->reward_experience(rewards.adventuring_xp));
         progress_ = xp.after;
         progress_changed_ = true;
     }
@@ -4766,8 +4859,8 @@ void PlayerSession::on_processing_request(Connection& conn, const repl::ClientRp
         const professions::Profession* pf = professions_.book()->find(c.profession);
         if (pf) line += "; " + pf->name + " +" + std::to_string(c.after.xp - c.before.xp) + " XP (now " + std::to_string(c.after.xp) + ", level " + std::to_string(c.after.level) + ")";
     }
-    if (rewards.adventuring_xp > 0) {
-        line += "; Adventuring +" + std::to_string(rewards.adventuring_xp) + " XP offered (debt " + std::to_string(xp.before.debt) + " -> " + std::to_string(xp.after.debt) + ", total " + std::to_string(xp.after.xp) +
+    if (world_->reward_experience(rewards.adventuring_xp) > 0) {
+        line += "; Adventuring +" + std::to_string(world_->reward_experience(rewards.adventuring_xp)) + " XP offered (debt " + std::to_string(xp.before.debt) + " -> " + std::to_string(xp.after.debt) + ", total " + std::to_string(xp.after.xp) +
                 (leveled ? ", level " + std::to_string(xp.before.level) + " -> " + std::to_string(xp.after.level) : std::string()) + ")";
     }
     spdlog::log(level_for(claim_logged_, kClaimLogged), "[session] {}: {}", name(), line);
@@ -5631,6 +5724,63 @@ void stacks_of(int64_t record, int32_t count, const content::ItemRecord& rec, st
 
 }  // namespace
 
+int64_t PlayerSession::glint_held() const {
+    const items::CurrencyTier* tier = world_ && world_->currencies() ? world_->currencies()->tier(items::kGlintTier) : nullptr;
+    return tier ? items::carried_value(*tier, inventory_) : inventory_.count_of(items::kGlintT1Item);
+}
+
+bool PlayerSession::pay_glint(int64_t cost, items::Outcome& paid, std::string& why) {
+    const items::CurrencyTier* tier = world_ && world_->currencies() ? world_->currencies()->tier(items::kGlintTier) : nullptr;
+    if (!tier) {   // (a content.db with no currency tiers: only the smallest kind pays)
+        paid = inventory_.take(items::kGlintT1Item, cost);
+        why = paid.refusal;
+        return paid.ok;
+    }
+    std::vector<int64_t> held;
+    for (const items::CurrencyKind& k : tier->kinds) held.push_back(inventory_.count_of(k.item));
+    const items::CurrencyPayment plan = items::CurrencyTable::pay(*tier, held, cost);
+    if (!plan.ok) {
+        why = "the bags hold " + std::to_string(glint_held()) + " Glint T1 and the price is " + std::to_string(cost);
+        return false;
+    }
+    paid = items::Outcome{};
+    paid.ok = true;
+    for (const auto& [kind, n] : plan.take) {
+        items::Outcome part = inventory_.take(kind->item, n);
+        if (!part.ok) {
+            why = part.refusal;
+            return false;
+        }
+        paid.events.insert(paid.events.end(), part.events.begin(), part.events.end());
+    }
+    if (plan.change.empty()) return true;
+    const content::ContentDb* db = world_->content();
+    std::vector<svc::InventoryItem> change;
+    const int64_t created = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() * 1000;
+    for (const auto& [kind, n] : plan.change) {
+        std::string error;
+        const auto rec = db ? db->item(kind->item, error) : std::nullopt;
+        if (!rec) {
+            why = "the change: content.db has no item record " + std::to_string(kind->item);
+            return false;
+        }
+        stacks_of(kind->item, static_cast<int32_t>(n), *rec, change, created);
+    }
+    for (svc::InventoryItem& it : change) {
+        it.instance_guid = fresh_guid();
+        for (const svc::InventoryItem& other : change) {
+            if (&other != &it && other.instance_guid == it.instance_guid) it.instance_guid = fresh_guid();
+        }
+    }
+    const items::Outcome given = inventory_.grant(std::move(change), item_catalog());
+    if (!given.ok) {
+        why = "the change does not fit the bags: " + given.refusal;
+        return false;
+    }
+    paid.events.insert(paid.events.end(), given.events.begin(), given.events.end());
+    return true;
+}
+
 int64_t PlayerSession::town_shop_of(const world::WorldActor& npc) const {
     const vendor::TownShops* shops = world_ ? world_->town_shops() : nullptr;
     if (!shops || npc.kind != world::ActorKind::Npc || npc.npc.is_gm_vendor) return 0;
@@ -5666,8 +5816,8 @@ void PlayerSession::buy_from_town_shop(Connection& conn, const repl::VendorPurch
     if (!in_glint && !wallet_.can_pay(quote.total)) {
         return refuse("the purse holds " + std::to_string(wallet_.copper()) + " copper and the cart costs " + std::to_string(quote.total) + " (not enough money)");
     }
-    if (in_glint && inventory_.count_of(items::kGlintT1Item) < quote.total) {
-        return refuse("the bags hold " + std::to_string(inventory_.count_of(items::kGlintT1Item)) + " Glint T1 and the cart costs " + std::to_string(quote.total) + " (not enough Glint)");
+    if (in_glint && glint_held() < quote.total) {
+        return refuse("the bags hold " + std::to_string(glint_held()) + " Glint T1 and the cart costs " + std::to_string(quote.total) + " (not enough Glint)");
     }
     // the goods, as stacks, routed by the bag rule; a cart that does not fit whole is refused whole
     std::vector<svc::InventoryItem> fresh;
@@ -5689,8 +5839,11 @@ void PlayerSession::buy_from_town_shop(Connection& conn, const repl::VendorPurch
     const items::Inventory kept = inventory_;
     items::Outcome paid;
     if (in_glint) {
-        paid = inventory_.take(items::kGlintT1Item, quote.total);
-        if (!paid.ok) return refuse(paid.refusal);
+        std::string why;
+        if (!pay_glint(quote.total, paid, why)) {
+            inventory_ = kept;
+            return refuse(why);
+        }
     }
     const items::Outcome outcome = inventory_.grant(std::move(fresh), item_catalog());
     if (!outcome.ok || (in_glint && paid.events.size() + outcome.events.size() > bootstrap::kMaxEventsPerChain)) {
@@ -6272,6 +6425,7 @@ void PlayerSession::die(Connection& conn, Clock::time_point now) {
     cancel_quick_make(&conn, "the player died");   // Crafting, step 3
     cancel_gather(&conn, "the player died", Interrupt::Death);   // Gathering stage 2
     if (pipeline_) pipeline_->set_dead(true);
+    dismiss_pet(now);
     // the mounts milestone, stage 3: the dead player is dismounted (the death frame below restarts its pawn) and its mount is desummoned
     if (mounted()) dismount(conn, now, DismountWhy::PlayerDied);
     if (mounts_ && abilities_) mounts_->desummon(ability_seconds(now));
@@ -6355,7 +6509,12 @@ void PlayerSession::die(Connection& conn, Clock::time_point now) {
 }
 // -- C | O | A & Cyb --
 
-void PlayerSession::apply_kill(Connection& conn, const combat::KillReward& k, Clock::time_point now) {
+void PlayerSession::apply_kill(Connection& conn, const combat::KillReward& base, Clock::time_point now) {
+    combat::KillReward k = base;
+    if (world_) {
+        k.adventuring_xp = world_->reward_experience(k.adventuring_xp);
+        k.weapon_xp = world_->reward_experience(k.weapon_xp);
+    }
     ++kills_rewarded_;
     const leveling::LevelCurve* curve = world_ ? world_->level_curve() : nullptr;
     const std::span<const content::AutoGrant> grants = world_ ? world_->auto_grants() : std::span<const content::AutoGrant>();
@@ -7223,10 +7382,10 @@ PlayerSession::GmSpeedChange PlayerSession::gm_set_speed(Connection& conn, doubl
 
 bool PlayerSession::gm_rpc_admitted(const char* rpc_name, const std::string& params, Clock::time_point now) {
     ++gm_rpcs_;
-    const bool on = world_ && world_->gm_commands();
+    const bool on = gm_level_ == 3 && gm_enabled_;
     // every GM RPC the client sends is logged, switch or no switch: it settles whether the shipping client's console can send them at all
     spdlog::log(level_for(gm_logged_, 100), "[gm] {}: the client sent {} ({}): {}", name(), rpc_name, log_text(params),
-                on ? "answering" : "refused: GM commands are off (worldd --gm-commands, or AOC_GM_COMMANDS=1)");
+                on ? "answering" : "refused: verified GM account and .GM On required");
     if (!on) return false;
     return gm_budget_.take(now);
 }
@@ -7468,6 +7627,9 @@ void PlayerSession::on_gm_node_rpc(const repl::ClientRpc& rpc, Clock::time_point
 
 // storage clerks, step 0: the session's side of the warehouse window (warehouse/player_warehouse.inc is part of this file, so that the build lists stay as they are)
 #include "warehouse/player_warehouse.inc"
+#include "session/player_consumables.inc"
+#include "session/player_chat.inc"
+#include "session/player_pets.inc"
 #include "respawn/session_embersprings.inc"
 #include "quest/session_quests2.inc"
 #include "quest/session_givers.inc"

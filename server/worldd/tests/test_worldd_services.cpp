@@ -75,6 +75,7 @@ struct Characters final : characterv1::CharacterService::Service {
         int64_t xp = 0;
     };
     std::vector<Prof> got_professions, reply_professions;
+    std::map<std::string, bool> got_auto_attack;
     int progress_calls = 0;
     int32_t got_level = 0;
     std::chrono::milliseconds save_delay{0};   // a service that hangs on SaveCharacterState
@@ -100,6 +101,8 @@ struct Characters final : characterv1::CharacterService::Service {
         auth = auth_of(ctx);
         ++progress_calls;
         got_level = req->level();
+        got_auto_attack.clear();
+        for (const auto& [key, value] : req->auto_attack_settings()) got_auto_attack[key] = value;
         got_professions.clear();
         for (const auto& p : req->professions()) got_professions.push_back({p.profession_guid(), p.certification_tier(), p.level(), p.xp()});
         return save_code == grpc::StatusCode::OK ? grpc::Status::OK : grpc::Status(save_code, "no");
@@ -120,6 +123,8 @@ struct Characters final : characterv1::CharacterService::Service {
         c->set_appearance_json("{}");
         c->set_level(5);
         c->set_last_region("Riverlands");
+        (*c->mutable_auto_attack_settings())["bEnabled"] = true;
+        (*c->mutable_auto_attack_settings())["bToggle"] = false;
         for (const Prof& p : reply_professions) {
             auto* x = c->add_professions();
             x->set_profession_guid(p.guid);
@@ -194,6 +199,8 @@ int main() {
           c.character.race_id == 6 && c.character.gender_id == 1 && c.character.class_id == 7 && c.character.archetype_id == 17754 &&
           c.character.class_name == "Bard" && c.character.level == 5 && c.character.last_region == "Riverlands",
           "GetCharacter maps the record");
+    CHECK(c.character.auto_attack_settings == (std::map<std::string, bool>{{"bEnabled", true}, {"bToggle", false}}),
+          "GetCharacter maps enabled and explicitly disabled account auto attack choices");
     CHECK(c.character.has_position && c.character.position.x == 1.5 && c.character.position.y == -2.5 &&
           c.character.position.yaw == 90.0f,
           "with its position");
@@ -217,12 +224,14 @@ int main() {
     {
         svc::Progress p;
         p.level = 12;
+        p.auto_attack_settings = {{"bEnabled", false}, {"bToggle", true}};
         p.professions = {{108752769996425, 3, 40, 640000}, {108752770061963, 1, 11, 48400}};
         CHECK(s.save_progress("bbec5c86eb101fe5f38c87f0fa22e7d0", p) == svc::CallStatus::Ok && ch.progress_calls == 1 && ch.got_level == 12 &&
                   ch.got_professions.size() == 2 && ch.got_professions[0].guid == 108752769996425 && ch.got_professions[0].tier == 3 &&
                   ch.got_professions[0].level == 40 && ch.got_professions[0].xp == 640000 && ch.got_professions[1].guid == 108752770061963 &&
                   ch.got_professions[1].tier == 1 && ch.got_professions[1].level == 11 && ch.got_professions[1].xp == 48400,
               "SaveProgress sends the professions, each with its tier, level and XP");
+        CHECK(ch.got_auto_attack == p.auto_attack_settings, "SaveProgress transports both true and false auto attack choices");
         svc::Progress none;
         none.level = 3;
         CHECK(s.save_progress("x", none) == svc::CallStatus::Ok && ch.got_professions.empty(), "a save without professions sends none");

@@ -908,7 +908,8 @@ static void test_restore() {
 
 static void test_console() {
     std::printf("the client's node GM console\n");
-    Harness h(cyb_record());
+    auto owner = cyb_record(); owner.gm_level = 3;
+    Harness h(owner);
     h.play();
     const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
     const auto send = [&](const char* name, const std::function<void(const schema::RpcSchema&, repl::RpcParams&)>& fill) {
@@ -931,7 +932,7 @@ static void test_console() {
         repl::set_rpc_param(rpc, p, "Experience", repl::Value::i64(5000));
     });
     CHECK(h.s->node_gm_rpcs() == 2 && h.fx.control.calls.empty(), "with the switch off the two RPCs are received (and logged) and reach no one");
-    h.fx.world->set_gm_commands(true);
+    h.s->set_gm_enabled(true);
     set_level("Verra_RVR_Joeva", 3);
     CHECK(h.fx.control.calls.size() == 1 && h.fx.control.calls[0].rfind("set_level Verra_RVR_Joeva 3 dv", 0) == 0, "ServerSetNodeLevel with the switch on reaches the node service with its node, level and flag");
     CHECK(h.fx.control.calls[0].find("by cyb") != std::string::npos, "... saying who asked");
@@ -957,9 +958,9 @@ static void test_console() {
     CHECK(h.fx.control.calls.size() == 5 && h.s->node_gm_rpcs() == 8, "any other ServerGM* call is received and logged, and goes nowhere (its milestone is later)");
 
     // no node service connected: the console says so and nothing crashes
-    Harness bare(cyb_record(), /*seeded=*/true, /*with_control=*/false);
+    Harness bare(owner, /*seeded=*/true, /*with_control=*/false);
     bare.play();
-    bare.fx.world->set_gm_commands(true);
+    bare.s->set_gm_enabled(true);
     repl::RpcParams p;
     repl::set_rpc_param(pc_rpc("ServerSetNodeLevel"), p, "InNode", repl::Value::str("Joeva"));
     repl::set_rpc_param(pc_rpc("ServerSetNodeLevel"), p, "InLevel", repl::Value::i64(2));

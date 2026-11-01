@@ -35,7 +35,7 @@
 //
 //  What is refused, and changes nothing: an item that is not in the slot the client says (empty, or another instance's guid),
 //  an item the catalog does not know or whose record lists no slot, a bag with too few free slots for what the equip displaces,
-//  a storage other than the Backpack (to use) or the Backpack to the Backpack (to move), a partial stack (a split), a move
+//  a storage other than the Backpack (to use) or the Backpack to the Backpack (to move), a partial stack given to move() (split() takes one), a move
 //  onto an occupied slot that is not a swap, and every number out of range.  There is no class rule: the design data has none
 //  (every class's kit holds weapons of another class's line, and a retail level 20 character wears level 26 gear), so
 //  "the class may equip it" is true for all, and the record's bCanEquip is not a rule either (ItemRecord::can_equip).
@@ -248,6 +248,13 @@ public:
     /// both in the Backpack; or, with a `catalog`, both in resource containers (the same one or two): the stack is moved to the top-left cell `to_slot` of its rectangle, which must lie
     /// in the grid on free cells (its own old cells are free).  The Backpack and a resource container never exchange items, a move onto a stack of the same item (Fill) is refused.
     Outcome move(svc::ItemContainer from, int from_slot, int32_t count, const std::string& guid, svc::ItemContainer to, int to_slot, const ItemCatalog* catalog = nullptr);
+    /// ServerRequestStorageEvent, Fill: up to `count` items of the stack of the instance `guid` join the stack of the same record and quality in `to_slot`, as many as its room takes (modelled: no
+    /// retail capture shows a Fill).  What stays keeps its slot.  The source's Remove (of how many leave, or the whole stack) and the target's Remove and Add of the same instance, as a grant's top-up.
+    /// Refused, changing nothing, between the Backpack and a resource container, for another item, a stack with no room or a count outside 1 to the stack's size.
+    Outcome fill(svc::ItemContainer from, int from_slot, int32_t count, const std::string& guid, svc::ItemContainer to, int to_slot, const ItemCatalog& catalog);
+    /// ServerRequestStorageEvent, a Move of part of a stack: `count` items (1 to one less than the stack holds) become a new stack of the instance `new_guid` in the free `to_slot` (modelled, as fill).
+    /// The source's Remove of how many leave and the new stack's Add.  Refused, changing nothing, where a move of a stack that size would not fit.
+    Outcome split(svc::ItemContainer from, int from_slot, int32_t count, const std::string& guid, svc::ItemContainer to, int to_slot, const std::string& new_guid, const ItemCatalog& catalog);
     /// Storage clerks, step 0: puts `item` (an instance that left the warehouse) in `container` slot `slot`: the item bag takes an item that is not a material into an empty slot, a material bag
     /// takes a material whose rectangle fits there.  Refused, changing nothing, for another container, an instance the inventory holds already, an unknown record, a material in the item bag, a
     /// non-material in a material bag, an occupied slot or a rectangle that does not fit.  The Add is the outcome's only event.

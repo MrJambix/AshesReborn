@@ -27,6 +27,9 @@
 namespace aoc::worldd::abilities {
 
 struct EffectDef {
+    int64_t                                    group = 0;
+    int                                        group_limit = 0;
+    std::string                                group_stack_type;
     content::EffectRow                          row;
     std::vector<content::ModRow>                mods;   // the effect's stat mods
     std::vector<std::pair<std::string, int64_t>> hits;   // (phase, hit guid): PreApply, Apply, Tick, Consume, Remove, Expire, End

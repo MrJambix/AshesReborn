@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <iomanip>
+#include <sstream>
 
 namespace aoc { namespace worldd {
 
@@ -62,6 +64,8 @@ std::vector<GmPlayerInfo> GmTravel::list_players() {
 }
 
 std::vector<world::Place> GmTravel::list_places() { return world_.places().all(); }
+
+#include "session/gm_commands.inc"
 // CoA with C_Y_B
 
 GmTeleportResult GmTravel::teleport(const GmTeleportRequest& request, const std::string& by) {
@@ -506,6 +510,8 @@ const char* kind_word(world::ActorKind k) {
         case world::ActorKind::Station: return "crafting station";
         case world::ActorKind::Shrine: return "Emberspring";
         case world::ActorKind::Prop: return "quest object";
+        case world::ActorKind::PlayerPawn: return "player";
+        case world::ActorKind::PlayerState: return "player state";
     }
     return "actor";
 }

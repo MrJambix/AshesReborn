@@ -9,7 +9,8 @@
 //  tier's smallest kind.  Two things use it:
 //    * a full stack of one kind, used in a material bag, turns into one of the next kind (Inventory::tier_up);
 //    * a reward of Glint is paid in kinds, the biggest first, each under its rate: the total of the tier's lines is split again (compress), the way the game's own reward step does it, so
-//      a kill that rolls 27 Dull Glint gives 2 Dim and 7 Dull.
+//      a kill that rolls 27 Dull Glint gives 2 Dim and 7 Dull;
+//    * a price in Glint is paid with any of the kinds, and a bigger kind gives change (pay).
 //
 //  Pure data and arithmetic, header only: no sockets, no database but the CurrencyData it is made from.
 // ============================================================================
@@ -51,6 +52,23 @@ struct CurrencyLine {
     int64_t item = 0;
     int64_t quantity = 0;
 };
+
+/// How a price in a tier is paid from the kinds a character carries.
+struct CurrencyPayment {
+    bool                                            ok = false;
+    std::vector<std::pair<const CurrencyKind*, int64_t>> take;     // the kinds that leave the bags, the smallest first
+    std::vector<std::pair<const CurrencyKind*, int64_t>> change;   // the kinds that come back, the biggest first
+};
+
+/// What the bags hold of a tier, in units of its smallest kind (`bags` answers count_of(item record): items::Inventory).
+template <class Bags>
+int64_t carried_value(const CurrencyTier& tier, const Bags& bags) {
+    int64_t total = 0;
+    for (const CurrencyKind& k : tier.kinds) {
+        if (k.item != 0) total += bags.count_of(k.item) * k.value;
+    }
+    return total;
+}
 
 /// A reward's lines after the currency lines were split again.
 struct CompressedLines {
@@ -160,6 +178,44 @@ public:
             left -= n * kind.value;
         }
         return out;
+    }
+
+    /// Pays `cost` units of the tier's smallest kind (modelled: no recording shows a payment with change).  The smallest kinds go first, each as many as fit the price; what is still owed then
+    /// breaks one item of the smallest kind that has one left, which is always worth more than the debt, and the difference comes back by break_down.  `ok` is false when the kinds do not
+    /// come to the price.  `held` is by kind, as many as tier.kinds.
+    static CurrencyPayment pay(const CurrencyTier& tier, const std::vector<int64_t>& held, int64_t cost) {
+        CurrencyPayment out;
+        if (cost < 1 || held.size() != tier.kinds.size()) return out;
+        int64_t total = 0;
+        for (size_t k = 0; k < tier.kinds.size(); ++k) total += held[k] * tier.kinds[k].value;
+        if (total < cost) return out;
+        std::vector<int64_t> taken(tier.kinds.size(), 0);
+        int64_t left = cost;
+        for (size_t k = 0; k < tier.kinds.size() && left > 0; ++k) {
+            taken[k] = std::min(held[k], left / tier.kinds[k].value);
+            left -= taken[k] * tier.kinds[k].value;
+        }
+        if (left > 0) {
+            for (size_t k = 0; k < tier.kinds.size(); ++k) {
+                if (held[k] <= taken[k]) continue;
+                ++taken[k];
+                out.change = break_down(tier, tier.kinds[k].value - left);
+                break;
+            }
+        }
+        for (size_t k = 0; k < tier.kinds.size(); ++k) {
+            if (taken[k] > 0) out.take.emplace_back(&tier.kinds[k], taken[k]);
+        }
+        out.ok = true;
+        return out;
+    }
+
+    /// The tier of a guid, nullptr for none.
+    const CurrencyTier* tier(int64_t guid) const {
+        for (const CurrencyTier& t : tiers_) {
+            if (t.guid == guid) return &t;
+        }
+        return nullptr;
     }
 
     /// The lines of a reward with the currency lines of each tier made one: the lines of the tier's kinds (a tier whose kinds are all items) are summed in units of its smallest kind and

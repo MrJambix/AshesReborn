@@ -40,7 +40,8 @@ type entry struct {
 
 // Maker makes the kit of each class. It reads content.db once, at Load.
 type Maker struct {
-	kits map[int32][]entry
+	kits    map[int32][]entry
+	welcome *entry
 
 	// Now and Random stand in for the clock and the source of guids (tests).
 	Now    func() time.Time
@@ -113,6 +114,20 @@ func (m *Maker) Kit(classID int32) ([]character.Item, error) {
 	if !ok {
 		return nil, fmt.Errorf("class %d has no starting kit", classID)
 	}
+	if m.welcome != nil {
+		probe := make([]character.Item, 0, len(entries))
+		for i, e := range entries {
+			probe = append(probe, e.item(fmt.Sprintf("%032x", i+1), time.Unix(1, 0)))
+		}
+		// Kits never stack the mount with another item; reserve a free backpack slot.
+		placed, missing := character.PlaceInBackpack(probe, []character.Item{m.welcome.item("ffffffffffffffffffffffffffffffff", time.Unix(1, 0))})
+		if missing != 0 {
+			return nil, fmt.Errorf("the starting backpack has no room for the Flail Runner mount")
+		}
+		e := *m.welcome
+		e.slot = placed[0].Slot
+		entries = append(append([]entry(nil), entries...), e)
+	}
 	now := time.Now
 	if m.Now != nil {
 		now = m.Now
@@ -138,4 +153,16 @@ func (m *Maker) Kit(classID int32) ([]character.Item, error) {
 		out = append(out, e.item(hex.EncodeToString(raw[:]), created))
 	}
 	return out, nil
+}
+
+// EnableWelcomeMount is used by the runtime character service. Missing content
+// refuses creation instead of silently creating a character without its mount.
+func (m *Maker) EnableWelcomeMount(db *content.DB) error {
+	it, err := db.ItemByName("Mount_Grounded_Flailrunner_0")
+	if err != nil {
+		return fmt.Errorf("welcome mount: %w", err)
+	}
+	e := bagEntry(it)
+	m.welcome = &e
+	return nil
 }

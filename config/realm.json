@@ -1,6 +1,6 @@
 {
     "world_id":               "na-east-live-01",
-    "world_display_name":     "Hateland",
+    "world_display_name":     "Ashes Reborn",
     "world_available":        true,
     "world_fullness":         1,
     "game_connection_string": "127.0.0.1:7777",

@@ -17,7 +17,8 @@ $stage = "$OutFile.stage"
 & "$PSScriptRoot\make-certs.ps1" -PublicIp $PublicIp -CertDir $CertDir
 
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-foreach ($d in 'dist\Release', 'dist\services', 'dist\content', 'deploy', 'ops', 'certs') { New-Item -ItemType Directory -Force "$stage\$d" | Out-Null }
+foreach ($d in 'dist\Release', 'dist\services', 'dist\content', 'deploy', 'ops', 'certs', 'config') { New-Item -ItemType Directory -Force "$stage\$d" | Out-Null }
+Copy-Item -LiteralPath "$repo\config\realm.json", "$repo\config\rates.json" -Destination "$stage\config"
 Copy-Item "$repo\dist\Release\worldd.exe", "$repo\dist\Release\*.dll" "$stage\dist\Release"
 foreach ($n in 'auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'nodectl', 'questctl', 'worldctl', 'charimport') {
     Copy-Item "$repo\dist\services\$n.exe" "$stage\dist\services"
@@ -26,7 +27,7 @@ foreach ($n in 'auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'no
 robocopy "$repo\dist\content" "$stage\dist\content" /E /XF area_geom.bin /XD .extract /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw 'could not copy dist\content' }
 Copy-Item "$repo\deploy\citynode_seed.json" "$stage\deploy"
-Copy-Item "$PSScriptRoot\install.ps1", "$PSScriptRoot\supervisor.ps1", "$PSScriptRoot\sandalctl.ps1", "$PSScriptRoot\sendctrlc.ps1", "$PSScriptRoot\README.md" "$stage\ops"
+Copy-Item "$PSScriptRoot\install.ps1", "$PSScriptRoot\supervisor.ps1", "$PSScriptRoot\sandalctl.ps1", "$PSScriptRoot\sendctrlc.ps1", "$PSScriptRoot\notify-discord.ps1", "$PSScriptRoot\README.md" "$stage\ops"
 Copy-Item "$repo\LICENSE", "$repo\NOTICE" $stage
 Copy-Item "$CertDir\server.pem", "$CertDir\server.key", "$CertDir\ca.crt" "$stage\certs"
 (git -C $repo rev-parse HEAD) + $(if (git -C $repo status --porcelain) { ' (with uncommitted changes)' }) | Set-Content "$stage\VERSION.txt" -Encoding ascii

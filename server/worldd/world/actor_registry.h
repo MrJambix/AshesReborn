@@ -51,6 +51,8 @@ enum class ActorKind : uint8_t {
     Station,     // a crafting or processing station (crafting, step 0): an ACraftingStationBase actor of a node's building, opened like any other actor, used for its window
     Shrine,      // an Emberspring (AAoCAttunablePlayerSpawner): a respawn point a player discovers by coming close and attunes to by using it (respawn/embersprings.h)
     Prop,        // an object of a quest (an AInteractableStateMachineBase actor: a body, a crate, a root, a building site): used by its interactable component, it can leave and come back
+    PlayerPawn,
+    PlayerState,
 };
 // [C | Y | B ~ C-O-A]
 
@@ -178,6 +180,7 @@ struct WorldActor {
     bool       keep_fast_shadow = false;
     std::function<void(repl::Actor&)> first_open_form;
     uint64_t   owner = 0;                 // the PlayerId an effect belongs to (0: nobody's): only that player's connection is sent it
+    uint64_t   hidden_from_player = 0;     // the owning connection already has its bootstrap actors
     /// Exports that go with the actor block of its open (an object its values name by path that the client has no other way to find: a lingering
     /// zone's AttachComponent, the pawn's CharacterMesh0).
     std::vector<repl::ExportChain> open_exports;
