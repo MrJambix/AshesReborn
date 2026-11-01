@@ -1005,6 +1005,13 @@ bool PlayerBootstrap::set_pvp_force_flag(bool on) {
     return combat->obj.state.set(*combat->obj.schema, "bPvPForceFlag", Value::boolean(on));
 }
 
+bool PlayerBootstrap::set_gm_tag(bool on) {
+    if (!ok_) return false;
+    repl::Subobject* base = component(setup_.guids.base_character_info);
+    if (!base || !base->obj.schema->command("bShowGMTag")) return false;
+    return base->obj.state.set(*base->obj.schema, "bShowGMTag", Value::boolean(on));
+}
+
 void PlayerBootstrap::note_trigger_pvp_flag(int64_t instance, bool flag) {
     if (!flag) {
         trigger_pvp_.erase(instance);   // (a trigger that carried no flag: the instance's item shows none)

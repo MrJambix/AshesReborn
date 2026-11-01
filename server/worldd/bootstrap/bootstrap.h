@@ -596,6 +596,8 @@ public:
     bool set_hover_target(const std::array<uint32_t, 4>& words);
     /// bPvPForceFlag: the player's own PvP flag.
     bool set_pvp_force_flag(bool on);
+    /// bShowGMTag: the GM tag the client draws for this player.
+    bool set_gm_tag(bool on);
     /// The PvP flag a ServerTriggerAbility carried, for the ReplicatedActiveAbilities item that trigger makes (the item copies it): note it before the trigger is run.  Only a set flag is
     /// kept, at most kMaxTriggerFlags of them, and it goes with the item.
     void note_trigger_pvp_flag(int64_t instance, bool flag);

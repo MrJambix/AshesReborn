@@ -1183,6 +1183,7 @@ void PlayerSession::dispatch(Connection& conn, Role role, const repl::ClientRpc&
         if (name_of_rpc == "ServerTeleportXYZ") return on_gm_teleport_xyz(conn, rpc, now);
         if (name_of_rpc == "ServerTeleport") return on_gm_teleport_key(conn, rpc, now);
         if (name_of_rpc == "ServerTeleportPlayer") return on_gm_teleport_player(conn, rpc, now);
+        if (name_of_rpc == "ServerShowGMTag") return on_show_gm_tag(conn, rpc, now);
         if (name_of_rpc == "ServerHandleVendorTransaction") return on_vendor_transaction(conn, rpc, now);
         // Missing systems, step 1: the quiet requests (a flag, a closed loot window, a batch of bar slots, a marker)
         if (name_of_rpc == "ServerSetPvpFlag") return on_set_pvp_flag(conn, rpc, now);
@@ -7388,6 +7389,27 @@ bool PlayerSession::gm_rpc_admitted(const char* rpc_name, const std::string& par
                 on ? "answering" : "refused: verified GM account and .GM On required");
     if (!on) return false;
     return gm_budget_.take(now);
+}
+
+void PlayerSession::gm_show_tag(Connection& conn, bool show, Clock::time_point now) {
+    if (gm_level_ != 3 || show == gm_tag_) return;
+    if (!pb_.set_gm_tag(show)) {
+        spdlog::warn("[gm] {}: the pawn does not take BaseCharacterInfo.bShowGMTag: the client is not told", name());
+        return;
+    }
+    gm_tag_ = show;
+    // (with no room the state stays set, and the pawn's next update carries it)
+    if (room_for(1)) queue_later("BaseCharacterInfo (GM tag)", [](bootstrap::PlayerBootstrap& pb) { return pb.pawn_state_update("GM tag"); }, conn, now, /*must_build=*/false);
+    spdlog::info("[gm] {}: the GM tag is {}", name(), show ? "on" : "off");
+}
+
+void PlayerSession::on_show_gm_tag(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
+    const auto show = rpc.call.decoded ? repl::rpcf::bool_or(repl::rpcf::value_of(*rpc.call.rpc, rpc.call.params, "bEnable"), false) : std::nullopt;
+    char params[64];
+    std::snprintf(params, sizeof params, "bEnable=%s", !show ? "?; the parameters did not decode" : *show ? "true" : "false");
+    if (!gm_rpc_admitted("ServerShowGMTag", params, now) || !show) return;
+    gm_show_tag(conn, *show, now);
+    ++gm_rpcs_answered_;
 }
 
 void PlayerSession::on_gm_teleport_xyz(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {

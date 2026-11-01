@@ -824,6 +824,9 @@ public:
     };
     GmSpeedChange gm_set_speed(Connection& conn, double multiplier, Clock::time_point now, const std::string& by);
     double        gm_speed() const { return gm_speed_; }
+    /// Shows or hides the GM tag (BaseCharacterInfo.bShowGMTag) on a verified GM's pawn: .GM On and .GM Off, and the client's ServerShowGMTag.  A new session starts without it.
+    void          gm_show_tag(Connection& conn, bool show, Clock::time_point now);
+    bool          gm_tag_shown() const { return gm_tag_; }
     /// The client's own GM teleport RPCs received, and the ones answered (the switch was on and the target was good).
     size_t        gm_rpcs_received() const { return gm_rpcs_; }
     size_t        gm_rpcs_answered() const { return gm_rpcs_answered_; }
@@ -942,6 +945,7 @@ private:
     int64_t account_id_ = 0;
     int gm_level_ = 0;
     bool gm_enabled_ = false;
+    bool gm_tag_ = false;
     uint64_t gm_panel_revision_ = 0;
     void run_chat(Connection& conn);
     void pump(Connection& conn);
@@ -1285,6 +1289,8 @@ private:
     void on_gm_teleport_xyz(Connection& conn, const protocol::repl::ClientRpc& rpc, Clock::time_point now);
     void on_gm_teleport_key(Connection& conn, const protocol::repl::ClientRpc& rpc, Clock::time_point now);
     void on_gm_teleport_player(Connection& conn, const protocol::repl::ClientRpc& rpc, Clock::time_point now);
+    /// ServerShowGMTag (925, bEnable) on the PlayerController: logged whatever the switch says; answered only with GM mode on.
+    void on_show_gm_tag(Connection& conn, const protocol::repl::ClientRpc& rpc, Clock::time_point now);
     /// Logs a GM RPC received (always) and whether the switch lets it through; false when it is off or the budget is spent.
     bool gm_rpc_admitted(const char* rpc_name, const std::string& params, Clock::time_point now);
     /// Puts the pawn's MoveSpeedMult stat, the mount's and the checker's limits at the GM multiplier.

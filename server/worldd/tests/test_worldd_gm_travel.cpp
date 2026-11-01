@@ -1451,6 +1451,52 @@ static void send_player(Harness& h, const char* names, double x, double y, doubl
     h.run(milliseconds(300));
 }
 
+static void send_show_tag(Harness& h, bool show) {
+    h.client_sends({h.client.actor(h.pc_ch, gm_rpc("ServerShowGMTag", [&](const schema::RpcSchema& rpc, repl::RpcParams& p) {
+                                       CHECK(repl::set_rpc_param(rpc, p, "bEnable", repl::Value::boolean(show)), "(ServerShowGMTag has the parameter bEnable)");
+                                   }), true)});
+    h.run(milliseconds(300));
+}
+
+static bool gm_tag_on_pawn(Harness& h) {
+    const repl::Subobject* base = h.s->bootstrap().pawn().find(h.s->bootstrap().setup().guids.base_character_info);
+    const repl::Value* v = base ? base->obj.state.get(*base->obj.schema, "bShowGMTag") : nullptr;
+    return v && v->get_if<bool>() && *v->get_if<bool>();
+}
+
+static void test_gm_tag() {
+    std::printf("the GM tag: .GM On and .GM Off, ServerShowGMTag, and only for a verified owner\n");
+    auto normal = cyb_on_the_ground(); normal.name = "Jambix";
+    Harness player(normal, on_the_ground); player.play();
+    auto ordinary = make_travel(player);
+    CHECK(ordinary.command(*player.s, player.conn, ".GM On").status == GmStatus::PermissionDenied && !gm_tag_on_pawn(player), "a refused .GM On shows no tag");
+    send_show_tag(player, true);
+    CHECK(!gm_tag_on_pawn(player) && !player.s->gm_tag_shown(), "an ordinary account's ServerShowGMTag shows no tag");
+
+    auto record = cyb_on_the_ground(); record.gm_level = 3;
+    Harness owner(record, on_the_ground); owner.play();
+    owner.s->set_purchase_reply_delay(milliseconds(0));   // (a command's steps are timed on the real clock, this harness runs its own)
+    auto gm = make_travel(owner);
+    CHECK(!gm_tag_on_pawn(owner), "a verified owner starts with no tag");
+    send_show_tag(owner, true);
+    CHECK(!gm_tag_on_pawn(owner), "ServerShowGMTag does nothing while GM mode is off");
+
+    size_t from = owner.got.size();
+    CHECK(gm.command(*owner.s, owner.conn, ".GM On").status == GmStatus::Ok && gm_tag_on_pawn(owner) && owner.s->gm_tag_shown(), ".GM On sets the pawn's bShowGMTag");
+    owner.run(milliseconds(300));
+    CHECK(!chains_on(owner, owner.pawn_ch, from).empty(), "... and the pawn's update goes to the client");
+    from = owner.got.size();
+    send_show_tag(owner, false);
+    CHECK(!gm_tag_on_pawn(owner), "with GM mode on, ServerShowGMTag false hides the tag");
+    CHECK(!chains_on(owner, owner.pawn_ch, from).empty(), "... and the client is told");
+    send_show_tag(owner, true);
+    CHECK(gm_tag_on_pawn(owner), "... and true shows it again");
+    from = owner.got.size();
+    CHECK(gm.command(*owner.s, owner.conn, ".GM Off").status == GmStatus::Ok && !gm_tag_on_pawn(owner), ".GM Off clears the tag");
+    owner.run(milliseconds(300));
+    CHECK(!chains_on(owner, owner.pawn_ch, from).empty(), "... and the client is told");
+}
+
 static void test_account_gm_commands() {
     std::printf("account GM commands: grants, disabled mode, parser, and owner isolation\n");
     auto normal = cyb_on_the_ground(); normal.name = "Jambix";
@@ -1811,6 +1857,7 @@ int main() {
     test_speed_mounted();
     test_speed_before_mounting();
     test_account_gm_commands();
+    test_gm_tag();
     test_client_rpcs();
     test_client_text_in_the_log();
     test_admin_api();

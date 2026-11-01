@@ -89,6 +89,7 @@ GmCommandResult GmTravel::command(PlayerSession& invoker, Connection& conn, cons
     try {
         if (verb == "on" || verb == "off" || verb == "ui") {
             invoker.set_gm_enabled(verb != "off");
+            invoker.gm_show_tag(conn, verb != "off", Clock::now());
             if (verb == "off" && invoker.gm_speed() != 1.0) invoker.gm_set_speed(conn, 1.0, Clock::now(), by);
             out.message = verb == "off" ? "GM mode disabled." : "GM owner mode enabled. The in-game panel is available in Reborn Launcher; use .GM help for chat commands.";
         } else if (verb == "help") {
