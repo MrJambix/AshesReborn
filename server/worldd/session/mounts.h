@@ -121,6 +121,7 @@ public:
         Place           place;
         int             owner_level = 1;
         bool            dead = false;           // the player is dead: nothing is summoned
+        bool            swimming = false;       // the player swims: an aquatic mount comes in the water, with no ground to stand on [modelled: no capture summons one there]
         double          world_time = 0;         // the world clock at the request (the mount's timestamps run on it)
         std::optional<double> health;           // the Health the mount starts at (stage 3: the item's saved Health; unset: its maximum)
         /// The owner's alignments as its pawn holds them now: the mount inherits them (stage 3 fix 2: never a donor's). Unset: the unflagged player's.

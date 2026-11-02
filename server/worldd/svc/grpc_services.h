@@ -51,6 +51,9 @@ public:
     CallStatus save_inventory(const std::string& id, const std::vector<InventoryItem>& items, const std::vector<WalletEntry>& wallet, const std::vector<ProcessingJob>& jobs,
                               const std::vector<int64_t>& known_recipes, const std::vector<WarehouseItem>& warehouse) override;
     CallStatus save_progress(const std::string& id, const Progress& progress) override;
+    CallStatus list_guilds(std::vector<SavedGuild>& out) override;
+    CallStatus save_guild(const std::string& guid, const std::string& name, const std::string& data) override;
+    CallStatus delete_guild(const std::string& guid) override;
     RegisterResult register_server(const std::string& address,
                                    const std::vector<std::string>& regions) override;
     CallStatus heartbeat(uint32_t server_id) override;

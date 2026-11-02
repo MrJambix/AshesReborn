@@ -37,6 +37,36 @@ from worldd's command catalog. Chat commands also work with older launchers.
 | Quests | quest-list, quest-give, quest-finish, quest-fail, quest-abandon, quest-clear, quest-variable |
 | NPCs | npc-kill, npc-heal, npc-reset, npc-respawn, npc-despawn, npc-move |
 
+## GM web tools
+
+`auth` serves a web version of the panel at `https://<server>:8444/gm/`, compiled
+into `auth.exe`. Sign in with the GM account; any other account is turned away.
+The page has no secret of its own and every power stays behind the API's checks.
+
+| Needs | Works with |
+| --- | --- |
+| The account's grant only | Overview, Players, Find, Places and the pickers' searches (`GET /api/v1/gm/{status,players,places,search,inspect,catalog}`, read-only) |
+| A character in the world and GM mode | Every button that changes something: Give items, Give money and the Commands view (`POST /api/v1/gm`, the same checks as chat) |
+
+Every command has a ready form (`web/commands.js`; a test compares its arguments
+with `gm_commands.inc`, so add a new command there too). Pickers search the game's
+own records from `content.db`, which `auth` reads once at the first search. The data
+has record names only, not the in-game names, so search by the words in those. Players
+can be picked only while online, because every player command needs them in the world.
+Quests are named by name: `QuestBook::find` cannot read their 19-digit Guids, so
+the 27 names that several quests share cannot be told apart.
+
+GM mode can be turned on from the page once the character is in the world, and
+relogging still turns it off. Commands that take something away or change the
+world for everybody ask first. A sign-in lasts as long as the login token,
+24 hours by default, and the page forgets it when the tab closes; Sign out clears the
+page but does not end the token on the server.
+
+The server's certificate comes from this deployment's own CA, so a browser warns
+about it. Trust `ca.crt` on that device rather than clicking through: the warning
+is the only thing that would show someone intercepting the GM password. On
+Windows: `certutil -user -addstore Root ca.crt`.
+
 The HTTPS `/api/v1/gm` endpoint validates the player's login token and the
 database account grant on every request. It accepts only a command, derives the
 account ID itself and forwards it over the existing service-token-protected

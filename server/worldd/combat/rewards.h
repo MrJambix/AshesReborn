@@ -19,7 +19,7 @@
 //    PerElementWeightedExpressionRandom          the same, by the weights the expressions give
 //    RollEachByPercent                           each element on its own: the percentage the expression gives (a fraction; none: never)
 //    container  its GrantPredicate must hold; its rewards are chosen by the container's algorithm; each reward gives its experience (an amount),
-//               its items (a quantity: a fraction is rounded down, none for 0) and its currency (counted, not given: no currency in E1)
+//               its items (a quantity: a fraction is rounded down, none for 0) and its currency (Rolled::paid: the caller pays it; a kill's loot has none outside tests and one boss)
 //  An expression that does not run (a quest state, a story phase: the compiler left it out) is "no": a predicate that is false, a weight
 //  or percentage of 0, a quantity of 0.  Depth is bounded.  The node reads (Nodes 1: the biome of the node the kill is in, so the "_RVR" gear tables
 //  roll in the Riverlands and the "_TUR" ones in the Tropics) run on the host over world/city_nodes.h.
@@ -36,6 +36,7 @@
 #include "stats/gather_host.h"
 #include "world/city_nodes.h"
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -43,6 +44,28 @@
 #include <vector>
 
 namespace aoc::worldd::combat {
+
+/// The most one rolled line gives: more than the largest stack the data holds (999,999), and a power of two (the inventory's own cap of one stack is 1,000,000).
+inline constexpr int64_t kMaxRolledQuantity = 1 << 20;
+
+/// A rolled quantity as a count: rounded down, never past kMaxRolledQuantity, and nothing for a negative number or one that is no number.  (A formula of bad data must not turn into
+/// a billion stacks, or into an undefined conversion.)
+inline int64_t rolled_quantity(double v) {
+    if (!std::isfinite(v)) return 0;
+    const double whole = std::floor(v + 1e-9);
+    if (whole <= 0.0) return 0;
+    return whole >= static_cast<double>(kMaxRolledQuantity) ? kMaxRolledQuantity : static_cast<int64_t>(whole);
+}
+
+/// The most one rolled experience line gives: more than the largest level curve of the data (624,000,000).
+inline constexpr int64_t kMaxRolledXp = 1'000'000'000;
+
+/// A rolled experience amount as a count: rounded, never past kMaxRolledXp, and nothing for a number that is none, infinite or negative.  (The same guard as rolled_quantity:
+/// converting an enormous double is undefined.)
+inline int64_t rolled_xp(double v) {
+    if (!std::isfinite(v) || v <= 0.0) return 0;
+    return v >= static_cast<double>(kMaxRolledXp) ? kMaxRolledXp : static_cast<int64_t>(std::llround(v));
+}
 
 struct RolledItem {
     int64_t item = 0;
@@ -57,7 +80,14 @@ struct RolledXp {
     int64_t     amount = 0; // as the table gives it, before the decay of the player's level
 };
 
+/// A currency line of a reward: a kind (currency_def) and how many, as the table gives it.
+struct RolledCurrency {
+    int64_t currency = 0;
+    int64_t amount = 0;
+};
+
 struct Rolled {
+    std::vector<RolledCurrency> paid;   // the currency lines that rolled (the same kind in one line)
     std::vector<RolledItem> loot;     // grant "Always": into the corpse's loot (the same item and variation in one stack)
     std::vector<RolledItem> direct;   // grant "Auto" items: straight to the players (none in the data)
     std::vector<RolledXp>   xp;

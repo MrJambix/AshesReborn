@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  test_worldd_area_session.cpp  (plan E1, stage 1)
+// =====================================================================//  test_worldd_area_session.cpp  (plan E1, stage 1)
 //
 //  The living area on a connection: a session with a fake client (the harness of test_worldd_items_session) on a PlayerWorld whose registry
 //  holds NPCs and nodes made from the retail templates (spawns/captured_spawns.h) around the login spot.
@@ -19,19 +18,20 @@
 //                      gone, a purchase that does not read, and a flood of purchases: nothing changes (the client's storages are sent again), the
 //                      session lives
 //    many actors       1,500 NPCs around the player: the opens come in at the cap per tick, nearest first; per-tick time and bandwidth are measured
-// ============================================================================
-#include "capture_packets.h"
+// =====================================================================#include "capture_packets.h"
 #include "recordings.h"
 #include "capture_vendor.h"
 #include "content_db_fixture.h"
 #include "cyb_appearance.h"
 #include "dialogue/talk.h"
 #include "fake_client.h"
+#include "test_registry.h"
 #include "bootstrap/character_setup.h"
 #include "items/inventory.h"
 #include "nav/area_nav.h"
 #include "net/endpoint.h"
 #include "npc/npc_world.h"
+#include "protocol/repl/craft_rpc.h"
 #include "protocol/repl/dialogue_rpc.h"
 #include "protocol/repl/storage_rpc.h"
 #include "protocol/repl/vendor_rpc.h"
@@ -459,10 +459,8 @@ static ActorChannels actor_channels(const Harness& h, size_t from = 0) {
 
 static size_t bag_items(const Harness& h) { return h.s->inventory().count(Bag); }
 
-// ============================================================================================================================
-//  the tests
-// ============================================================================================================================
-
+// =====================================================================================================================//  the tests
+// =====================================================================================================================
 struct AroundHarness : Harness {
     uint64_t near_a = 0, near_b = 0, snapshot = 0, far_away = 0, node = 0;
     AroundHarness() {
@@ -954,15 +952,10 @@ static void test_crowd_moving() {
         std::printf("  [skip] %s: %s (tools/mapc: mapc build)\n", nav_path.c_str(), err.c_str());
         return;
     }
-    // Chunked navigation opens with an empty tile window. Populate this stationary
-    // player's window before adding the crowd, as world startup does; otherwise
-    // every NPC waits for ground that this standalone fixture never pumps.
-    const bool ground_ready = nav->load_around(kCx, kCy, nav::AreaNav::kLoadRadius);
-    CHECK(ground_ready, "the player's navigation window loads before the walking crowd starts");
-    if (!ground_ready) {
-        for (const std::string& error : nav->take_load_errors()) std::printf("  ground: %s\n", error.c_str());
-        return;
-    }
+    // the ground file is chunked and loads with no tile: an NPC whose chunk is not resident sleeps where it stands, so the chunks round the crowd are brought in first
+    const bool ground = !nav->windowed() || nav->load_around(kCx, kCy, 2, 120);
+    CHECK(ground, "the ground round the crowd loads");
+    if (!ground) return;
     CrowdHarness h(300);
     npc::NpcWorld npcs(h.fx.world->registry(), nav.get());
     std::vector<uint64_t> ids;
@@ -1356,11 +1349,14 @@ static BunchWriter dialogue_choice(const repl::DialogueResponse& response) {
 #include "quest_session_tests.inc"
 #include "player_presence_tests.inc"
 
+#include "area_session_registered.inc"
+
 int main() {
     spdlog::set_level(spdlog::level::off);
     test_view();
     test_removed_actor();
     test_player_presence();
+    test_guild_on_public_pawn();
     test_vendor_flow();
     test_vendor_tax_table();
     test_vendor_refusals();
@@ -1375,11 +1371,14 @@ int main() {
     test_dialogue_1531();
     test_quest_data();
     test_quest_offer_accept_abandon();
+    test_quest_from_object();
     test_quest_refusals();
     test_quest_gm();
     test_quest_zone();
     test_quest_hand_in();   // quests part 3, slice 2
     test_quest_hand_in_engine();
+    test_destiny_board();
+    g_fail += aoc_tests::run();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

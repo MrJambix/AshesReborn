@@ -120,20 +120,23 @@ constexpr const char* kHitEffectsSql = "SELECT kind, ord, effect_guid, requireme
                                        "FROM ab_hit_effect WHERE hit_guid = ?1 ORDER BY kind, ord";
 constexpr const char* kHitProjectilesSql = "SELECT projectile_guid FROM ab_hit_projectile WHERE hit_guid = ?1 AND kind = 'fire' ORDER BY ord";
 constexpr const char* kEffectByGuidSql =
-    "SELECT guid, name, display_name, category, tags, effect_tags, infinite_duration, duration_expr, tick_timer, ignore_initial_tick, stack_type, "
-    "global_stack_limit, in_place_stack_limit_expr, stack_duration_refresh, persists_through_death, persists_relog, dispellable, significant, "
-    "requirement_expr, crowd_control_guid, extra FROM ab_effect WHERE guid = ?1";
+    "SELECT e.guid, e.name, e.display_name, e.category, e.tags, e.effect_tags, e.infinite_duration, e.duration_expr, e.tick_timer, e.ignore_initial_tick, e.stack_type, "
+    "e.global_stack_limit, e.in_place_stack_limit_expr, e.stack_duration_refresh, e.persists_through_death, e.persists_relog, e.dispellable, e.significant, "
+    "e.requirement_expr, e.crowd_control_guid, e.extra, e.group_guid, COALESCE(g.name, ''), COALESCE(g.stack_type, ''), COALESCE(g.global_stack_limit, 0) "
+    "FROM ab_effect e LEFT JOIN ab_effect_group g ON g.guid = e.group_guid WHERE e.guid = ?1";
 constexpr const char* kEffectByNameSql =
-    "SELECT guid, name, display_name, category, tags, effect_tags, infinite_duration, duration_expr, tick_timer, ignore_initial_tick, stack_type, "
-    "global_stack_limit, in_place_stack_limit_expr, stack_duration_refresh, persists_through_death, persists_relog, dispellable, significant, "
-    "requirement_expr, crowd_control_guid, extra FROM ab_effect WHERE name = ?1";
+    "SELECT e.guid, e.name, e.display_name, e.category, e.tags, e.effect_tags, e.infinite_duration, e.duration_expr, e.tick_timer, e.ignore_initial_tick, e.stack_type, "
+    "e.global_stack_limit, e.in_place_stack_limit_expr, e.stack_duration_refresh, e.persists_through_death, e.persists_relog, e.dispellable, e.significant, "
+    "e.requirement_expr, e.crowd_control_guid, e.extra, e.group_guid, COALESCE(g.name, ''), COALESCE(g.stack_type, ''), COALESCE(g.global_stack_limit, 0) "
+    "FROM ab_effect e LEFT JOIN ab_effect_group g ON g.guid = e.group_guid WHERE e.name = ?1";
 constexpr const char* kEffectHitsSql = "SELECT phase, ord, hit_guid FROM ab_effect_hit WHERE effect_guid = ?1 ORDER BY phase, ord";
 constexpr const char* kModsSql = "SELECT ord, stat_mod_guid, stat_guid, stat_name, value_expr, shield_absorb FROM ab_mod WHERE owner_kind = ?1 AND owner_guid = ?2 ORDER BY ord";
 constexpr const char* kProjectileSql = "SELECT guid, name, projectile_type, speed, range, life_time, max_hits, chain_hit_count, chain_radius, sphere_radius "
                                        "FROM ab_projectile WHERE guid = ?1";
 constexpr const char* kProjectileHitsSql = "SELECT hit_guid FROM ab_projectile_hit WHERE projectile_guid = ?1 ORDER BY ord";
 constexpr const char* kZoneSql = "SELECT guid, name, life_time, tick_rate, use_global_tick_rate, charges, delay_time, delay_type, speed, "
-                                 "expire_after_hits_expr, expire_if_expr, targeting_guid FROM ab_zone WHERE guid = ?1";
+                                 "expire_after_hits_expr, expire_if_expr, targeting_guid, "
+                                 "COALESCE((SELECT radius FROM ab_targeting_def t WHERE t.guid = ab_zone.targeting_guid), 0) FROM ab_zone WHERE guid = ?1";
 constexpr const char* kZoneHitsSql = "SELECT role, hit_guid FROM ab_zone_hit WHERE zone_guid = ?1 ORDER BY role, ord";
 constexpr const char* kAllExprsSql = "SELECT id, text, terms, program, uses_target, error FROM ab_expr ORDER BY id";
 constexpr const char* kGuidListSql[] = {"SELECT guid FROM ab_ability ORDER BY guid", "SELECT guid FROM ab_hit ORDER BY guid",
@@ -143,7 +146,7 @@ constexpr const char* kGuidListSql[] = {"SELECT guid FROM ab_ability ORDER BY gu
 constexpr const char* kReactionSql = "SELECT guid, name, instigator, targets_mask, bind_hit, bind_effect, bind_ability, bind_projectile, bind_zone, bind_movement, "
                                      "bind_fishing, bind_stat, global_limit, instigator_limit, eval_applying_hit, proc_on_apply, trigger_expr FROM ab_reaction WHERE guid = ?1";
 constexpr const char* kReactionHitsSql = "SELECT hit_guid FROM ab_reaction_hit WHERE reaction_guid = ?1 ORDER BY ord";
-constexpr const char* kHitRecursiveSql = "SELECT ord, child_hit_guid, targeting_guid FROM ab_hit_recursive WHERE hit_guid = ?1 ORDER BY ord";
+constexpr const char* kHitRecursiveSql = "SELECT ord, child_hit_guid, targeting_guid, COALESCE((SELECT radius FROM ab_targeting_def t WHERE t.guid = ab_hit_recursive.targeting_guid), 0) FROM ab_hit_recursive WHERE hit_guid = ?1 ORDER BY ord";
 
 }  // namespace
 
@@ -347,6 +350,10 @@ bool read_effect(sqlite3_stmt* s, EffectRow& e, std::string& error) {
     e.requirement_expr = col_i64(s, 18);
     e.crowd_control_guid = col_i64(s, 19);
     e.extra = col_text(s, 20);
+    e.group_guid = col_i64(s, 21);
+    e.group_name = col_text(s, 22);
+    e.group_stack_type = col_text(s, 23);
+    e.group_limit = col_int(s, 24);
     return true;
 }
 // Cyb with C | O | A
@@ -615,6 +622,7 @@ std::optional<ZoneRow> AbilityContent::zone(int64_t guid, std::string& error) co
             z.expire_after_hits_expr = col_i64(s, 9);
             z.expire_if_expr = col_i64(s, 10);
             z.targeting_guid = col_i64(s, 11);
+            z.radius = col_f64(s, 12);
             out = std::move(z);
             return true;
         }, error))
@@ -680,9 +688,28 @@ bool AbilityContent::hit_recursive(int64_t hit, std::vector<RecursiveHitRow>& ou
         r.ord = col_int(s, 0);
         r.child_hit = col_i64(s, 1);
         r.targeting = col_i64(s, 2);
+        r.radius = col_f64(s, 3);
         out.push_back(r);
         return true;
     }, error);
+}
+
+void AbilityContent::modify_cooldowns(std::vector<ModifyCooldownRow>& out) const {
+    out.clear();
+    if (!reactions_) return;
+    std::string error;
+    constexpr const char* sql = "SELECT guid, name, delta_expr, abilities FROM ab_modify_cooldown";
+    if (!run(db_, sql, nullptr, [&](sqlite3_stmt* s) {
+            ModifyCooldownRow r;
+            r.guid = col_i64(s, 0);
+            r.name = col_text(s, 1);
+            r.delta_expr = col_i64(s, 2);
+            r.abilities = col_text(s, 3);
+            out.push_back(std::move(r));
+            return true;
+        }, error)) {
+        out.clear();
+    }
 }
 
 bool AbilityContent::guids(Table table, std::vector<int64_t>& out, std::string& error) const {

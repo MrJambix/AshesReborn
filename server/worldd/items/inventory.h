@@ -134,6 +134,7 @@ struct ItemInfo {
     bool                 two_handed = false;   // worn, it covers every slot of equip_slots
     /// Gathering stage 3: the item is stored in a resource container (its gameplay tags hold a child of item.resource), takes inv_w x inv_h cells of its grid and stacks to max_stack.
     bool                 resource = false;
+    bool                 quest = false;   // the item goes to the Quest bag when it is given (ContentDb::goes_to_quest_bag), to the Backpack when that is full
     int                  inv_w = 1;
     int                  inv_h = 1;
     int                  max_stack = 1;
@@ -263,6 +264,8 @@ public:
     /// one Add event, `equipment_changed`.  Refused, changing nothing, for an item that is no crate, a quantity other than 1, an instance the inventory holds already, an unknown
     /// record or a cargo slot that holds a crate already.
     Outcome grant_cargo(svc::InventoryItem item, const ItemCatalog& catalog);
+    /// The crate of the instance `guid` leaves the cargo slot for good (stored or laid down): one Remove event, `equipment_changed`.  Refused, changing nothing, when the slot holds another.
+    Outcome remove_cargo(const std::string& guid);
     /// ServerRequestStorageEvent, Swap: the two whole stacks of the Backpack change places; `to_guid` and `to_count` are what the
     /// client says is in the target slot.  A resource container's items are not swapped (refused).
     Outcome swap(svc::ItemContainer from, int from_slot, int32_t count, const std::string& guid, svc::ItemContainer to, int to_slot,
@@ -273,6 +276,11 @@ public:
     /// nothing, when the slot does not hold that instance or holds fewer than `count`. Modelled: no retail capture shows a stack
     /// losing one (the consumables retail used were single items, removed with one Remove event).
     Outcome consume(svc::ItemContainer storage, int slot, const std::string& guid, int32_t count);
+
+    /// A consumable's use took `count` of the stack in `storage` slot `slot` (the instance `guid`): ONE Remove that names the stack as it was and how many leave, with the character as its
+    /// instigator; the stack keeps the rest in its slot, and one that is emptied is gone (the retail form: a scroll, an elixir and a meal taken from stacks of 1 to 5 were each one Remove
+    /// event with the whole stack's state and a count of 1).  Refused, changing nothing, when the slot does not hold that instance or holds fewer than `count`.
+    Outcome use_up(svc::ItemContainer storage, int slot, const std::string& guid, int32_t count);
 
     /// Glint tiers: the full stack of `full` items in the material bag `storage` slot `slot` (the instance `guid`) becomes `product`, ONE item of the next kind.  The stack goes (one Remove
     /// of the whole stack); the product tops up the first stack of its colour with room, in the order of the bags and slots (one Add of the one item, in that stack's slot), else takes the

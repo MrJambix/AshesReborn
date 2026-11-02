@@ -790,6 +790,10 @@ func buildQuests(w *writer, src *source, opt *Options, meta map[string]string) e
 				places[alnum(name[i+1:])] = append(places[alnum(name[i+1:])], g)
 			}
 			places[alnum(desc)] = append(places[alnum(desc)], g)
+			// "The Dunbreak Flow" is ICD_DunbreakFlow_...: a definition's name leaves the article out
+			if d := alnum(desc); strings.HasPrefix(d, "the") {
+				places[d[3:]] = append(places[d[3:]], g)
+			}
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()

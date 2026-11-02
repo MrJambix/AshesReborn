@@ -137,3 +137,4 @@ static void test_chat() {
     am = received_chat(a, ai);
     CHECK(am.size() == 1 && am[0].values.at(3) == repl::Value::u64(4), "logout immediately removes the recipient from chat");
 }
+AOC_REGISTER_TEST(test_chat);

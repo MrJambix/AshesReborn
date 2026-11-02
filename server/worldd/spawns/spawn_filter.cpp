@@ -117,16 +117,21 @@ Why SpawnFilter::point(const content::PopulationData& data, const content::NpcWo
 }
 
 Why SpawnFilter::filter(const content::PopFilter& f, const std::set<std::string>& tags, int64_t zoi) const {
-    const int level = node_level_number(ctx_.node_level);
-    const int lo = node_level_number(f.node_level_min), hi = node_level_number(f.node_level_max);
-    // cCount (7) is no level: a filter that bounds the level with it is the design data's "never" (StartArcSpawn and the like)
-    if (lo < 0 || hi < 0 || lo >= 7 || hi >= 7 || level < lo || level > hi) return Why::NodeLevel;
     // a zone of influence: the point's own (G1: the region's grid); an area with none (E1's circle: zoi 0) matches no zone
     // (Nodes 1, stage 3b: the context's own zone stands in for a point that has none, a node's populations)
     const int64_t zone = zoi != 0 ? zoi : ctx_.zone;
+    // a filter that names nodes, in the open world, is about the node that owns the point's zone
+    const SpawnContext::ZoneNode* owner = nullptr;
+    if (ctx_.node_id == 0 && !f.node_ids.empty()) {
+        if (const auto it = ctx_.zone_nodes.find(zone); it != ctx_.zone_nodes.end()) owner = &it->second;
+    }
+    const int level = owner ? owner->level : node_level_number(ctx_.node_level);
+    const int lo = node_level_number(f.node_level_min), hi = node_level_number(f.node_level_max);
+    // cCount (7) is no level: a filter that bounds the level with it is the design data's "never" (StartArcSpawn and the like)
+    if (lo < 0 || hi < 0 || lo >= 7 || hi >= 7 || level < lo || level > hi) return Why::NodeLevel;
     const bool anvils = anvils_zone(zone);
     if (!f.cultures.empty() && !has(f.cultures, anvils ? std::string("Dunir") : ctx_.culture)) return Why::Culture;
-    if (!f.node_ids.empty() && std::find(f.node_ids.begin(), f.node_ids.end(), ctx_.node_id) == f.node_ids.end()) return Why::NodeOrZone;
+    if (!f.node_ids.empty() && std::find(f.node_ids.begin(), f.node_ids.end(), owner ? owner->node : ctx_.node_id) == f.node_ids.end()) return Why::NodeOrZone;
     if (!f.zones.empty() && (zone == 0 || std::find(f.zones.begin(), f.zones.end(), zone) == f.zones.end())) return Why::NodeOrZone;
     if (!f.node_types.empty() && !has(f.node_types, ctx_.node_type)) return Why::NodeType;
     if (!f.biomes.empty() && !has(f.biomes, anvils ? std::string("TabletopMountains") : ctx_.biome)) return Why::Biome;

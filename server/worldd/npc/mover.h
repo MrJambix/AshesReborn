@@ -61,6 +61,8 @@ public:
     bool set_end(double x, double y);
     void stop();
 
+    /// What the walk's speed is multiplied by (a slowed creature's), for as long as it is set.
+    void set_pace(double pace) { pace_ = pace; }
     /// Moves `dt` seconds along the path.  Returns the status after the step.
     Status advance(double dt);
 
@@ -97,6 +99,7 @@ private:
     double              yaw_ = 0;
     Vec3                velocity_;
     double              speed_ = 0;
+    double              pace_ = 1.0;
     double              stop_distance_ = 0;
     std::vector<Vec3>   path_;
     size_t              next_ = 0;      // the index of the point it walks to

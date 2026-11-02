@@ -52,6 +52,8 @@ public:
     virtual stats::CharacterStats& stats() = 0;
     /// The items the player wears (an NPC wears none).
     virtual std::vector<stats::WornItem> worn() const { return {}; }
+    /// The stacks of an effect (its record's guid) the actor holds now; 0 for none (and for a fighter that keeps no effects).
+    virtual int      effect_stacks(int64_t /*effect*/) const { return 0; }
 };
 
 }  // namespace aoc::worldd::combat

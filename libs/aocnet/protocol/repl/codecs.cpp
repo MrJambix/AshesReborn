@@ -114,8 +114,8 @@ void   write_double(BunchWriter& out, double d) { out.write_uint64(std::bit_cast
 enum class S {
     Unknown, Vec3, Vec2, Ticks, Rotator, Quantized, Normal, RepMovement, LoadTracker, UniqueId, Tag, TagContainer,
     StatInt32, Quat, GuidToBool, Alignment, AppearanceId, Customization, ItemInstance, ItemStorageEvent, HitConfirmations,
-    MovementInput, VendorPurchase, VendorTransaction, NodeTax, LocalizedMessage, ChannelingData, CraftState, RewardInstance, HashedVariable,
-    WarehouseEntry, CraftTags,
+    MovementInput, VendorPurchase, VendorTransaction, EmptyMap, NodeTax, LocalizedMessage, ChannelingData, CraftState, RewardInstance, HashedVariable,
+    WarehouseEntry, CraftTags, GuildData,
 };
 
 S find_struct(std::string_view n) {
@@ -143,6 +143,7 @@ S find_struct(std::string_view n) {
     if (n == "FVendorPurchaseCart") return S::VendorPurchase;
     if (n == "FVendorTransactionCart") return S::VendorTransaction;
     if (n == "FNodeTaxDetails") return S::NodeTax;
+    if (n == "FPlayerCommodityCounts" || n == "FPlayerCommodityCostsPerNode") return S::EmptyMap;
     if (n == "FLocalizedMessage") return S::LocalizedMessage;
     if (n == "FChannelingData") return S::ChannelingData;
     if (n == "FCraftItemState") return S::CraftState;
@@ -150,6 +151,7 @@ S find_struct(std::string_view n) {
     if (n == "FHashedVariable") return S::HashedVariable;
     if (n == "FWarehouseItemChunkSummary" || n == "FWarehouseMaterialTabSummary") return S::WarehouseEntry;
     if (n == "FCraftingResourceTagCostSelection") return S::CraftTags;
+    if (n == "FGuildData") return S::GuildData;
     return S::Unknown;
 }
 
@@ -708,6 +710,96 @@ bool text_fits(const TextValue& t) {
     return false;
 }
 
+bool write_fstring(BunchWriter& out, const std::string& utf8);
+
+bool write_guild_data(BunchWriter& out, const GuildDataWire& g) {
+    const auto write_guid = [&](const std::array<uint32_t, 4>& guid) {
+        for (const uint32_t word : guid) out.write_uint32(word);
+    };
+    if (!write_fstring(out, g.name)) return false;
+    write_guid(g.guid);
+    out.write_uint32(static_cast<uint32_t>(g.ranks.size()));
+    for (const GuildDataWire::Rank& r : g.ranks) {
+        if (!write_fstring(out, r.name)) return false;
+        for (const bool p : r.permissions) out.write_uint32(p ? 1u : 0u);
+    }
+    out.write_uint8(g.level);
+    out.write_uint32(g.experience);
+    out.write_uint32(0);   // GuildSkillPoints
+    out.write_uint16(g.capacity);
+    out.write_uint8(g.level_cap);
+    out.write_uint32(0);   // PurchasedSkillRanks.IDs
+    out.write_uint32(0);   // WarDeclarationChargesOnCooldown
+    out.write_uint32(0);   // UnlockedGroups
+    out.write_uint32(static_cast<uint32_t>(g.members.size()));
+    for (const GuildDataWire::Member& m : g.members) {
+        if (!write_fstring(out, m.name)) return false;
+        write_guid(m.guid);
+        out.write_uint8(m.rank);
+        out.write_uint8(m.level);
+        out.write_uint8(m.character_class);
+        out.write_uint64(m.last_online);
+        out.write_uint64(m.joined);
+        out.write_uint8(static_cast<uint8_t>(m.group));
+        write_guid(m.guild);
+        out.write_uint32(m.online ? 1u : 0u);
+    }
+    out.write_uint32(0);   // GuildGuidToWarData
+    return true;
+}
+
+std::optional<GuildDataWire> read_guild_data(wire::PacketReader& r) {
+    constexpr uint32_t kMaxListed = 4096;   // far beyond any guild: a bad count must not allocate the world
+    const auto read_guid = [&] {
+        std::array<uint32_t, 4> guid{};
+        for (uint32_t& word : guid) word = static_cast<uint32_t>(r.read_bits(32));
+        return guid;
+    };
+    GuildDataWire g;
+    auto name = read_fstring(r);
+    if (!name) return std::nullopt;
+    g.name = std::move(*name);
+    g.guid = read_guid();
+    const uint32_t ranks = static_cast<uint32_t>(r.read_bits(32));
+    if (ranks > kMaxListed) return std::nullopt;
+    for (uint32_t i = 0; i < ranks; ++i) {
+        GuildDataWire::Rank rank;
+        auto rank_name = read_fstring(r);
+        if (!rank_name) return std::nullopt;
+        rank.name = std::move(*rank_name);
+        for (bool& p : rank.permissions) p = r.read_bits(32) != 0;
+        g.ranks.push_back(std::move(rank));
+    }
+    g.level = static_cast<uint8_t>(r.read_bits(8));
+    g.experience = static_cast<uint32_t>(r.read_bits(32));
+    if (r.read_bits(32) != 0) return std::nullopt;
+    g.capacity = static_cast<uint16_t>(r.read_bits(16));
+    g.level_cap = static_cast<uint8_t>(r.read_bits(8));
+    for (int i = 0; i < 3; ++i) {
+        if (r.read_bits(32) != 0) return std::nullopt;
+    }
+    const uint32_t members = static_cast<uint32_t>(r.read_bits(32));
+    if (members > kMaxListed) return std::nullopt;
+    for (uint32_t i = 0; i < members; ++i) {
+        GuildDataWire::Member m;
+        auto member_name = read_fstring(r);
+        if (!member_name) return std::nullopt;
+        m.name = std::move(*member_name);
+        m.guid = read_guid();
+        m.rank = static_cast<uint8_t>(r.read_bits(8));
+        m.level = static_cast<uint8_t>(r.read_bits(8));
+        m.character_class = static_cast<uint8_t>(r.read_bits(8));
+        m.last_online = r.read_bits(64);
+        m.joined = r.read_bits(64);
+        m.group = static_cast<int8_t>(r.read_bits(8));
+        m.guild = read_guid();
+        m.online = r.read_bits(32) != 0;
+        g.members.push_back(std::move(m));
+    }
+    if (r.read_bits(32) != 0) return std::nullopt;
+    return g;
+}
+
 bool write_fstring(BunchWriter& out, const std::string& utf8) {
     if (!fstring_fits(utf8)) return false;
     if (utf8.empty()) {
@@ -1131,6 +1223,8 @@ bool struct_accepts(std::string_view struct_name, const Value& v) {
             const auto* c = v.get_if<VendorTransactionCart>();
             return c && vendor_transaction_cart_fits(*c);
         }
+        case S::EmptyMap:
+            return v.get_if<int64_t>() != nullptr;
         case S::NodeTax: {
             const auto* d = v.get_if<NodeTaxDetails>();
             return d && node_tax_details_fit(*d);
@@ -1163,6 +1257,8 @@ bool struct_accepts(std::string_view struct_name, const Value& v) {
             const auto* s = v.get_if<CraftTagSelection>();
             return s && craft_tag_selection_fits(*s);
         }
+        case S::GuildData:
+            return v.get_if<GuildDataWire>() != nullptr;
         case S::Unknown:     break;
     }
     return false;
@@ -1326,6 +1422,10 @@ std::optional<Value> read_struct(std::string_view struct_name, PacketReader& r, 
             if (!c) return std::nullopt;
             return Value(std::move(*c));
         }
+        case S::EmptyMap: {   // (only the server writes these, and it writes them empty: a map that is not empty does not read)
+            if (r.read_uint32() != 0) return std::nullopt;
+            return Value::i64(0);
+        }
         case S::NodeTax: {
             auto d = read_node_tax_details(r);
             if (!d) return std::nullopt;
@@ -1365,6 +1465,11 @@ std::optional<Value> read_struct(std::string_view struct_name, PacketReader& r, 
             auto s = read_craft_tag_selection(r);
             if (!s) return std::nullopt;
             return Value(std::move(*s));
+        }
+        case S::GuildData: {
+            auto g = read_guild_data(r);
+            if (!g) return std::nullopt;
+            return Value(std::move(*g));
         }
         case S::Unknown:
             break;
@@ -1461,6 +1566,9 @@ bool write_struct(std::string_view struct_name, const Value& v, BunchWriter& out
             return write_vendor_purchase_cart(out, *v.get_if<VendorPurchaseCart>());
         case S::VendorTransaction:
             return write_vendor_transaction_cart(out, *v.get_if<VendorTransactionCart>());
+        case S::EmptyMap:
+            out.write_uint32(0);
+            return true;
         case S::NodeTax:
             return write_node_tax_details(out, *v.get_if<NodeTaxDetails>());
         case S::LocalizedMessage:
@@ -1477,6 +1585,8 @@ bool write_struct(std::string_view struct_name, const Value& v, BunchWriter& out
             return write_warehouse_entry(out, *v.get_if<WarehouseSummaryEntry>());
         case S::CraftTags:
             return write_craft_tag_selection(out, *v.get_if<CraftTagSelection>());
+        case S::GuildData:
+            return write_guild_data(out, *v.get_if<GuildDataWire>());
         case S::Unknown:
             break;
     }

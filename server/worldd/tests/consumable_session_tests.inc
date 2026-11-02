@@ -24,6 +24,35 @@ static void consumable_trigger(Harness& h, int slot, int32_t id, int64_t overrid
     h.request(trigger_with_item(h.s->bootstrap().setup().guids.ability, override_ability ? override_ability : *cast, id, slot, item, 3), h.pawn_ch);
 }
 
+/// The abilities the client's AbilityComponent has loaded, rebuilt from what the server sent on the pawn's channel: the client shows "Ability not loaded" and sends no
+/// trigger for an item whose ability is not among them, so a use that works in the tests above can still do nothing in the game.
+static std::vector<int64_t> client_loaded_records(const Harness& h) {
+    std::vector<int64_t> out;
+    const repl::Subobject* ab = h.s->bootstrap().pawn().find(h.s->bootstrap().setup().guids.ability);
+    if (!ab) return out;
+    const schema::ClassSchema& cls = *ab->obj.schema;
+    for (const fake::Delivered& d : h.got) {
+        if (d.channel != h.pawn_ch || d.open || d.close || d.content.bit_pos() <= 8) continue;
+        const auto views = repl::read_content_blocks(d.content.data(), d.content.bit_pos(), 0);
+        if (!views) continue;
+        for (const repl::BlockView& v : *views) {
+            if (!(v.header.object == h.s->bootstrap().setup().guids.ability) || !v.header.has_rep_layout) continue;
+            size_t p = v.payload_pos;
+            const auto st = repl::read_rep_block(cls, d.content.data(), v.payload_pos + v.payload_bits, p);
+            if (!st) continue;
+            const repl::Value* val = st->get(cls, "ReplicatedRecordsToLoad");
+            const repl::ArrayValue* a = val ? val->get_if<repl::ArrayValue>() : nullptr;
+            if (!a) continue;
+            out.resize(a->elements.size());
+            for (size_t i = 0; i < a->elements.size(); ++i) {
+                const auto it = a->elements[i].values.find(1);
+                if (it != a->elements[i].values.end() && it->second.get_if<int64_t>()) out[i] = *it->second.get_if<int64_t>();
+            }
+        }
+    }
+    return out;
+}
+
 static void test_real_consumables() {
     std::printf("consumables: real potion/elixir item casts, ownership, potency and cooldowns\n");
     const char* configured = std::getenv("AOC_CONTENT_DB");
@@ -51,6 +80,8 @@ static void test_real_consumables() {
     for (const Row& row : rows) {
         Harness h(consumable_character({make_item(Bag, 0, row.item, 900, 2)}), true, true, path.c_str());
         CHECK(row.ability != 0, (row.name + ": content authorizes its ability").c_str());
+        const std::vector<int64_t> loaded = client_loaded_records(h);
+        CHECK(std::find(loaded.begin(), loaded.end(), row.ability) != loaded.end(), (row.name + ": the client has its ability loaded from the join, or it would send no trigger").c_str());
         consumable_trigger(h, 0, 700);
         consumable_run(h);
         const auto* left = h.s->inventory().at(Bag, 0);
@@ -58,7 +89,51 @@ static void test_real_consumables() {
               && h.mirror.unreadable == 0 && mirror_matches(h),
               (row.name + ": casts and consumes exactly one, with a readable matching client inventory").c_str());
     }
+    // the other kinds that run through the same path: one of each
+    for (const char* kind : {"Consumable_Food_%", "Consumable_Drink_%", "Consumable_Scroll_%", "Consumable_Salve_%"}) {
+        sqlite3* sample_db = nullptr;
+        sqlite3_stmt* sample = nullptr;
+        int64_t item = 0;
+        std::string sample_name;
+        if (sqlite3_open_v2(path.c_str(), &sample_db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK &&
+            sqlite3_prepare_v2(sample_db, "SELECT i.guid, i.name FROM item i JOIN item_cast c ON c.item_guid=i.guid JOIN item_use u ON u.item_guid=i.guid WHERE u.activation='CastAbility' AND i.name LIKE ?1 ORDER BY i.guid LIMIT 1", -1, &sample, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(sample, 1, kind, -1, SQLITE_STATIC);
+            if (sqlite3_step(sample) == SQLITE_ROW) {
+                item = sqlite3_column_int64(sample, 0);
+                sample_name = reinterpret_cast<const char*>(sqlite3_column_text(sample, 1));
+            }
+        }
+        if (sample) sqlite3_finalize(sample);
+        if (sample_db) sqlite3_close(sample_db);
+        CHECK(item != 0, (std::string("the data has a ") + kind + " to try").c_str());
+        if (item == 0) continue;
+        Harness h(consumable_character({make_item(Bag, 0, item, 905, 2)}), true, true, path.c_str());
+        std::string error;
+        const auto cast = h.fx.content->item_cast(item, error);
+        const std::vector<int64_t> loaded = client_loaded_records(h);
+        CHECK(cast && std::find(loaded.begin(), loaded.end(), *cast) != loaded.end(), (sample_name + ": the client has its ability loaded").c_str());
+        consumable_trigger(h, 0, 695);
+        consumable_run(h);
+        const auto* left = h.s->inventory().at(Bag, 0);
+        CHECK(h.s->uses_applied() == 1 && left && left->quantity == 1 && !h.s->failed() && mirror_matches(h), (sample_name + ": casts and consumes exactly one").c_str());
+    }
     constexpr int64_t health = 6064629336879989989ll, mana = 6064629489381870366ll;
+    {   // bought or given during the session: the record reaches the client before it can be used
+        Harness h(consumable_character({}), true, true, path.c_str());
+        h.request(actor_rpc(class_named("PlayerPawn_C"), "ServerClientIsReadyToPhaseIn", {}), h.pawn_ch);   // (the sync waits for the phase-in)
+        std::string error;
+        const auto cast = h.fx.content->item_cast(health, error);
+        const auto before = client_loaded_records(h);
+        CHECK(cast && std::find(before.begin(), before.end(), *cast) == before.end(), "with no potion carried its ability is not loaded");
+        h.s->gm_give_item(h.conn, health, 1, Clock::now(), "the test");
+        consumable_run(h);
+        const auto after = client_loaded_records(h);
+        CHECK(cast && std::find(after.begin(), after.end(), *cast) != after.end(), "a potion that arrives during the session gets its ability loaded on the client");
+        CHECK(h.s->inventory().at(Bag, 0) != nullptr, "(the potion is in the bag)");
+        consumable_trigger(h, 0, 690);
+        consumable_run(h);
+        CHECK(h.s->uses_applied() == 1 && !h.s->failed(), "and it can be used");
+    }
     for (const auto [record, stat] : {std::pair{health, content::kGuidHealth}, std::pair{mana, content::kGuidMana}}) {
         const auto character = consumable_character({make_item(Bag, 0, record, 901, 2)});
         Harness drink(character, true, true, path.c_str()), control(character, true, true, path.c_str());
@@ -158,8 +233,69 @@ static void test_real_consumables() {
         CHECK(h.s->uses_applied() == 2 && before.size() == 1 && after.size() == 1 && before.front().effect.guid != after.front().effect.guid,
               "a second elixir replaces the first, respecting the one-elixir effect group");
         const auto* effect = after.empty() ? nullptr : h.fx.world->ability_catalog()->effect(after.front().effect.guid);
-        CHECK(effect && effect->group_limit == 1 && !after.front().mods.empty()
+        CHECK(effect && effect->row.group_limit == 1 && !after.front().mods.empty()
               && std::any_of(after.front().mods.begin(), after.front().mods.end(), [](const auto& mod) { return mod.value != 0.0; }),
               "elixir modifiers have nonzero potency from the consumed item");
     }
+}
+
+static void test_reward_box() {
+    std::printf("a reward box: the choose-one window, a choice, a cancel and a bad answer\n");
+    const char* configured = std::getenv("AOC_CONTENT_DB");
+    const std::string path = configured && *configured ? configured : "dist/content/content.db";
+    sqlite3* raw = nullptr;
+    const bool present = sqlite3_open_v2(path.c_str(), &raw, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK;
+    if (raw) sqlite3_close(raw);
+    if (!present) {
+        std::printf("  [skip] no real content.db for the reward boxes\n");
+        return;
+    }
+    constexpr int64_t kArmguardBox = 6064634654268129444ll;   // the Lostman's Armguard Box
+    constexpr int64_t kLight = 6064634654087643242ll, kMedium = 6064634654088233072ll, kHeavy = 6064634654088298614ll;
+    CHECK(items::reward_box_table(kArmguardBox) != 0 && items::reward_box_table(kLight) == 0, "the box names a reward table, a piece of armour none");
+    CHECK(std::size(items::kRewardBoxes) == 57, "57 reward boxes");
+    Harness h(consumable_character({make_item(Bag, 0, kArmguardBox, 906, 1)}), true, true, path.c_str());
+    h.settle();
+    const svc::InventoryItem* held = h.s->inventory().at(Bag, 0);
+    CHECK(held != nullptr, "(the box is in the bag)");
+    if (!held) return;
+    const std::string guid = held->instance_guid;
+    const auto box_there = [&] {
+        const svc::InventoryItem* at = h.s->inventory().at(Bag, 0);
+        return at && at->item_record_id == kArmguardBox;
+    };
+    const auto count_of = [&](int64_t record) {
+        size_t n = 0;
+        for (const svc::InventoryItem& it : h.s->inventory().items()) n += it.item_record_id == record ? 1 : 0;
+        return n;
+    };
+    const auto use_box = [&] { h.request(item_used(3, 0, guid), h.pawn_ch); };
+
+    const size_t from = h.got.size();
+    use_box();
+    h.settle();
+    const auto window = reward_window_since(h, from);
+    CHECK(window && window->items.size() == 3 && window->items[0].record_id == static_cast<uint64_t>(kLight) && window->items[1].record_id == static_cast<uint64_t>(kMedium) &&
+              window->items[2].record_id == static_cast<uint64_t>(kHeavy), "using the box opens its window: light, medium or heavy forearms");
+    CHECK(window && !window->items.empty() && window->items[0].quantity == 1, "one of the item");
+    CHECK(box_there(), "the box stays while the window is open");
+
+    h.request(actor_rpc(class_named("AoCPlayerControllerBP_C"), "ServerCancelSelectReward", {}), h.pc_ch);
+    CHECK(box_there(), "a cancel leaves the box");
+    h.request(select_reward(1), h.pc_ch);
+    CHECK(box_there() && count_of(kMedium) == 0, "a choice with no window open is refused");
+
+    use_box();
+    h.request(select_reward(7), h.pc_ch);
+    CHECK(box_there() && count_of(kHeavy) == 0, "a choice that is not in the window is refused, and the box stays");
+
+    use_box();
+    h.request(select_reward(1), h.pc_ch);
+    h.settle();
+    CHECK(!box_there(), "the choice takes the box");
+    CHECK(count_of(kMedium) == 1 && count_of(kLight) == 0 && count_of(kHeavy) == 0, "and gives the item chosen, and only that");
+    CHECK(mirror_matches(h), "the client's bag agrees");
+    h.request(select_reward(1), h.pc_ch);
+    CHECK(count_of(kMedium) == 1, "a second answer gives nothing");
+    CHECK(!h.s->failed(), "the session carries on");
 }

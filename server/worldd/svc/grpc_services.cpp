@@ -152,6 +152,9 @@ CharacterResult GrpcServices::get_character(const std::string& id) {
         job.started_at_ms = j.started_at_ms();
         job.duration_ms = j.duration_ms();
         job.client_txn = j.client_txn();
+        job.rating_xp = j.rating_xp();
+        job.rating_quantity = j.rating_quantity();
+        job.rating_rarity = j.rating_rarity();
         for (const auto& res : j.resources()) {
             JobResource jr;
             jr.record_id = res.record_id();
@@ -177,6 +180,14 @@ CharacterResult GrpcServices::get_character(const std::string& id) {
         if (w.has_persisted_health()) wi.item.persisted_health = w.persisted_health();
         if (w.has_persisted_mana()) wi.item.persisted_mana = w.persisted_mana();
         wi.item.lock_expiration = w.lock_expiration();
+        r.character.warehouse_items.push_back(std::move(wi));
+    }
+    for (const auto& w : c.warehouse_containers()) {
+        WarehouseItem wi;
+        wi.area = w.area();
+        wi.node_guid = w.node_guid();
+        wi.container_guid = w.container_guid();
+        wi.container_only = true;
         r.character.warehouse_items.push_back(std::move(wi));
     }
     for (const int32_t n : c.attunements()) r.character.attunements.push_back(n);
@@ -287,6 +298,38 @@ CallStatus GrpcServices::save_progress(const std::string& id, const Progress& pr
     return map_grpc_status(stubs_->character->SaveProgress(&ctx, req, &resp));
 }
 
+CallStatus GrpcServices::list_guilds(std::vector<SavedGuild>& out) {
+    out.clear();
+    grpc::ClientContext ctx;
+    prepare(ctx, timeout_);
+    characterv1::ListGuildsRequest req;
+    characterv1::ListGuildsResponse resp;
+    const CallStatus status = map_grpc_status(stubs_->character->ListGuilds(&ctx, req, &resp));
+    if (status != CallStatus::Ok) return status;
+    for (const auto& g : resp.guilds()) out.push_back({g.guid(), g.name(), g.data()});
+    return status;
+}
+
+CallStatus GrpcServices::save_guild(const std::string& guid, const std::string& name, const std::string& data) {
+    grpc::ClientContext ctx;
+    prepare(ctx, save_timeout_);
+    characterv1::SaveGuildRequest req;
+    req.mutable_guild()->set_guid(guid);
+    req.mutable_guild()->set_name(name);
+    req.mutable_guild()->set_data(data);
+    characterv1::SaveGuildResponse resp;
+    return map_grpc_status(stubs_->character->SaveGuild(&ctx, req, &resp));
+}
+
+CallStatus GrpcServices::delete_guild(const std::string& guid) {
+    grpc::ClientContext ctx;
+    prepare(ctx, save_timeout_);
+    characterv1::DeleteGuildRequest req;
+    req.set_guid(guid);
+    characterv1::DeleteGuildResponse resp;
+    return map_grpc_status(stubs_->character->DeleteGuild(&ctx, req, &resp));
+}
+
 CallStatus GrpcServices::save_position(const std::string& id, const Position& position) {
     grpc::ClientContext ctx;
     prepare(ctx, save_timeout_);
@@ -330,6 +373,13 @@ CallStatus GrpcServices::save_inventory(const std::string& id, const std::vector
     if (warehouse) {
         req.set_replace_warehouse(true);
         for (const WarehouseItem& w : *warehouse) {
+            if (w.container_only) {
+                auto* c = req.add_warehouse_containers();
+                c->set_area(w.area);
+                c->set_node_guid(w.node_guid);
+                c->set_container_guid(w.container_guid);
+                continue;
+            }
             auto* p = req.add_warehouse_items();
             p->set_area(w.area);
             p->set_node_guid(w.node_guid);
@@ -363,6 +413,9 @@ CallStatus GrpcServices::save_inventory(const std::string& id, const std::vector
             j->set_started_at_ms(job.started_at_ms);
             j->set_duration_ms(job.duration_ms);
             j->set_client_txn(job.client_txn);
+            j->set_rating_xp(job.rating_xp);
+            j->set_rating_quantity(job.rating_quantity);
+            j->set_rating_rarity(job.rating_rarity);
             for (const JobResource& res : job.resources) {
                 auto* r = j->add_resources();
                 r->set_record_id(res.record_id);

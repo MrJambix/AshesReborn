@@ -168,6 +168,7 @@ constexpr int kHostLootMaxLevel = 30;     // GetPlayerLootMaxLevel(): the highes
 constexpr int kHostLootAvgLuck = 31;      // GetPlayerLootAvgLuck(): their average luck
 constexpr int kHostPlayerLevel = 161;    // GetPlayerLevel(): the level of the player the reward or the experience is for
 constexpr int kHostNarrativeLevel = 162;  // GetNarrativeContentLevel(): the level of the quest the reward belongs to (0 for none)
+constexpr int kHostKeptTerm = 163;       // name: the term's guid: what the hit that keeps it beyond its scope (bKeepBeyondScope) worked it out to
 constexpr int kHostNpcTag = 160;          // DoesNPCContainTag(tag): name = the tag; 1 when the NPC (the owner) carries it
 // Nodes 1, stage 1 (aocexpr/hostfn.go HostNodeBiome ...): the city node reads.  A node is a number in a program, its RANK (the index of its
 // CityNodeRecord in the list sorted by guid, -1 for none), and an enum answer is the value's ordinal: world/city_nodes.h answers them.

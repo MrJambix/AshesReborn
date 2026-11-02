@@ -43,7 +43,46 @@ func sameWarehouse(t *testing.T, what string, got, want []WarehouseItem) {
 }
 
 func saveWarehouse(s *Store, id string, bag []Item, stored []WarehouseItem) error {
-	return s.SaveInventoryEverything(context.Background(), id, bag, nil, false, nil, false, nil, false, stored, true)
+	return s.SaveInventoryEverything(context.Background(), id, bag, nil, false, nil, false, nil, false, stored, true, nil)
+}
+
+func TestSaveInventoryEverythingAddsBoughtContainersAndNeverRemovesThem(t *testing.T) {
+	s, acc := setup(t)
+	c, err := s.Create(context.Background(), New{AccountID: acc, Name: "buyer", ClassID: 2, Items: smallKit()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bag, err := s.Inventory(context.Background(), c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := WarehouseContainer{Area: WarehouseItems, ContainerGUID: 7}
+	tab := WarehouseContainer{Area: WarehouseMaterials, NodeGUID: 11, ContainerGUID: 9}
+	save := func(bought ...WarehouseContainer) error {
+		return s.SaveInventoryEverything(context.Background(), c.ID, bag, nil, false, nil, false, nil, false, nil, true, bought)
+	}
+	if err := save(chunk, tab); err != nil {
+		t.Fatal(err)
+	}
+	if err := save(chunk); err != nil { // a save that names fewer, or the same again
+		t.Fatal(err)
+	}
+	if err := save(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.WarehouseContainers(context.Background(), c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != chunk || got[1] != tab {
+		t.Fatalf("the containers are %+v", got)
+	}
+	if err := save(WarehouseContainer{Area: WarehouseItems, NodeGUID: 3, ContainerGUID: 7}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an item chunk of a town: %v", err)
+	}
+	if err := save(WarehouseContainer{Area: WarehouseMaterials, ContainerGUID: 7}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a tab of no town: %v", err)
+	}
 }
 
 func TestSaveInventoryEverythingStoresTheWarehouseAndReadsItBackInOrder(t *testing.T) {

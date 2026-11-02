@@ -88,6 +88,7 @@
 #include "svc/services.h"
 // (Cyb ~ C.O.A)
 
+#include <functional>
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -254,9 +255,11 @@ std::vector<int64_t> carried_combos(const content::ContentDb& content, const ite
 /// The abilities the items the character carries bring with them, each once, in the order the items lie (the bag, then what is worn).  The client's
 /// AbilityComponent loads only what ReplicatedRecordsToLoad lists, and an item use that runs through an ability (a mount item: ActivateItem's SummonMount
 /// and CastAbility branches call TriggerAbility) fails with "Ability not loaded" and sends no ServerTriggerAbility unless the ability is loaded; retail lists
-/// the ability of every item in the bag and on the body (LoadBackpackAbilities, LoadEquipmentAbilities).  Modelled: a mount item's Summon_Mount.  Empty with
-/// no mount tables.
-std::vector<int64_t> carried_item_abilities(const content::MountData* mounts, const items::Inventory& inventory);
+/// the ability of every item in the bag and on the body (LoadBackpackAbilities, LoadEquipmentAbilities).  Here: a mount item's Summon_Mount, and what `cast_of` answers for the
+/// other items (item_cast_ability: a potion's, an elixir's, a food's; 0 for an item with none).  Each ability once, in the order of the items.
+std::vector<int64_t> carried_item_abilities(const content::MountData* mounts, const items::Inventory& inventory, const std::function<int64_t(int64_t)>& cast_of = {});
+/// The ability an item's use casts: the item_cast row of an item whose activation is CastAbility; 0 for any other item, and for a content.db without those tables.
+int64_t item_cast_ability(const content::ContentDb& content, int64_t item_record);
 
 /// The AbilityComponent's General_Unstuck (the first KnownAbilities element of every join) and the static tail of 45 abilities that ends
 /// it (the fishing abilities, Rest, the emotes, Dodge, Guard, Sprint ...): constant in every capture, taken from the captured Bard's list.

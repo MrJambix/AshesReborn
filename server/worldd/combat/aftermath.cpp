@@ -81,12 +81,30 @@ void Aftermath::on_death(const DeathEvent& d) {
     std::vector<PlayerPort*> fighters;
     if (d.gm) {
         // a game master's kill: nobody fought it, so every player in the world may take its loot, and nobody is given experience
-        fighters = combat_.players();
+        for (PlayerPort* p : combat_.players()) {
+            if (!combat_.is_pet(p->actor_id())) fighters.push_back(p);
+        }
     } else {
         if (const auto killer = combat_.find_player(d.killer)) fighters.push_back(killer);
         for (const uint64_t id : d.attackers) {
             PlayerPort* p = combat_.find_player(id);
             if (p && std::find(fighters.begin(), fighters.end(), p) == fighters.end()) fighters.push_back(p);
+        }
+    }
+    // The party of those who fought it, near it: they did not fight it, so they do not raise the level the loot is rolled for and earn no Weapon experience.
+    // The distance is modelled: no recording shows a group's kill.
+    const size_t fought = fighters.size();
+    if (!d.gm && party_of_) {
+        for (PlayerPort* p : combat_.players()) {
+            if (combat_.is_pet(p->actor_id()) || std::find(fighters.begin(), fighters.end(), p) != fighters.end() || !p->fighter().alive()) continue;
+            const Vec3 at = p->fighter().position();
+            if (std::hypot(at.x - d.position.x, at.y - d.position.y) > cfg_.party_share_cm) continue;
+            for (size_t i = 0; i < fought; ++i) {
+                if (party_of_(*p, *fighters[i])) {
+                    fighters.push_back(p);
+                    break;
+                }
+            }
         }
     }
     for (PlayerPort* p : fighters) c.rights.insert(p->actor_id());
@@ -102,7 +120,7 @@ void Aftermath::on_death(const DeathEvent& d) {
         if (ev) {
             std::vector<std::string> tags = d.motion ? tags_of(d.motion->tags) : std::vector<std::string>{};
             double max_level = 1;
-            for (PlayerPort* p : fighters) max_level = std::max<double>(max_level, p->fighter().level());
+            for (size_t i = 0; i < fought; ++i) max_level = std::max<double>(max_level, fighters[i]->fighter().level());
             if (d.gm) max_level = std::max(1, d.level);   // rolled as for a player of the creature's own level: no level gap takes anything off
             RollContext ctx;
             ctx.npc = ev.get();
@@ -203,7 +221,8 @@ void Aftermath::on_death(const DeathEvent& d) {
                 c.loot = std::move(stacks);
             }
             // the experience: each fighter's own decay (a game master's kill gives none)
-            for (PlayerPort* p : fighters) {
+            for (size_t fighter_at = 0; fighter_at < fighters.size(); ++fighter_at) {
+                PlayerPort* p = fighters[fighter_at];
                 if (d.gm) break;
                 ctx.player_level = p->fighter().level();
                 KillReward kr;
@@ -212,10 +231,11 @@ void Aftermath::on_death(const DeathEvent& d) {
                 kr.blueprint = d.blueprint;
                 kr.level = d.level;
                 kr.instance = d.info ? d.info->instance_guid : 0;
+                kr.elite = d.elite;
                 for (const RolledXp& x : rolled.xp) {
                     const int64_t amount = book_->xp_for(x.amount, ctx);
                     if (x.type == "Adventuring") kr.adventuring_xp += amount;
-                    else if (x.type == "Weapon") kr.weapon_xp += amount;
+                    else if (x.type == "Weapon") kr.weapon_xp += fighter_at < fought ? amount : 0;
                     else if (x.type == "NodeActivity") kr.node_xp += amount;
                 }
                 kr.loot = c.parts.has_value();
@@ -392,7 +412,9 @@ void Aftermath::hunt_cancelled(uint64_t npc) {
 }
 
 bool Aftermath::hunt_done(uint64_t npc, double now) {
-    const auto it = corpses_.find(npc);
+    auto it = corpses_.find(npc);
+    // a completion that comes more than 5 s after the channel's end (a stall) finds no record: a huntable creature that still stands is hunted as it stands, so that it still dies and is removed
+    if (it == corpses_.end() && hunt_started(npc, now, 0.0)) it = corpses_.find(npc);
     if (it == corpses_.end() || !it->second.huntable) return false;
     Corpse& c = it->second;
     if (c.living) {   // the hunt is the creature's end: it dies for its clients with the done update, and its spawn point refills it

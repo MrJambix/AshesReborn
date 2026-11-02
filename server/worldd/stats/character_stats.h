@@ -80,6 +80,10 @@ public:
     /// `bundle` and `gear` must outlive this object. `class_enum` is ECharacterClass, `level` 1..kMaxLevel.
     CharacterStats(const StatBundle& bundle, const GearCatalog& gear, int class_enum, int level, Rounding rounding = Rounding::HalfUp);
 
+    /// The stat values one item gives at `quality`, as worn gear's do (the rule of stats/gear.h and this character's rounding): what a consumable's
+    /// GetConsumedItemStat answers. Empty for an item with no stat block.
+    std::vector<StatMod> item_stats(int64_t record, int quality) const;
+
     /// The join: computes the stats for the worn items; every current value starts at its maximum. False, with `err`, when the engine
     /// refuses (a class the bundle does not have, a level out of range).
     bool start(std::span<const WornItem> worn, std::string& err);

@@ -15,6 +15,8 @@
 #      .\scripts\build.ps1 -Target worldd
 #      .\scripts\build.ps1 -Config Debug
 #      .\scripts\build.ps1 -Clean           # clean first
+#      .\scripts\build.ps1 -FreshObjects    # compile our own code again (worldd and libs), not the dependencies: a header saved while a compile runs can leave an
+#                                           # object with the old struct layout that looks newer than the header (garbage values, odd crashes); build before you package after that
 #      .\scripts\build.ps1 -Test            # build, then run scripts\run_tests.ps1
 #      .\scripts\build.ps1 -Jobs 6          # at most 6 projects and at most 6 compiler processes at a time
 #                                          # (default: every core for projects, and as many compilers as the free memory allows)
@@ -35,6 +37,7 @@ param(
     [ValidateSet('Release','Debug','RelWithDebInfo','MinSizeRel')]
     [string]   $Config  = 'Release',
     [switch]   $Clean,
+    [switch]   $FreshObjects,
     [switch]   $Test,
     [switch]   $Configure,
     [int]      $Jobs = 0
@@ -76,6 +79,12 @@ Write-Host "cmake    : $cmake"
 if ($Clean -and (Test-Path $buildDir)) {
     Write-Host "Removing $buildDir ..."
     Remove-Item -Recurse -Force $buildDir
+}
+if ($FreshObjects) {
+    $ours = @('server\worldd', 'libs') | ForEach-Object { Join-Path $buildDir $_ } | Where-Object { Test-Path $_ }
+    $objects = @(Get-ChildItem $ours -Recurse -Filter *.obj -ErrorAction SilentlyContinue)
+    Write-Host "Removing $($objects.Count) object files of our own code ..."
+    $objects | Remove-Item -Force
 }
 # == C | O | A | Cyb ==
 
@@ -176,9 +185,14 @@ Write-Host "Projects at a time: $(if ($Jobs -gt 0) { $Jobs } else { 'all cores' 
 foreach ($t in $targets) {
     Write-Host ""
     Write-Host "Building $t ..."
-    & $cmake --build $buildDir --config $Config --target $t -- @msbuildArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "Build failed for target: $t"
+    # C1083 "Cannot open compiler generated file ... Permission denied" is a passing lock on an object file, a different one each time: a new try goes on from where this one stopped
+    foreach ($try in 1..5) {
+        & $cmake --build $buildDir --config $Config --target $t -- @msbuildArgs | Tee-Object -Variable buildLog | Out-Host
+        if ($LASTEXITCODE -eq 0) { break }
+        $locked = @($buildLog | Where-Object { "$_" -match 'C1083.*compiler generated file' }).Count -gt 0
+        $other = @($buildLog | Where-Object { "$_" -match ': (fatal )?error ' -and "$_" -notmatch 'C1083.*compiler generated file' }).Count -gt 0
+        if (-not $locked -or $other -or $try -eq 5) { throw "Build failed for target: $t" }
+        Write-Host "An object file was locked (C1083): trying $t again ($($try + 1) of 5)"
     }
 }
 

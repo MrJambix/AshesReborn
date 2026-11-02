@@ -957,7 +957,12 @@ func (f *fnc) binary(e aocexpr.Binary) (val, error) {
 		fl := l.float || r.float
 		if op == OpDiv {
 			if !fl {
-				return val{}, unsupportedAt(e.At, "%s", divisionConstruct)
+				// A level is a whole number that is never negative, so C++'s truncating division is Floor: -(GetCharacterLevel(...) / 3) (Ranger_Thorns_Damage). Nothing else is
+				// known to be whole, and the rest stay refused.
+				if call, isCall := e.L.(aocexpr.Call); !isCall || call.Name != "GetCharacterLevel" || f.kind != unitExpr {
+					return val{}, unsupportedAt(e.At, "%s", divisionConstruct)
+				}
+				return val{t: tNum, n: nFn1{OpFloor, nBin{OpDiv, l.n, r.n}}}, nil
 			}
 		}
 		if lok && rok && !(op == OpDiv && rc == 0) {
@@ -1360,6 +1365,35 @@ func (f *fnc) call(e aocexpr.Call) (val, error) {
 			return val{}, unsupportedAt(e.At, "%v of another actor", e.Name)
 		}
 		return val{t: tObj, role: aocexpr.RoleClosestInHit}, nil
+	case "RandBool":
+		if err := check(); err != nil {
+			return val{}, err
+		}
+		roll, err := f.hostCall(e, aocexpr.HostRandIntRange, "", tNum, val{t: tNum, n: nConst{0}}, val{t: tNum, n: nConst{1}})
+		if err != nil {
+			return val{}, err
+		}
+		return val{t: tBool, n: nBin{OpEq, roll.n, nConst{1}}}, nil
+	case "IsSeason":
+		// The world has no seasons yet, so no season holds (Zombie_Drowned_Spray_Damage_Hit keeps its usual multiplier).
+		if err := check(tEnum); err != nil {
+			return val{}, err
+		}
+		return val{t: tBool, n: nConst{0}}, nil
+	case "IsDead":
+		if err := check(tObj); err != nil {
+			return val{}, err
+		}
+		hg, ok := f.c.g.StatByName("Health")
+		if !ok {
+			return val{}, unsupportedAt(e.At, "%v (the graph has no Health)", e.Name)
+		}
+		hi, err := f.c.stat(hg)
+		if err != nil {
+			return val{}, errAt(e.At, "%v", err)
+		}
+		health := f.actor(args[0].role, val{t: tNum, n: nStat{hi}, float: true})
+		return val{t: tBool, n: nBin{OpLe, health.n, nConst{0}}}, nil
 	case "RandIntRange":
 		if err := check(tNum, tNum); err != nil {
 			return val{}, err
@@ -1404,6 +1438,10 @@ func (f *fnc) call(e aocexpr.Call) (val, error) {
 		}
 		return f.hostCall(e, aocexpr.HostCooldownLeft, strconv.FormatInt(args[0].ref.Guid, 10), tNum)
 	case "GetHitTriggerCount", "GetAbilityHitCount":
+		// One argument, a hit record (Rogue_Throw's GetAbilityHitCount(Rogue_Throw_Bounce)): the running cast's own count; the role says nobody.
+		if e.Name == "GetAbilityHitCount" && len(args) == 1 && args[0].t == tRef {
+			return f.hostCall(e, aocexpr.HostAbilityHitCount, strconv.FormatInt(args[0].ref.Guid, 10), tNum, val{t: tNum, n: nConst{-1}})
+		}
 		if err := check(tObj, tRef); err != nil {
 			return val{}, err
 		}
@@ -1483,7 +1521,7 @@ func (f *fnc) call(e aocexpr.Call) (val, error) {
 		}
 		return ctx(OpEffectInst, tNum, i)
 	case "GetRemainingAbilityCharges", "IsApplicableTarget", "IsAnyMovementKeyPressed", "isanymovementkeypressed", "GetStatDeltaOverTime", "GetHitEvent",
-		"GetStatModValue", "GetStatModEffectiveValue", "IsNeutral", "IsEnemy", "GetAngleBetween", "Now", "GetProgressDuration":
+		"GetStatModValue", "GetStatModEffectiveValue", "IsNeutral", "IsEnemy", "IsFriendly", "GetAngleBetween", "Now", "GetProgressDuration":
 		if f.kind != unitExpr {
 			return val{}, unsupportedAt(e.At, "function %q (a stat formula has no host)", e.Name)
 		}
@@ -1552,6 +1590,21 @@ func (f *fnc) call(e aocexpr.Call) (val, error) {
 				fn = aocexpr.HostIsEnemy
 			}
 			return host(fn, aocexpr.RolePair(args[0].role, args[1].role), tBool)
+		case "IsFriendly":
+			// neither of the two relations the host knows
+			if err := check(tObj, tObj); err != nil {
+				return val{}, err
+			}
+			pair := aocexpr.RolePair(args[0].role, args[1].role)
+			enemy, err := host(aocexpr.HostIsEnemy, pair, tBool)
+			if err != nil {
+				return val{}, err
+			}
+			neutral, err := host(aocexpr.HostIsNeutral, pair, tBool)
+			if err != nil {
+				return val{}, err
+			}
+			return val{t: tBool, n: nBin{OpEq, nBin{OpAdd, enemy.n, neutral.n}, nConst{0}}}, nil
 		case "GetAngleBetween":
 			if err := check(tObj, tObj); err != nil {
 				return val{}, err
@@ -1952,7 +2005,7 @@ func (f *fnc) inline(e aocexpr.Call, guid int64, formula bool) (val, error) {
 	}
 	text, ok := f.c.g.Equations[eq]
 	if !ok {
-		return val{}, errAt(e.At, "%s: no equation %d (or it has constraints, which are not modelled)", e.Name, eq)
+		return val{}, errAt(e.At, "%s: no equation %d", e.Name, eq)
 	}
 	if err := f.enter(key); err != nil {
 		return val{}, errAt(e.At, "%s: %v", e.Name, err)
@@ -1976,14 +2029,13 @@ func (f *fnc) inline(e aocexpr.Call, guid int64, formula bool) (val, error) {
 	if v.t != tNum {
 		return val{}, errAt(e.At, "%s %d: its value is %v, not a number", e.Name, guid, v.t)
 	}
+	// The value is the equation's own: the game's evaluator returns an equation's (or a formula's) value as it is, and never applies the limits the equation's
+	// record lists (Graph.Clamps). The burn's formula shares the damage equation, whose limit is "not above 0": its pool is a positive number.
 	v.float = true // a stat equation is a float (aocexpr.StatFloatFuncs)
-	if cl, ok := f.c.g.Clamps[eq]; ok {
-		v = f.clamp(v, cl)
-	}
 	return v, nil
 }
 
-// clamp applies an equation's constraint: raised to its Min, then lowered to its Max (Unreal's Clamp order).
+// clamp applies a limit: raised to its Min, then lowered to its Max (Unreal's Clamp order). A term's limits bind its value (an equation's do not: see inline).
 func (f *fnc) clamp(v val, cl Clamp) val {
 	limit := func(op byte, v val, bound float64) val {
 		b := f.num(bound)
@@ -2007,6 +2059,16 @@ func (f *fnc) clamp(v val, cl Clamp) val {
 func (f *fnc) term(e aocexpr.Call, r aocexpr.Ref) (val, error) {
 	if r.Kind != "" {
 		return val{}, errAt(e.At, "GetTerm: the formula has no term %v", r)
+	}
+	if f.kind == unitExpr && f.c.g.KeptTerms[r.Guid] {
+		supplied := false
+		for _, t := range f.terms {
+			_, ok := t[r.Guid]
+			supplied = supplied || ok
+		}
+		if !supplied {
+			return f.hostCall(e, aocexpr.HostKeptTerm, strconv.FormatInt(r.Guid, 10), tNum) // Bard Gambit: its self hit reads what the hit on the target kept
+		}
 	}
 	if len(f.terms) == 0 || f.terms[len(f.terms)-1] == nil && !f.anyTerms() {
 		return val{}, errAt(e.At, "GetTerm outside a formula")

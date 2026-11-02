@@ -28,6 +28,7 @@ import (
 	"aocrop/services/internal/config"
 	"aocrop/services/internal/db"
 	"aocrop/services/internal/gmhttp"
+	"aocrop/services/internal/statushttp"
 	"aocrop/services/internal/svcauth"
 )
 
@@ -64,8 +65,23 @@ func run() error {
 		return err
 	}
 	defer worldConn.Close()
+	streamConn, err := grpc.NewClient(cfg.WorldStreamAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), token.DialOption())
+	if err != nil {
+		return err
+	}
+	defer streamConn.Close()
 	api := http.NewServeMux()
 	api.Handle("/api/v1/gm", gmhttp.Handler(store, character.NewStore(pool), adminv1.NewWorldAdminServiceClient(worldConn)))
+	api.Handle("/api/v1/gm/", gmhttp.Reads(store, character.NewStore(pool), adminv1.NewWorldAdminServiceClient(worldConn), adminv1.NewWorldStreamServiceClient(streamConn), gmhttp.NewCatalog(cfg.ContentDB)))
+	api.Handle("/gm/", gmhttp.Site())
+	status := statushttp.Handler(statushttp.Options{
+		WorldName:   cfg.WorldName,
+		Players:     adminv1.NewWorldAdminServiceClient(worldConn),
+		StartedFile: cfg.WorldStartedFile,
+		NotesFile:   cfg.PatchNotesFile,
+	})
+	api.Handle("/api/v1/status", status)
+	api.Handle("/api/v1/changelog", status)
 	api.Handle("/", authhttp.Handler(store))
 
 	// Bind both ports before saying "listening", so a taken port fails here.

@@ -136,6 +136,13 @@ CREATE TABLE interactable_actor_def (
     despawn_delay REAL NOT NULL,           -- DespawnDelayTime, seconds
     despawn_final INTEGER NOT NULL         -- bDespawnAfterFinalState: the object leaves after its use
 );
+CREATE TABLE object_reward (
+    owner_guid INTEGER NOT NULL,           -- (version 39) an InteractableComponentDef (its player interaction's CompletionResponsesIds) or an InteractableActorDef (its StateActionResponses)
+    ord        INTEGER NOT NULL,
+    table_guid INTEGER NOT NULL,           -- a reward table of a GiveItem action response among them
+    items      TEXT NOT NULL,              -- a JSON list of the items that table can give
+    PRIMARY KEY (owner_guid, ord)
+) WITHOUT ROWID;
 CREATE TABLE instance_iad (
     instance_guid INTEGER PRIMARY KEY,     -- (version 36) a population instance that names an InteractableActorDef
     iad_guid      INTEGER NOT NULL
@@ -157,7 +164,7 @@ CREATE TABLE dialogue_turnin (
 `
 
 // QuestTables are the tables QuestDDL creates, in the DDL's order.
-var QuestTables = []string{"quest", "quest_objective", "npc_offered_quest", "dialogue_accept", "zoi_quest", "item_quest", "item_crate", "shrine_icd", "quest_kill_set", "interactable", "interactable_actor_def", "instance_iad", "quest_item", "item_box", "dialogue_turnin"}
+var QuestTables = []string{"quest", "quest_objective", "npc_offered_quest", "dialogue_accept", "zoi_quest", "item_quest", "item_crate", "shrine_icd", "quest_kill_set", "interactable", "interactable_actor_def", "object_reward", "instance_iad", "quest_item", "item_box", "dialogue_turnin"}
 
 func createQuests(db *sql.DB) error {
 	if _, err := db.Exec(QuestDDL); err != nil {

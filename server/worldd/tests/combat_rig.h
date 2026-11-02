@@ -90,6 +90,39 @@ public:
         kills.push_back(kill);
         (void)now;
     }
+    void hit_dealt(const combat::DealtHit& hit, double now) override {
+        dealt.push_back(hit);
+        if (hit.source_type != content::kSourceTypeEffect) return;
+        effect_notes.push_back({hit.target, hit.hit_guid, hit.source_guid, hit.flags, hit.predicted, hit.mods, hit.effective, now});
+        effect_hits.push_back(hit);
+    }
+    /// A hit of an effect the player put on a creature: queued, as the session queues it (it confirms it at its next tick, never inside the cast that made the hit).
+    struct EffectNote {
+        uint64_t                         holder = 0;
+        int64_t                          hit_guid = 0, effect_guid = 0;
+        uint8_t                          flags = 0;
+        bool                             predicted = false;
+        std::vector<combat::ResolvedMod> mods;
+        std::vector<double>              effective;
+        double                           at = 0;
+    };
+    /// What the session does at its next tick: the queued notes become confirmations of the pipeline.
+    void deliver_effect_notes() {
+        std::vector<combat::DealtHit> hits;
+        hits.swap(effect_hits);
+        std::vector<EffectNote> notes;
+        notes.swap(effect_notes);
+        for (size_t i = 0; i < hits.size(); ++i) {
+            confirmed_notes.push_back(notes[i]);
+            rig_.pipe->confirm_dealt(hits[i], rig_.clock = std::max(rig_.clock, notes[i].at));
+        }
+        rig_.take();
+    }
+    std::vector<EffectNote>                  effect_notes, confirmed_notes;
+    std::vector<combat::DealtHit>            effect_hits;
+    void hit_from_pet(int64_t hit_guid, int64_t, double) override { from_pet.push_back(hit_guid); }
+    std::vector<combat::DealtHit>            dealt;
+    std::vector<int64_t>                     from_pet;
     std::array<uint32_t, 4>                  guid = {0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u};
     std::vector<combat::KillReward>          kills;
     std::vector<combat::IncomingHit>         hits;

@@ -6,7 +6,11 @@
 
 #include "protocol/repl/rep_block.h"
 #include "protocol/schema/generated/index.h"
+#include "quest/destiny_table.h"
 
+#include <algorithm>
+#include <iterator>
+#include <map>
 #include <string_view>
 
 namespace aoc::worldd::quest {
@@ -78,6 +82,38 @@ private:
 /// A zero vector the way the game's server writes it: header 0 and three 32-bit words.
 Value zero_vector() { return Value(repl::QuantVec{repl::QuantVec::Mode::RawFloat, 0, 0, 0}); }
 
+/// The Destiny board's links.  The client's quest list (AAoCHUDBase::UpdateActiveNarrativeQuests, 0x14668c020) leaves a track's root and the quest it runs out of the tracker only when the instance
+/// names a parent and an instigating objective (0x14698c9d0: +0x288 ParentInstanceGuid, +0x66C ObjectiveInstigatorGuid, by the exe's property tables).  A sub-quest names its real ones.  A root has none
+/// (the data's own Destiny_Root_Quest parents the runs, not the roots), so a root names a guid that matches nothing.  [modelled: no recording shows the board]
+void link_destiny_quests(std::vector<QuestInstance>& all) {
+    struct Parent {
+        Guid128 quest, objective;
+    };
+    std::map<int64_t, Parent> by_objective;
+    for (const QuestInstance& q : all) {
+        for (const ObjectiveState& o : q.objectives) by_objective[o.record] = {q.guid, o.guid};
+    }
+    std::map<int64_t, Parent> by_child;
+    for (const destiny::SubQuestLink& l : destiny::kSubQuests) {
+        if (const auto it = by_objective.find(l.objective); it != by_objective.end()) by_child[l.quest] = it->second;
+    }
+    for (QuestInstance& q : all) {
+        Guid128 parent, objective;
+        if (const auto it = by_child.find(q.record); it != by_child.end()) {
+            parent = it->second.quest;
+            objective = it->second.objective;
+        } else if (std::any_of(std::begin(destiny::kTracks), std::end(destiny::kTracks), [&](const destiny::Track& t) { return t.quest == q.record; })) {
+            parent = objective = Guid128{q.guid.a ^ 0x44455354u, q.guid.b, q.guid.c, q.guid.d};
+        } else {
+            continue;   // not on the board, or a step whose parent has left: it keeps what it had
+        }
+        if (parent == q.destiny_parent && objective == q.destiny_objective) continue;
+        q.destiny_parent = parent;
+        q.destiny_objective = objective;
+        q.wire_dirty = true;
+    }
+}
+
 }  // namespace
 
 std::optional<ElementState> cache_item(const repl::FastArrayLayout& layout, const QuestInstance& q) {
@@ -92,6 +128,10 @@ std::optional<ElementState> cache_item(const repl::FastArrayLayout& layout, cons
     ok = top.set(es, "Quests.QuestObjectiveMarker.bCompletesGoToObjective", Value::boolean(true)) && ok;
     ok = top.set_guid(es, "Quests.InstanceGuid", q.guid) && ok;
     ok = top.set(es, "Quests.RecordId", Value::i64(q.record)) && ok;
+    if (!q.destiny_parent.zero()) {
+        ok = top.set_guid(es, "Quests.ParentInstanceGuid", q.destiny_parent) && ok;
+        ok = top.set_guid(es, "Quests.ObjectiveInstigatorGuid", q.destiny_objective) && ok;
+    }
     const auto objectives = top.sub("Quests.Objectives");
     if (!objectives) return std::nullopt;
     repl::ArrayValue list;
@@ -181,6 +221,7 @@ bool sync(repl::FastArrays& arrays, QuestLog& log, std::string* error, MarkerCon
     repl::FastArrayState* cache = arrays.get(*cls, "ReplicatedQuestCache");
     repl::FastArrayState* vars = arrays.get(*cls, "RepQuestVariables");
     if (!cache || !vars) return fail("the quest component has no cache or variable array");
+    link_destiny_quests(log.instances_for_wire());
     for (const QuestLog::Removed& r : log.take_removed()) {
         if (r.cache_id != repl::kIndexNone) cache->remove(r.cache_id);
         if (r.vars_id != repl::kIndexNone) vars->remove(r.vars_id);

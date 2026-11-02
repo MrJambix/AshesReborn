@@ -22,10 +22,12 @@
 #pragma once
 
 #include "dialogue/requirement.h"
+#include "quest/destiny_table.h"
 #include "quest/quest_book.h"
 #include "quest/quest_log.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <set>
@@ -212,9 +214,53 @@ public:
             if (r.advanced && elite < r.elite) return;
             bool match = std::find(r.kill_instances.begin(), r.kill_instances.end(), instance) != r.kill_instances.end();
             for (size_t k = 0; k < sets.size() && !match; ++k) match = std::find(r.kill_sets.begin(), r.kill_sets.end(), sets[k]) != r.kill_sets.end();
+            // a Destiny objective names creatures by a tag query (any enemy); no other objective changes
+            if (!match) match = std::find(std::begin(destiny::kAnyKill), std::end(destiny::kAnyKill), r.guid) != std::end(destiny::kAnyKill);
             if (!match) return;
             update_objective(q, i, r, 1);
             any = true;
+        });
+        return finish_event(any);
+    }
+
+    /// The character gathered `count` of `item` at `rarity`: every active Gather objective whose filter holds it counts.
+    bool gathered(int64_t item, int rarity, int64_t count) {
+        bool any = false;
+        each_active("Gather", [&](QuestInstance& q, size_t i, const content::QuestObjectiveRow& r) {
+            for (const destiny::GatherFilter& f : destiny::kGather) {
+                if (f.objective != r.guid || rarity < f.min_rarity) continue;
+                if (std::find(f.items, f.items + f.count, item) == f.items + f.count) continue;
+                update_objective(q, i, r, count);
+                any = true;
+            }
+        });
+        return finish_event(any);
+    }
+
+    /// The character finished a quest of the flavor `flavor` (not a Destiny one): every active CompleteQuest objective that counts the flavor counts.
+    bool quest_finished(const std::string& flavor) {
+        bool any = false;
+        each_active("CompleteQuest", [&](QuestInstance& q, size_t i, const content::QuestObjectiveRow& r) {
+            for (const destiny::CompleteFilter& f : destiny::kComplete) {
+                if (f.objective != r.guid) continue;
+                const bool named = f.flavors[0].empty() || f.flavors[0] == flavor || f.flavors[1] == flavor || f.flavors[2] == flavor;
+                if (!named) continue;
+                update_objective(q, i, r, 1);
+                any = true;
+            }
+        });
+        return finish_event(any);
+    }
+
+    /// The character spent `points` skill points of the leveling type `type`.
+    bool skill_changed(int64_t type, int64_t points) {
+        bool any = false;
+        each_active("SkillTreeChange", [&](QuestInstance& q, size_t i, const content::QuestObjectiveRow& r) {
+            for (const destiny::SkillFilter& f : destiny::kSkill) {
+                if (f.objective != r.guid || std::find(f.types, f.types + f.count, type) == f.types + f.count) continue;
+                update_objective(q, i, r, points);
+                any = true;
+            }
         });
         return finish_event(any);
     }
@@ -298,11 +344,23 @@ public:
         return finish_event(any);
     }
 
-    /// The character used the ability `ability`.
-    bool ability(int64_t ability_id) {
+    /// The character used the ability `ability`, with its tags, in combat or not.
+    bool ability(int64_t ability_id, const std::vector<std::string>& tags = {}, bool in_combat = false) {
         bool any = false;
         each_active("UseAbility", [&](QuestInstance& q, size_t i, const content::QuestObjectiveRow& r) {
-            if (std::find(r.abilities.begin(), r.abilities.end(), ability_id) == r.abilities.end()) return;
+            bool match = std::find(r.abilities.begin(), r.abilities.end(), ability_id) != r.abilities.end();
+            for (const destiny::AbilityFilter& f : destiny::kAbilityTags) {   // a Destiny objective that names tags: all of them (a melee combo, a dodge)
+                if (match || f.objective != r.guid || (f.in_combat && !in_combat)) continue;
+                bool all = true;
+                for (const std::string_view want : f.tags) {
+                    if (want.empty()) continue;
+                    all = all && std::any_of(tags.begin(), tags.end(), [&](const std::string& t) {
+                        return t.size() == want.size() && std::equal(t.begin(), t.end(), want.begin(), [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); });
+                    });
+                }
+                match = all;
+            }
+            if (!match) return;
             update_objective(q, i, r, 1);
             any = true;
         });
@@ -347,6 +405,7 @@ private:
     double                    now_;
     std::set<std::string>     told_;
     std::set<std::pair<int64_t, int64_t>> started_;   // (quest, objective) whose start actions have run in this engine's start of a quest
+    std::set<int64_t>         asked_;                 // the sub-quests this engine has asked the world to start
 
     bool finish_event(bool any) {
         if (any) settle();
@@ -455,17 +514,15 @@ private:
         log_.touch(q);
         const content::QuestRow* d = book_.quest(q.record);
         if (d) run_actions(d->on_success, q, -1);
-        Effect rewards;
-        rewards.kind = Effect::Kind::GrantRewards;
-        rewards.quest = q.record;
-        if (d) {
-            rewards.tables = d->rewards;
-            for (size_t i = 0; i < q.objectives.size() && i < d->objectives.size(); ++i) {
-                if (!q.objectives[i].completed) continue;
-                rewards.tables.insert(rewards.tables.end(), d->objectives[i].rewards.begin(), d->objectives[i].rewards.end());
-            }
+        if (d && pays_on_claim(*d)) {
+            q.awaiting_claim = true;   // (a Destiny step that pays stays in the log until the client claims it: PlayerSession::on_destiny_claim)
+        } else {
+            Effect rewards;
+            rewards.kind = Effect::Kind::GrantRewards;
+            rewards.quest = q.record;
+            if (d) rewards.tables = quest_reward_tables(*d, q);
+            if (!rewards.tables.empty()) fx_.push_back(std::move(rewards));
         }
-        if (!rewards.tables.empty()) fx_.push_back(std::move(rewards));
         Effect done;
         done.kind = Effect::Kind::QuestDone;
         done.quest = q.record;
@@ -650,6 +707,32 @@ private:
             if (r.timeout > 0 && now_ >= o.start_time + r.timeout) {
                 any = (r.succeed_on_timeout ? complete_objective(q, i) : fail_objective(q, i)) || any;
                 continue;
+            }
+            // a SubQuest objective of the Destiny board: it starts its quest and is done when that quest is
+            if (r.type == "SubQuest") {
+                int64_t child = 0;
+                for (const destiny::SubQuestLink& l : destiny::kSubQuests) {
+                    if (l.objective == r.guid) child = l.quest;
+                }
+                // (an objective that starts awake starts active whatever its activation rule says: a milestone's rule is what it waits for, so it is asked here)
+                ev_.scope(q.record);
+                const bool allowed = r.activation.empty() || ev_.holds(r.activation);
+                ev_.scope(0);
+                if (child != 0 && allowed) {
+                    const QuestInstance* running = log_.find(child);
+                    const bool finished = log_.completions(child) > 0 || (running && running->status == Status::Completed);
+                    if (finished) {
+                        if (o.count < r.count) {
+                            o.count = static_cast<int32_t>(r.count);
+                            log_.touch(q);
+                        }
+                    } else if (!running && asked_.insert(child).second) {
+                        Effect e;
+                        e.kind = Effect::Kind::StartQuest;
+                        e.quest = child;
+                        fx_.push_back(std::move(e));
+                    }
+                }
             }
             bool done;
             if (r.type == "Custom") {

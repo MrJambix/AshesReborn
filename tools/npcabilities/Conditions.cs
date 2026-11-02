@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using CUE4Parse.UE4.Assets.Exports;
 using CUE4Parse.UE4.Assets.Objects;
+using CUE4Parse.UE4.Objects.Engine.Curves;
 using CUE4Parse.UE4.Objects.UObject;
 using Mapc;
 
@@ -21,12 +22,20 @@ namespace NpcAbilities;
 ///   in(D) / out(D)   the target is nearer than D / farther than D (cm, from surface to surface)
 ///   cin(D) / cout(D) the centres of the creature and its target are nearer than D / not (cm, in 3D)
 ///   ang(A)           the target is within A degrees of the creature's facing
+///   nang(A)          ... is not
 ///   cd(NAME)         the cooldown of that name is over
 ///   rand(P)          a fresh roll under P
 ///   hp(V) / nhp(V)   the creature's own health is under V of its maximum / is not
 ///   fc(OP,V)         the seconds since the creature's fight began compare as OP (eq ne lt le gt ge) to V
 ///   fcr(OP,B,P,L,H,N) the same against a number the creature rolls once when its fight begins (the tree's variable N): B, or with the chance P a fresh number between L and H
 ///   los / nlos       the creature sees its target / does not
+///   eff(G) / neff(G) the creature holds the effect record G / does not (STC_HasEffect_C on its own Actor)
+///   teff(G) / nteff(G) the character it hates most holds the effect record G / does not
+///   tgt / ntgt       the creature has a target / has none
+///   hate(D)          someone on the creature's hate list stands nearer than D (cm, centre to centre)
+///   hateb(LO,HI)     ... farther than LO and nearer than HI
+///   elite(OP,N)      the creature's elite rank compares as OP to N
+///   effc(OP,N,G) / teffc(OP,N,G) the stacks of the effect record G on the creature / on the character it hates most compare as OP to N
 ///   ?NAME            a condition this tool cannot say (the task is left out)
 /// </summary>
 public static partial class Reader
@@ -225,7 +234,14 @@ public static partial class Reader
     }
 
     static bool IsSelf(Source s) => s.Kind == "Context" && s.Name == "Actor" && s.Path.Length == 0;
-    static bool IsPrimaryTarget(Source s) => s.Kind == "Evaluator" && (s.Class == "AoCSTE_UpdateMostHated" || s.Class == "STE_UpdateMostHated_C") && s.Path == "PrimaryTarget";   // (both name the most hated character)
+    static bool IsPrimaryTarget(Source s) =>
+        (s.Kind == "Evaluator" && (s.Class == "AoCSTE_UpdateMostHated" || s.Class == "STE_UpdateMostHated_C") && s.Path == "PrimaryTarget") ||   // (both name the most hated character)
+        // a creature kind's own target evaluator (the Gorilla's, a Raptor's, the Hippo's tunnel vision, the Living Geode's, the petrified Basilisk's most hated) and the actor's own
+        // PrimaryTarget: each names the character the creature fights, which the world's creature has one of (modelled: their own rules for picking it are not followed)
+        (s.Kind == "Evaluator" && s.Class.StartsWith("STE_", StringComparison.Ordinal) && (s.Class.Contains("UpdateTarget", StringComparison.Ordinal) || s.Class.Contains("UpdateMostHated", StringComparison.Ordinal) ||
+                                                                                         s.Class.Contains("TunnelVisionTarget", StringComparison.Ordinal) || s.Class.Contains("GeodeTarget", StringComparison.Ordinal)) &&
+         s.Path.EndsWith("PrimaryTarget", StringComparison.Ordinal)) ||
+        (s.Kind == "Context" && s.Name == "Actor" && s.Path == "PrimaryTarget");
 
     static string Escape(string s)
     {
@@ -258,6 +274,18 @@ public static partial class Reader
 
     static bool Compare(string op, double a, double b) => op switch { "eq" => Math.Abs(a - b) < 1e-9, "ne" => Math.Abs(a - b) >= 1e-9, "lt" => a < b, "le" => a <= b, "gt" => a > b, "ge" => a >= b, _ => false };
 
+    /// <summary>Where the task whose instance data is `handle` takes its input `input` from: "" when nothing is bound to it, "Kind:Class.Path" when something is, null for no such task.</summary>
+    static string? TaskInputSource(TreeInfo t, FStructFallback handle, string input)
+    {
+        foreach (var tn in t.Nodes)
+        {
+            var th = tn == null ? null : StructOf(tn, "InstanceDataHandle");
+            if (th == null || !SameHandle(th, handle)) continue;
+            return BindingsOf(t, tn).TryGetValue(input, out var src) ? src.Kind + ":" + src.Class + "." + src.Path : "";
+        }
+        return null;
+    }
+
     /// <summary>One condition node of a state's enter conditions, said as an atom.</summary>
     static Atom Encode(TreeInfo t, FStructFallback node, HashSet<int> path, Dictionary<string, object> prm)
     {
@@ -287,7 +315,8 @@ public static partial class Reader
             {
                 var a = Setting(obj, str, binds, prm, "Angle");
                 if (a == null) return Unsaid(cls + "(angle)");
-                if (!Targeted("Agent", "Target", true) || Inv("bInverse")) return Unsaid(cls + (Inv("bInverse") ? "(inverse)" : "(other target)"));
+                if (!Targeted("Agent", "Target", true)) return Unsaid(cls + "(other target)");
+                if (Inv("bInverse")) return new Atom { Text = "nang(" + Num(a.Value) + ")" };   // the target is NOT within the angle of the facing (behind it, to a side)
                 return new Atom { Text = "ang(" + Num(a.Value) + ")", Kind = "ang", Value = a.Value };
             }
             case "AoCSTC_CooldownCheck":
@@ -325,11 +354,32 @@ public static partial class Reader
                 // "GetEffectCount(GetSelf(), <effect>) > 0": the effects another creature's ability puts on a creature (a rally) are not in our world, so every creature carries none and the count is 0
                 var holder = obj?.Properties.FirstOrDefault(x => x.Name.Text == (cls == "AoCSTC_EvaluateExpression" ? "ExpressionToEvaluate" : "ExpressionValue"))?.Tag?.GenericValue is FScriptStruct es ? es.StructType as FStructFallback : null;
                 if (holder == null || !holder.TryGetValue(out string expression, "Expression")) return Unsaid(cls + "(expression)");
+                // "GetArraySize(GetHatedCharacters() # {GetDistanceBetween(GetSource(),@) < D}) > 0": someone on the creature's hate list is nearer than D (cm, centre to centre)
+                var hated = HatedWithin.Match(expression);
+                if (hated.Success) return new Atom { Text = "hate(" + Num(Parsed(hated.Groups[1])) + ")" };
+                // "GetNpcEliteRank(GetSource()) >= N": the creature's own elite rank
+                var elite = EliteRank.Match(expression);
+                if (elite.Success)
+                {
+                    string eop = elite.Groups[1].Value switch { ">" => "gt", ">=" => "ge", "<" => "lt", "<=" => "le", "==" => "eq", "!=" => "ne", _ => "" };
+                    if (eop.Length == 0) return Unsaid(cls + "(operator)");
+                    return new Atom { Text = "elite(" + eop + "," + Num(Parsed(elite.Groups[2])) + ")" };
+                }
                 var counted = EffectCount.Match(expression);
                 if (!counted.Success) return Unsaid(cls);
                 string op = counted.Groups[1].Value switch { ">" => "gt", ">=" => "ge", "<" => "lt", "<=" => "le", "==" => "eq", "!=" => "ne", _ => "" };
                 if (op.Length == 0) return Unsaid(cls + "(operator)");
                 return Constant(Compare(op, 0, Parsed(counted.Groups[2])));
+            }
+            case "STC_HasEffect_C":
+            {
+                // the creature itself (its Actor), or the character it hates most, holds the effect record (Effect) / does not (Invert)
+                var holder = obj?.Properties.FirstOrDefault(x => x.Name.Text == "Effect")?.Tag?.GenericValue is FScriptStruct es ? es.StructType as FStructFallback : null;
+                if (holder == null || !holder.TryGetValue(out long effect, "Guid") || effect == 0) return Unsaid(cls + "(effect)");
+                if (!binds.TryGetValue("Target", out var who)) return Unsaid(cls + "(no target)");
+                string kind = IsSelf(who) ? "eff" : IsPrimaryTarget(who) ? "teff" : "";
+                if (kind.Length == 0) return Unsaid(cls + "(other actor)");
+                return new Atom { Text = (Inv("Invert") ? "n" : "") + kind + "(" + effect.ToString(CultureInfo.InvariantCulture) + ")" };
             }
             case "STC_Random_C":
             {
@@ -341,6 +391,88 @@ public static partial class Reader
                 if (!binds.TryGetValue("Agent", out var agent) || !IsSelf(agent) || !binds.TryGetValue("TargetActor", out var target) || !IsPrimaryTarget(target)) return Unsaid(cls + "(other target)");
                 return new Atom { Text = Inv("Inverse") ? "nlos" : "los" };
             }
+        }
+        if (cls == "STC_UtilityScoreTargetSelector_C")
+        {
+            // it picks a target out of its consideration context (the creature's hated characters, maybe within a band of distance) into the blackboard, and holds when there is one to
+            // pick: said by the context alone (the pick's own target is not followed: the ability goes to the creature's target, a model)
+            var context = obj?.Properties.FirstOrDefault(x => x.Name.Text == "Consideration Context")?.Tag?.GenericValue is FScriptStruct cs2 ? cs2.StructType as FStructFallback : null;
+            if (context == null || !context.TryGetValue(out string ctxExpr, "Expression")) return Unsaid(cls + "(context)");
+            if (AllHated.IsMatch(ctxExpr)) return Constant(true);
+            var within = HatedNearer.Match(ctxExpr);
+            if (within.Success) return new Atom { Text = "hate(" + Num(Parsed(within.Groups[1])) + ")" };
+            var band = HatedBand.Match(ctxExpr);
+            if (band.Success)
+            {
+                double hi = Parsed(band.Groups["hi"]), lo = Parsed(band.Groups["lo"]);
+                if (lo >= hi) return Unsaid(cls + "(band)");
+                return new Atom { Text = "hateb(" + Num(lo) + "," + Num(hi) + ")" };
+            }
+            return Unsaid(cls + "(context)");
+        }
+        if (cls == "STC_EliteRankThreshold_C")
+        {
+            // the creature's own elite rank is at least EliteRank (GreaterThanOrEqual), or under it
+            if (!binds.TryGetValue("Target", out var who) || !IsSelf(who)) return Unsaid(cls + "(other actor)");
+            var rank = InstanceNumber(obj, str, "EliteRank");
+            if (rank == null) return Unsaid(cls + "(rank)");
+            bool atLeast = InstanceBool(obj, str, "GreaterThanOrEqual") ?? false;
+            return new Atom { Text = "elite(" + (atLeast ? "ge" : "lt") + "," + Num(rank.Value) + ")" };
+        }
+        if (cls == "STC_EffectCount_C")
+        {
+            // the stacks of an effect record the creature (or the character it hates most) holds, compared with Compare Value
+            var holder = obj?.Properties.FirstOrDefault(x => x.Name.Text == "Effect")?.Tag?.GenericValue is FScriptStruct es2 ? es2.StructType as FStructFallback : null;
+            if (holder == null || !holder.TryGetValue(out long effect, "Guid") || effect == 0) return Unsaid(cls + "(effect)");
+            var count = InstanceNumber(obj, str, "Compare Value");
+            if (count == null) return Unsaid(cls + "(count)");
+            string op = (obj?.Properties.FirstOrDefault(x => x.Name.Text == "CompareOperation")?.Tag?.GenericValue?.ToString() ?? "") switch
+            {
+                "ECompareOperationEnum::Dataflow_Compare_Equal" => "eq",
+                "ECompareOperationEnum::Dataflow_Compare_NotEqual" => "ne",
+                "ECompareOperationEnum::Dataflow_Compare_Greater" => "gt",
+                "ECompareOperationEnum::Dataflow_Compare_GreaterOrEqual" => "ge",
+                "ECompareOperationEnum::Dataflow_Compare_Smaller" => "lt",
+                "ECompareOperationEnum::Dataflow_Compare_SmallerOrEqual" => "le",
+                _ => ""
+            };
+            if (op.Length == 0) return Unsaid(cls + "(operator)");
+            if (!binds.TryGetValue("Target", out var who)) return Unsaid(cls + "(no target)");
+            string kind = IsSelf(who) ? "effc" : IsPrimaryTarget(who) ? "teffc" : "";
+            if (kind.Length == 0) return Unsaid(cls + "(other actor)");
+            return new Atom { Text = kind + "(" + op + "," + Num(count.Value) + "," + effect.ToString(CultureInfo.InvariantCulture) + ")" };
+        }
+        if (cls == "STC_IncreasedRandomChanceForMissingHealth_C")
+        {
+            // its script (read from the client): false without a Target; true when HealthThresholdForMaxChance is not under 1 or the target's health (GetHealthPercent / 100) is not
+            // over it; else a RandomFloat <= HealthCurve at 1 - that health.  Said of the creature itself; the threshold's class default is 0.2
+            if (!binds.TryGetValue("Target", out var who) || !IsSelf(who)) return Unsaid(cls + "(other actor)");
+            double threshold = InstanceNumber(obj, str, "HealthThresholdForMaxChance") ?? 0.2;
+            var curveRef = obj?.Properties.FirstOrDefault(x => x.Name.Text == "HealthCurve")?.Tag?.GenericValue as FPackageIndex;
+            if (curveRef == null || !curveRef.TryLoad(out UObject? curveAsset) || curveAsset == null || !curveAsset.TryGetValue(out FRichCurve curve, "FloatCurve") || curve?.Keys == null || curve.Keys.Length == 0)
+                return Unsaid(cls + "(curve)");
+            if (curve.PreInfinityExtrap != ERichCurveExtrapolation.RCCE_Constant || curve.PostInfinityExtrap != ERichCurveExtrapolation.RCCE_Constant) return Unsaid(cls + "(extrapolation)");
+            var keys = new List<string>();
+            for (int i = 0; i < curve.Keys.Length; i++)
+            {
+                var key = curve.Keys[i];
+                string interp = key.InterpMode switch { ERichCurveInterpMode.RCIM_Constant => "0", ERichCurveInterpMode.RCIM_Linear => "1", ERichCurveInterpMode.RCIM_Cubic => "2", _ => "" };
+                if (interp.Length == 0) return Unsaid(cls + "(curve mode)");
+                if (interp == "2" && i + 1 < curve.Keys.Length && WeightedSegment(key, curve.Keys[i + 1]))
+                {
+                    // a cubic with a weighted tangent on either side: the engine's weighted Bezier, said as straight pieces
+                    var next = curve.Keys[i + 1];
+                    for (int step = 0; step < WeightedSteps; step++)
+                    {
+                        double time = key.Time + (next.Time - key.Time) * step / WeightedSteps, value = WeightedCubic(key, next, time);
+                        if (double.IsNaN(value)) return Unsaid(cls + "(weighted curve that turns back)");
+                        keys.Add("1," + Num(time) + "," + Num(value) + ",0,0");
+                    }
+                    continue;
+                }
+                keys.Add(interp + "," + Num(key.Time) + "," + Num(key.Value) + "," + Num(key.ArriveTangent) + "," + Num(key.LeaveTangent));
+            }
+            return new Atom { Text = "mhr(" + Num(threshold) + "," + string.Join(",", keys) + ")" };
         }
         if (cls.Length > 0) return Unsaid(cls);
         // an engine condition: it is told apart by the settings of its instance data
@@ -364,18 +496,41 @@ public static partial class Reader
             if (op.Length == 0) return Unsaid("Compare(operator)");
             if (invert) op = Negate(op);
             // a timer's charge (the creature's accumulators: its global cooldown, a special attack's): the timer holds one charge once its seconds have passed since it was emptied, so "has a charge" is a cooldown that is over
-            if (binds.TryGetValue("Left", out var timer) && timer.Kind == "Task" && !timer.Global && timer.Class == "STT_Accumulator_Timer_C" && timer.Path == "Charge")
+            if (binds.TryGetValue("Left", out var timer) && timer.Kind == "Task" && !timer.Global && IsTimerAccumulator(timer.Class) && timer.Path == "Charge")
             {
                 var charges = Setting(null, str, binds, prm, "Right");
                 var accumulator = charges == null ? null : AccumulatorOf(t, timer);
                 if (charges == null || accumulator == null) return Unsaid("Compare(accumulator:" + timer.Name + ")");
                 bool atZero = Compare(op, 0, charges.Value), atOne = Compare(op, 1, charges.Value);
-                if (atOne && !atZero) return new Atom { Text = "cd(" + Escape("acc." + accumulator.Identifier) + ")", Kind = "cd", Name = "acc." + accumulator.Identifier };
+                if (atOne && !atZero && accumulator.Full) return new Atom { Text = "cd(" + Escape("acc." + accumulator.Identifier) + ")", Kind = "cd", Name = "acc." + accumulator.Identifier };
+                if (atOne && !atZero)
+                {
+                    // one that starts empty, in the fight's own state or the one just above it (Aggroed > Combat: entered when the fight begins): its first charge comes its
+                    // seconds into the fight (rolled once per fight for a range), and after that it is the cooldown its use starts
+                    bool IsCombat(int s) => string.Equals(TextOf(t.States[s], "Name"), "Combat", StringComparison.OrdinalIgnoreCase);
+                    bool fightState = path.Contains(timer.State) && (IsCombat(timer.State) ||
+                        path.Any(p => IsCombat(p) && t.States[p].TryGetValue(out FStructFallback up, "Parent") && IntOf(up, "Index") == timer.State));
+                    string where = timer.State >= 0 && timer.State < t.States.Length ? TextOf(t.States[timer.State], "Name") : "";
+                    if (!fightState) return Unsaid("Compare(accumulator empty, in state " + where + ")");
+                    // (it stays in `conds`, not `gates`: the atom asks its cooldown itself, with the fight's clock)
+                    return new Atom { Text = "accf(" + Escape("acc." + accumulator.Identifier) + "," + Num(accumulator.Low) + "," + Num(accumulator.High) + ")" };
+                }
                 if (atOne == atZero) return Constant(atOne);
                 return Unsaid("Compare(accumulator empty:" + timer.Name + ")");
             }
             // the fight's clock: the elapsed time of the "Combat Timer" task of a state on the way down to this condition
-            bool clock = binds.TryGetValue("Left", out var l) && l.Kind == "Task" && !l.Global && (l.Name == "Combat Timer" || l.Name == "CombatStartTime") && l.Path == "TaskElapsedTime" && path.Contains(l.State);
+            bool clock = binds.TryGetValue("Left", out var l) && l.Kind == "Task" && !l.Global && (l.Name == "Combat Timer" || l.Name == "CombatTimer" || l.Name == "CombatStartTime" || l.Name == "Temporary Combat Timer (Delete when flag fixed)") && l.Path == "TaskElapsedTime" && path.Contains(l.State);
+            // an AoCSTT_Base task's TreeElapsedTime (read from the client's code): the class never writes it (its constructor sets -1; its tick counts TaskElapsedTime, its enter copies the
+            // tree's time into TaskStartTime), so it is what the tree binds to it: nothing (-1 for good), or the AoCSTE_TrackTime evaluator's TreeElapsedTimeInSeconds, which is 0 at the
+            // tree's start and counts every tick from there: the seconds since the creature's tree began.  A creature's tree runs from its spawn, far longer than the few seconds these
+            // compare with, so it is said as long run (modelled: a creature that fights within those seconds of its respawn would differ)
+            if (l != null && l.Kind == "Task" && l.Class == "AoCSTT_Base" && l.Path == "TreeElapsedTime" && l.Handle != null)
+            {
+                var against = Setting(null, str, binds, prm, "Right");
+                string bound = TaskInputSource(t, l.Handle, "TreeElapsedTime");
+                if (against != null && bound == "") return Constant(Compare(op, -1, against.Value));
+                if (against != null && bound == "Evaluator:AoCSTE_TrackTime.TreeElapsedTimeInSeconds") return Constant(Compare(op, 1e6, against.Value));
+            }
             var right = Setting(null, str, binds, prm, "Right");
             if (right == null)
             {
@@ -388,6 +543,8 @@ public static partial class Reader
             if (leftValue == null) return Unsaid("Compare(left:" + (binds.TryGetValue("Left", out var s2) ? s2.ToString() : "") + ")");
             return Constant(Compare(op, leftValue.Value, right.Value));
         }
+        // "Object Is Valid" on the creature's target: whether it has one (or, inverted, has none)
+        if (HasInstanceProperty(null, str, "Object") && binds.TryGetValue("Object", out var checkedObject) && IsPrimaryTarget(checkedObject)) return new Atom { Text = invert ? "ntgt" : "tgt" };
         return Unsaid("struct:" + TextOf(node, "Name"));
     }
 
@@ -400,6 +557,44 @@ public static partial class Reader
 
     /// <summary>An expression that compares how many of an effect the creature itself (or the condition's source, the creature) carries with a number.</summary>
     static readonly Regex EffectCount = new(@"^\s*GetEffectCount\(\s*Get(?:Self|Source)\(\)\s*,\s*\$#\d+:\d+\$\s*\)\s*(>=|<=|==|!=|>|<)\s*(" + NumberText + @")\s*$", RegexOptions.CultureInvariant);
+    const int WeightedSteps = 32;
+
+    /// <summary>Whether the engine takes its weighted path between two keys: the first's leave tangent or the second's arrive tangent has a weight.</summary>
+    static bool WeightedSegment(FRichCurveKey a, FRichCurveKey b) =>
+        a.TangentWeightMode is ERichCurveTangentWeightMode.RCTWM_WeightedLeave or ERichCurveTangentWeightMode.RCTWM_WeightedBoth ||
+        b.TangentWeightMode is ERichCurveTangentWeightMode.RCTWM_WeightedArrive or ERichCurveTangentWeightMode.RCTWM_WeightedBoth;
+
+    /// <summary>The engine's weighted cubic between two keys at `time` (FRichCurve's WeightedEvalForTwoKeys): a Bezier in time and value whose inner points lie along each
+    /// tangent at its weight (an unweighted side: a third of the span's length along the tangent); the Bezier's parameter is the one at which its time is `time`.</summary>
+    static double WeightedCubic(FRichCurveKey a, FRichCurveKey b, double time)
+    {
+        double span = b.Time - a.Time;
+        if (!(span > 0)) return a.Value;
+        double SideWeight(double tangent, bool weighted, double weight) => weighted ? weight : Math.Sqrt(span * span + tangent * span * tangent * span) / 3;
+        double leaveAngle = Math.Atan(a.LeaveTangent), arriveAngle = Math.Atan(b.ArriveTangent);
+        double leave = SideWeight(a.LeaveTangent, a.TangentWeightMode is ERichCurveTangentWeightMode.RCTWM_WeightedLeave or ERichCurveTangentWeightMode.RCTWM_WeightedBoth, a.LeaveTangentWeight);
+        double arrive = SideWeight(b.ArriveTangent, b.TangentWeightMode is ERichCurveTangentWeightMode.RCTWM_WeightedArrive or ERichCurveTangentWeightMode.RCTWM_WeightedBoth, b.ArriveTangentWeight);
+        double x1 = Math.Cos(leaveAngle) * leave / span, y1 = a.Value + Math.Sin(leaveAngle) * leave;
+        double x2 = (span - Math.Cos(arriveAngle) * arrive) / span, y2 = b.Value - Math.Sin(arriveAngle) * arrive;
+        if (!(x1 >= 0 && x1 <= 1 && x2 >= 0 && x2 <= 1)) return double.NaN;
+        static double Bezier(double p0, double p1, double p2, double p3, double u) => (1 - u) * (1 - u) * (1 - u) * p0 + 3 * (1 - u) * (1 - u) * u * p1 + 3 * (1 - u) * u * u * p2 + u * u * u * p3;
+        // the time runs one way between the ends when the inner points lie between them (as the client's curves have it): halve towards the parameter at `time`
+        double alpha = (time - a.Time) / span, lo = 0, hi = 1;
+        for (int i = 0; i < 60; i++)
+        {
+            double mid = (lo + hi) / 2;
+            if (Bezier(0, x1, x2, 1, mid) < alpha) lo = mid; else hi = mid;
+        }
+        return Bezier(a.Value, y1, y2, b.Value, (lo + hi) / 2);
+    }
+
+    static readonly Regex HatedWithin = new(@"^\s*GetArraySize\(\s*GetHatedCharacters\(\)\s*#\s*\{\s*GetDistanceBetween\(\s*(?:GetSource\(\)\s*,\s*@|@\s*,\s*GetSource\(\))\s*\)\s*<\s*(" + NumberText + @")\s*\}\s*\)\s*>\s*0\s*;?\s*$", RegexOptions.CultureInvariant);
+    const string HatedDistance = @"GetDistanceBetween\(\s*(?:GetSource\(\)\s*,\s*@|@\s*,\s*GetSource\(\))\s*\)";
+    static readonly Regex AllHated = new(@"^\s*GetHatedCharacters\(\)\s*;?\s*$", RegexOptions.CultureInvariant);
+    static readonly Regex HatedNearer = new(@"^\s*GetHatedCharacters\(\)\s*#\s*\{\s*" + HatedDistance + @"\s*<\s*(" + NumberText + @")\s*\}\s*;?\s*$", RegexOptions.CultureInvariant);
+    static readonly Regex HatedBand = new(@"^\s*GetHatedCharacters\(\)\s*#\s*\{\s*(?:" + HatedDistance + @"\s*<\s*(?<hi>" + NumberText + @")\s*&&\s*" + HatedDistance + @"\s*>\s*(?<lo>" + NumberText + @")|" +
+                                          HatedDistance + @"\s*>\s*(?<lo>" + NumberText + @")\s*&&\s*" + HatedDistance + @"\s*<\s*(?<hi>" + NumberText + @"))\s*\}\s*;?\s*$", RegexOptions.CultureInvariant);
+    static readonly Regex EliteRank = new(@"^\s*GetNpcEliteRank\(\s*GetSource\(\)\s*\)\s*(>=|<=|==|!=|>|<)\s*(" + NumberText + @")\s*;?\s*$", RegexOptions.CultureInvariant);
 
     /// <summary>
     /// A number the tree rolls when the fight begins and then compares the fight's clock with: the "Stored Value" of a "Set BBFloat" task in a state the fight began in.  The task's expression is a number, a range
@@ -409,6 +604,23 @@ public static partial class Reader
     static string? FightRoll(TreeInfo t, Source src, HashSet<int> path)
     {
         // a "Set BBFloat" task's stored value, or a "Generate Float" task's value (a tree's "initial cooldown" of a special attack)
+        // a "Generate Random Float In Range" task's output: a fresh number between its Min and Max each time its state is entered (said as a roll of the fight: with certainty, between them)
+        if (src.Kind == "Task" && !src.Global && src.Class == "STT_GenerateRandomFloatInRange_C" && src.Path == "Output" && src.Handle != null && path.Contains(src.State))
+        {
+            foreach (var node in t.Nodes)
+            {
+                var handle = node == null ? null : StructOf(node, "InstanceDataHandle");
+                if (handle == null || !SameHandle(handle, src.Handle)) continue;
+                if (node.TryGetValue(out bool on, "bTaskEnabled") && !on) return null;
+                if (BindingsOf(t, node).ContainsKey("Min") || BindingsOf(t, node).ContainsKey("Max")) return null;
+                var task = InstanceOf(node, t.Defaults);
+                var lo = task == null ? null : NumberOf(task.Properties.FirstOrDefault(p => p.Name.Text == "Min")?.Tag?.GenericValue);
+                var hi = task == null ? null : NumberOf(task.Properties.FirstOrDefault(p => p.Name.Text == "Max")?.Tag?.GenericValue);
+                if (lo == null || hi == null || !(lo.Value <= hi.Value) || src.Name.Length == 0) return null;
+                return Num(lo.Value) + ",1," + Num(lo.Value) + "," + Num(hi.Value) + "," + Escape(src.Name);
+            }
+            return null;
+        }
         bool stored = src.Class == "STT_SetBBFloat_C" && src.Path == "Stored Value", generated = src.Class == "STT_GenerateFloat_C" && src.Path == "Value";
         if (src.Kind != "Task" || src.Global || !(stored || generated) || src.Handle == null || !path.Contains(src.State)) return null;
         foreach (var node in t.Nodes)
@@ -440,8 +652,9 @@ public static partial class Reader
         return null;
     }
 
-    /// <summary>A timer of the tree that holds a charge once `Low` to `High` seconds (a number, or a range the tree rolls anew each time) have passed since it was emptied.</summary>
-    sealed record Accumulator(string Identifier, double Low, double High);
+    /// <summary>A timer of the tree that holds a charge once `Low` to `High` seconds (a number, or a range the tree rolls anew each time) have passed since it was emptied.  `Full`: it
+    /// starts with its charge (InitialCharge 1); else it starts empty and its first charge comes those seconds after its state is entered.</summary>
+    sealed record Accumulator(string Identifier, double Low, double High, bool Full = true);
 
     static bool TargetSeconds(string text, out double low, out double high)
     {
@@ -452,7 +665,9 @@ public static partial class Reader
         return false;
     }
 
-    /// <summary>An accumulator task: its identifier and seconds; null when it starts empty, holds more than one charge or its seconds are of another form.</summary>
+    /// <summary>An accumulator task: its identifier and seconds; null when it holds more than one charge or its seconds are of another form.  (STT_Accumulator_C, read from the
+    /// client's script: entering its state sets Charge to InitialCharge, whose class default is 0, and ProgressValue to 0; each tick adds the seconds while Charge is under
+    /// MaxCharge, class default 1, and a charge comes once they reach the target.)</summary>
     static Accumulator? AccumulatorTask(TreeInfo t, FStructFallback node)
     {
         if (node.TryGetValue(out bool enabled, "bTaskEnabled") && !enabled) return null;
@@ -462,8 +677,16 @@ public static partial class Reader
         var expression = task.Properties.FirstOrDefault(p => p.Name.Text == "Target Value Expr")?.Tag?.GenericValue is FScriptStruct ss ? ss.StructType as FStructFallback : null;
         if (id.Length == 0 || expression == null || !expression.TryGetValue(out string text, "Expression") || !TargetSeconds(text, out double low, out double high)) return null;
         double initial = InstanceNumber(task, null, "InitialCharge") ?? 0, most = InstanceNumber(task, null, "MaxCharge") ?? 1;
-        return initial >= 1 && most == 1 ? new Accumulator(id, low, high) : null;
+        if (most != 1) return null;
+        return new Accumulator(id, low, high, initial >= 1);
     }
+
+    /// <summary>
+    /// A timer accumulator: STT_Accumulator_Timer_C, or a creature's own kind whose Accumulate (read from the client's script) calls the timer's and then adds more: the zombie's ranged
+    /// attack while its target stands farther than MinTooFarDis, the gorilla's smack and leap for each further character it hates in front of it.  Those are said as the timer
+    /// alone (modelled: their charge comes no sooner than the timer's, at times later than the game's).
+    /// </summary>
+    static bool IsTimerAccumulator(string cls) => cls is "STT_Accumulator_Timer_C" or "STT_Accumulator_Zombie_RangedAttack_C" or "STT_Accumulator_Gorilla_PowerSmack_C";
 
     /// <summary>The accumulator timer that a bound source names.</summary>
     static Accumulator? AccumulatorOf(TreeInfo t, Source src)
@@ -471,7 +694,7 @@ public static partial class Reader
         if (src.Handle == null) return null;
         foreach (var node in t.Nodes)
         {
-            if (node == null || ClassOf(node, "TaskClass") != "STT_Accumulator_Timer_C") continue;
+            if (node == null || !IsTimerAccumulator(ClassOf(node, "TaskClass"))) continue;
             var handle = StructOf(node, "InstanceDataHandle");
             if (handle != null && SameHandle(handle, src.Handle)) return AccumulatorTask(t, node);
         }
@@ -487,7 +710,7 @@ public static partial class Reader
         var found = new List<(string Name, double Low, double High)>();
         var timers = new Dictionary<string, Accumulator>(StringComparer.Ordinal);
         foreach (var node in t.Nodes)
-            if (node != null && ClassOf(node, "TaskClass") == "STT_Accumulator_Timer_C" && AccumulatorTask(t, node) is { } timer) timers.TryAdd(timer.Identifier, timer);
+            if (node != null && IsTimerAccumulator(ClassOf(node, "TaskClass")) && AccumulatorTask(t, node) is { } timer) timers.TryAdd(timer.Identifier, timer);
         for (int i = path.Count - 1; i >= 0; i--)
         {
             int ps = path[i];
@@ -503,8 +726,13 @@ public static partial class Reader
                 int tb = IntOf(t.States[to], "TasksBegin", 0), tn = IntOf(t.States[to], "TasksNum", 0);
                 for (int j = tb; j < tb + tn && j < t.Nodes.Length; j++)
                 {
-                    if (t.Nodes[j] == null || ClassOf(t.Nodes[j], "TaskClass") != "STT_ConsumeAccumulatorCharges_C") continue;
+                    // STT_ConsumeAccumulatorCharges_C, or STT_ChargeAccumulator_C adding a negative Number (its class default: -1, resetting and rolling anew), which is the same
+                    // (both read from the client's scripts: each calls the creature's delegate of that name)
+                    if (t.Nodes[j] == null) continue;
+                    string consumer = ClassOf(t.Nodes[j], "TaskClass");
                     var task = InstanceOf(t.Nodes[j], t.Defaults);
+                    if (consumer == "STT_ChargeAccumulator_C") { if (task == null || (InstanceNumber(task, null, "Number") ?? -1) >= 0) continue; }
+                    else if (consumer != "STT_ConsumeAccumulatorCharges_C") continue;
                     if (task != null && timers.TryGetValue(NameOf(task, "Identifier"), out var timer) && !found.Any(f => f.Name == timer.Identifier)) found.Add((timer.Identifier, timer.Low, timer.High));
                 }
             }

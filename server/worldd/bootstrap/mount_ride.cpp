@@ -189,6 +189,16 @@ std::optional<Send> PlayerBootstrap::pawn_combat_pet(const FIntrepidNetworkGUID&
     return std::nullopt;
 }
 
+std::optional<Send> PlayerBootstrap::pawn_pet_stance(int64_t stance) {
+    if (!ok_ || !second_state_sent_) return std::nullopt;
+    for (repl::Subobject& s : pawn_.subobjects) {
+        if (s.name != "InteractInfo" || !s.obj.schema) continue;
+        if (!s.obj.state.set(*s.obj.schema, "PetStance", Value::u64(static_cast<uint64_t>(stance)))) return std::nullopt;
+        return update(Role::Pawn, "the pawn's pet stance", pawn_, pawn_shadow_);
+    }
+    return std::nullopt;
+}
+
 std::optional<Send> PlayerBootstrap::pawn_channeling(const repl::ChannelingData& data) {
     if (!ok_ || !second_state_sent_) return std::nullopt;
     repl::Subobject* info = nullptr;

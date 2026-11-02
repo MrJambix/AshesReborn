@@ -107,7 +107,7 @@ GmCommandResult GmTravel::command(PlayerSession& invoker, Connection& conn, cons
         else if (verb == "money") accept(give_money(target(), integer(2), by));
         else if (verb == "item") {
             const auto amount = integer(3);
-            if (amount < 1 || amount > 1000000) throw std::invalid_argument("count must be 1 to 1000000");
+            if (amount < 1 || amount > 100000) throw std::invalid_argument("count must be 1 to 100000");   // what give_item takes
             accept(give_item(target(), arg(2), static_cast<int32_t>(amount), by, arg(4)));
         } else if (verb == "finish-jobs") accept(finish_jobs(target(), arg(2), by));
         else if (verb == "teach-recipe") accept(teach_recipe(target(), arg(2), by));

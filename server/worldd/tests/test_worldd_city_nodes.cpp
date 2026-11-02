@@ -189,6 +189,29 @@ void test_registry(world::CityNodes& nodes) {
     CHECK(nowhere.zoi_guid == 0 && nowhere.node_rank == -1 && nowhere.biome == 0, "no zone: no node, the Default biome");
     const world::NodeSite sunhaven = nodes.node_at(nodes.by_name("Sunhaven")->x, nodes.by_name("Sunhaven")->y);
     CHECK(sunhaven.biome == 21, "Sunhaven's zone is Highlands (EBiomeType 21)");
+    {   // how a point at the edge of the Riverlands reads: walked at 50 m over the box of its nodes, with a 5 km margin
+        double lo_x = 1e18, lo_y = 1e18, hi_x = -1e18, hi_y = -1e18;
+        for (const world::CityNodeInfo& n : nodes.nodes()) {
+            if (nodes.node_at(n.x, n.y).biome != kRiverlands) continue;
+            lo_x = std::min(lo_x, n.x); lo_y = std::min(lo_y, n.y);
+            hi_x = std::max(hi_x, n.x); hi_y = std::max(hi_y, n.y);
+        }
+        const double step = 5000.0, margin = 500000.0;
+        size_t riverlands = 0, no_zone_beside = 0, hole = 0, other_beside = 0;
+        for (double x = lo_x - margin; x <= hi_x + margin; x += step) {
+            for (double y = lo_y - margin; y <= hi_y + margin; y += step) {
+                const world::NodeSite here = nodes.node_at(x, y);
+                if (here.biome == kRiverlands) { ++riverlands; continue; }
+                int beside = 0;
+                for (const auto& [dx, dy] : {std::pair{step, 0.0}, std::pair{-step, 0.0}, std::pair{0.0, step}, std::pair{0.0, -step}}) beside += nodes.node_at(x + dx, y + dy).biome == kRiverlands ? 1 : 0;
+                if (beside == 0) continue;
+                if (here.zoi_guid == 0) { ++no_zone_beside; hole += beside == 4 ? 1 : 0; }
+                else ++other_beside;
+            }
+        }
+        std::printf("  [info] the Riverlands at 50 m: %zu cells; beside them %zu with no zone and %zu in another biome\n", riverlands, no_zone_beside, other_beside);
+        CHECK(riverlands > 0 && hole == 0, "no point inside the Riverlands is without a zone: only its outer edge has points with none");
+    }
     // the types: the observed ones (data_core appendix 17)
     CHECK(nodes.type_of_rank(nodes.by_name("Halcyon")->rank) == 2 && nodes.type_of_rank(nodes.by_name("Winstead")->rank) == 3 && nodes.type_of_rank(nodes.by_name("NewAela")->rank) == 4 &&
               nodes.type_of_rank(-1) == 0 && nodes.type_of_rank(500) == 0,

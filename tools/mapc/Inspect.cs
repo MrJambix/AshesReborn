@@ -68,6 +68,20 @@ public static class Inspect
 
 
     /// <summary>Everything one Blueprint's class default object and its components set, untruncated (diagnostic): `mapc bp NAME [TYPE]`.</summary>
+    /// <summary>The game's files whose path holds every one of the words (the client's own files, read offline; a running client is never touched).</summary>
+    public static void Find(Game g, IEnumerable<string> words, int max = 60)
+    {
+        var w = words.ToArray();
+        int shown = 0;
+        foreach (var k in g.Provider.Files.Keys)
+        {
+            if (!w.All(x => k.Contains(x, StringComparison.OrdinalIgnoreCase))) continue;
+            Console.WriteLine(k);
+            if (++shown >= max) break;
+        }
+        Console.WriteLine("(" + shown + " shown)");
+    }
+
     public static void Bp(Game g, string name, string? onlyType)
     {
         var path = FindAsset(g, name);
@@ -78,8 +92,7 @@ public static class Inspect
         foreach (var e in pkg.GetExports())
         {
             if (onlyType != null && e.ExportType != onlyType && e.Name != onlyType) continue;
-            Console.WriteLine("-- " + e.ExportType + " " + e.Name + " (outer " + e.Outer?.Name + ", template " + e.Template?.GetFullName(false) + ")");
-            foreach (var pp in e.Properties) if (pp.Name.Text == "StartingAlignments") { Console.WriteLine("  StartingAlignments tag " + pp.Tag?.GetType().Name + " value " + pp.Tag?.GenericValue?.GetType().FullName); if (pp.Tag?.GenericValue is CUE4Parse.UE4.Assets.Objects.UScriptArray ua) foreach (var it in ua.Properties) Console.WriteLine("   item " + it.GetType().Name + " " + it.GenericValue?.GetType().FullName + " " + ((it.GenericValue as CUE4Parse.UE4.Assets.Objects.FScriptStruct)?.StructType?.GetType().FullName)); }
+            Console.WriteLine("-- " + e.ExportType + " " + e.Name + " (outer " + e.Outer?.Name + ", template " + e.Template?.GetFullName(false) + ")");            foreach (var pp in e.Properties) if (pp.Name.Text == "StartingAlignments") { Console.WriteLine("  StartingAlignments tag " + pp.Tag?.GetType().Name + " value " + pp.Tag?.GenericValue?.GetType().FullName); if (pp.Tag?.GenericValue is CUE4Parse.UE4.Assets.Objects.UScriptArray ua) foreach (var it in ua.Properties) Console.WriteLine("   item " + it.GetType().Name + " " + it.GenericValue?.GetType().FullName + " " + ((it.GenericValue as CUE4Parse.UE4.Assets.Objects.FScriptStruct)?.StructType?.GetType().FullName)); }
             try { Console.WriteLine(JsonConvert.SerializeObject(e.Properties.ToDictionary(p => p.Name.Text, p => p.Tag?.GenericValue), Formatting.None, new JsonSerializerSettings { ReferenceLoopHandling = ReferenceLoopHandling.Ignore, Error = (s, a) => a.ErrorContext.Handled = true })); }
             catch (Exception ex) { Console.WriteLine("  (props: " + ex.Message + ")"); }
         }

@@ -35,6 +35,8 @@ type Config struct {
 
 	GatewayICSAddr    string        // AOC_GATEWAY_ICS_ADDR: the game client's ICS gRPC, over TLS
 	WorldName         string        // AOC_WORLD_NAME: the player-facing world-list name; world identity is unchanged
+	WorldStartedFile  string        // AOC_WORLD_STARTED_FILE: holds when worldd last started, for the launcher; empty for unknown
+	PatchNotesFile    string        // AOC_PATCH_NOTES_FILE: the patch notes the launcher shows; empty for none
 	GatewayGRPCAddr   string        // AOC_GATEWAY_GRPC_ADDR: internal (RedeemTicket), on loopback unless GatewayGRPCPublic
 	GatewayGRPCPublic bool          // AOC_GATEWAY_GRPC_PUBLIC=1: allow any GatewayGRPCAddr (the ticket crosses the network in clear text)
 	GatewayTLSCert    string        // AOC_GATEWAY_TLS_CERT: PEM certificate for the ICS listener
@@ -67,6 +69,8 @@ func Load() Config {
 
 		GatewayICSAddr:    str("AOC_GATEWAY_ICS_ADDR", "127.0.0.1:443"),
 		WorldName:         str("AOC_WORLD_NAME", "Ashes Reborn"),
+		WorldStartedFile:  str("AOC_WORLD_STARTED_FILE", ""),
+		PatchNotesFile:    str("AOC_PATCH_NOTES_FILE", ""),
 		GatewayGRPCAddr:   str("AOC_GATEWAY_GRPC_ADDR", "127.0.0.1:50054"),
 		GatewayGRPCPublic: os.Getenv("AOC_GATEWAY_GRPC_PUBLIC") == "1",
 		GatewayTLSCert:    str("AOC_GATEWAY_TLS_CERT", "certs/server.pem"),

@@ -15,16 +15,18 @@ namespace aoc::worldd::abilities {
 
 namespace {
 
-/// extra's ReactionsIds (the guids, in the listed order).
-void reaction_ids_of(const std::string& extra_json, std::vector<int64_t>& out) {
+/// A list of guids in extra (ReactionsIds, ModifyCooldownsIds), in the listed order.
+void ids_of(const std::string& extra_json, const char* key, std::vector<int64_t>& out) {
     const nlohmann::json extra = nlohmann::json::parse(extra_json, nullptr, false);
     if (!extra.is_object()) return;
-    const auto it = extra.find("ReactionsIds");
+    const auto it = extra.find(key);
     if (it == extra.end() || !it->is_array()) return;
     for (const auto& v : *it) {
         if (v.is_number_integer() && v.get<int64_t>() != 0) out.push_back(v.get<int64_t>());
     }
 }
+
+void reaction_ids_of(const std::string& extra_json, std::vector<int64_t>& out) { ids_of(extra_json, "ReactionsIds", out); }
 
 }  // namespace
 
@@ -55,6 +57,22 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
     }
 // ~ C Y B :: C-O-A ~
 
+    {
+        std::vector<content::ModifyCooldownRow> rows;
+        db->modify_cooldowns(rows);
+        for (content::ModifyCooldownRow& row : rows) {
+            ModifyCooldownDef def;
+            def.name = std::move(row.name);
+            def.delta_expr = row.delta_expr;
+            const nlohmann::json list = nlohmann::json::parse(row.abilities, nullptr, false);
+            if (list.is_array()) {
+                for (const auto& v : list) {
+                    if (v.is_number_integer() && v.get<int64_t>() != 0) def.abilities.push_back(v.get<int64_t>());
+                }
+            }
+            c.modify_cooldowns_.emplace(row.guid, std::move(def));
+        }
+    }
     std::vector<int64_t> guids;
     if (!db->guids(content::AbilityContent::Table::Effect, guids, error)) return std::nullopt;
     for (const int64_t g : guids) {
@@ -64,9 +82,6 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
         d.row = std::move(*row);
         const auto extra = nlohmann::json::parse(d.row.extra, nullptr, false);
         if (extra.is_object()) {
-            if (const auto it = extra.find("EffectGroupGuid"); it != extra.end() && it->is_number_integer()) d.group = it->get<int64_t>();
-            if (const auto it = extra.find("EffectGroupLimit"); it != extra.end() && it->is_number_integer()) d.group_limit = it->get<int>();
-            if (const auto it = extra.find("EffectGroupStackType"); it != extra.end() && it->is_string()) d.group_stack_type = it->get<std::string>();
         }
         if (!db->mods("effect", g, d.mods, error)) return std::nullopt;
         std::vector<content::EffectHitRow> hits;
@@ -86,6 +101,10 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
         // what the hit takes off its targets: extra's EffectsToRemoveIds (the effects' guids) and MaxNumEffectsToRemove
         const nlohmann::json extra = nlohmann::json::parse(d.row.extra, nullptr, false);
         if (extra.is_object()) {
+            const auto kept = extra.find("KeptTerms");
+            if (kept != extra.end() && kept->is_array()) {
+                for (const auto& k : *kept) d.kept_terms.emplace_back(k.value("Term", int64_t{0}), k.value("Expr", int64_t{0}));
+            }
             const auto rm = extra.find("EffectsToRemoveIds");
             if (rm != extra.end() && rm->is_array()) {
                 for (const auto& v : *rm) {
@@ -94,6 +113,15 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
             }
             const auto mx = extra.find("MaxNumEffectsToRemove");
             if (mx != extra.end() && mx->is_number_integer()) d.max_remove = mx->get<int>();
+            const auto rk = extra.find("EffectRemoval");
+            if (rk != extra.end() && rk->is_string()) {
+                const std::string kind = rk->get<std::string>();
+                d.removal = kind == "none" ? HitDef::Removal::None : kind == "debuff" ? HitDef::Removal::Debuff : kind == "buff" ? HitDef::Removal::Buff : HitDef::Removal::Other;
+            }
+            const auto rs = extra.find("ResurrectId");
+            if (rs != extra.end() && rs->is_number_integer()) d.resurrect = rs->get<int64_t>();
+            const auto rd = extra.find("RemoveAsDispel");
+            if (rd != extra.end() && rd->is_boolean()) d.remove_as_dispel = rd->get<bool>();
             const auto zs = extra.find("LingeringZonesIds");
             if (zs != extra.end() && zs->is_array()) {
                 for (const auto& v : *zs) {
@@ -128,6 +156,7 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
         }
         if (db->has_reactions()) {
             reaction_ids_of(d.row.extra, d.reactions);
+            ids_of(d.row.extra, "ModifyCooldownsIds", d.modify_cooldowns);
             if (!db->hit_recursive(g, d.recursive, error)) return std::nullopt;
         }
         c.hit_names_[d.row.name] = g;
@@ -172,6 +201,14 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
             if (h.source != "projectile" || c.projectiles_.count(h.owner_guid)) continue;
             std::string skipped;
             if (auto row = db->projectile(h.owner_guid, skipped)) c.projectiles_.emplace(h.owner_guid, std::move(*row));
+        }
+    }
+    // ... and the ones hits fire (a melody's finisher: no ability lists its projectile)
+    for (const auto& [g, h] : c.hits_) {
+        for (const int64_t p : h.fires) {
+            if (c.projectiles_.count(p)) continue;
+            std::string skipped;
+            if (auto row = db->projectile(p, skipped)) c.projectiles_.emplace(p, std::move(*row));
         }
     }
     // the reactions (contentc version 35); a file without their tables has none, and the effects and hits then list none

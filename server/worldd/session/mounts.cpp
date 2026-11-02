@@ -6,6 +6,7 @@
 // ============================================================================
 #include "session/mounts.h"
 
+#include "protocol/repl/move_packed.h"
 #include "spawns/spawn_util.h"
 
 #include <spdlog/spdlog.h>
@@ -127,7 +128,9 @@ MountController::Outcome MountController::summon(const Request& r, double now) {
 
     // the refusals
     bool refuse = r.dead || (r.lock_expiration > r.now_unix);
-    if (!refuse && ground_) {
+    const content::MountRow* asked = book_.find(r.item_record);
+    const bool in_water = r.swimming && asked && asked->kind == "aquatic";
+    if (!refuse && ground_ && !in_water) {
         const double yaw = radians(r.place.yaw_degrees);
         const double tx = r.place.x + kSpawnAheadCm * std::cos(yaw), ty = r.place.y + kSpawnAheadCm * std::sin(yaw);
         const double feet = r.place.z - kPlayerFootOffsetCm;
@@ -272,7 +275,9 @@ void MountController::run_open(double now, Effects& out) {
     p.seed = (static_cast<uint64_t>(owner_.player_id) << 32) ^ (cast_ * 0x9E3779B97F4A7C15ull) ^ 0xA5A5A5A5ull;
     p.health = req_.health;
     p.owner_alignments = req_.alignments;
-    if (ground_) {
+    const bool in_water = req_.swimming && row && row->kind == "aquatic";
+    if (in_water) p.z = req_.place.z;   // (at the swimmer's depth)
+    else if (ground_) {
         if (const auto g = ground_(p.x, p.y, req_.place.z - kPlayerFootOffsetCm)) p.z = *g + kMountFootOffsetCm;
     }
     std::string error;
@@ -285,6 +290,10 @@ void MountController::run_open(double now, Effects& out) {
         cast_ = 0;
         forget_mount();
         return;
+    }
+    if (in_water) {
+        repl::ObjectState& obj = made->actor.actor.obj;
+        if (obj.schema && obj.schema->command("ReplicatedMovementMode")) obj.state.set(*obj.schema, "ReplicatedMovementMode", repl::Value::u64(repl::kMoveSwimming));
     }
     const uint64_t id = made->actor.id;
     const protocol::emit::FIntrepidNetworkGUID pet = made->actor.actor.guid;

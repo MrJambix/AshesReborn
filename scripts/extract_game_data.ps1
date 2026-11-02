@@ -36,9 +36,10 @@
   packages, so it needs the network once. A full run takes about 10 minutes on a fast PC (the longest step is the map read for the navigation mesh) and up to
   4 GB of memory for any one program; the first build of the C++ libraries (vcpkg) comes on top and can take a long time.
 
-  Every step is skipped when what it reads is unchanged since the last run (a stamp per step in dist\content\.extract), so build_all.bat and the launchers can call
-  this every time. The supported client build is the one of 2026-01-29 (AOCClient-Win64-Shipping.exe 235,606,624 bytes, CacheDB.dbc 144,085,052 bytes); with another
-  build the script warns and goes on.
+  Every step is skipped when what it reads is unchanged since the last run (a stamp per step in dist\content\.extract), so install.bat and the launchers can call
+  this every time. The navigation mesh step, the longest, reads the map, the towns' floors and buildings, the Riverlands' rectangles and where the five towns' nodes stand
+  in content.db: it runs again when one of those changes, not when other game numbers do. The supported client build is the one of 2026-01-29 (AOCClient-Win64-Shipping.exe
+  235,606,624 bytes, CacheDB.dbc 144,085,052 bytes); with another build the script warns and goes on.
 
 .PARAMETER GameRoot
   The game's "Game" folder (the one that holds AOCClient.exe and AOC\). Default: GAME_ROOT, config\paths.json, Steam's libraries, the usual folders.
@@ -85,10 +86,13 @@ $logFile   = Join-Path $stampDir 'current.log'
 $lastLog   = Join-Path $stampDir 'last_run.log'
 # The creature kinds that attack with their own animation: one container folder of the game's files per kind (its Blueprints and the animation montages beside them).
 # worldd animates exactly the Blueprints this reads; a kind that is not listed keeps its single swing.
-$NpcFolders = @('AOC/Content/DesignAssets/Population/NPC/Beast/Rabid', 'AOC/Content/DesignAssets/Population/NPC/Beast/Canine', 'AOC/Content/DesignAssets/Population/NPC/Beast/Bear',
-               'AOC/Content/DesignAssets/Population/NPC/Beast/Bird/Raven', 'AOC/Content/DesignAssets/Population/NPC/Humanoid/Goblin',
-               # the bandits (raiders, captains, archers, mages, healers: their Blueprints, trees and animation montages) and the one raider montage that lives beside the raider's animations
-               'AOC/Content/DesignAssets/Population/NPC/PCRaces/Bandits', 'AOC/Content/Characters/NPC/Human/BanditRaider')
+$NpcFolders = @('AOC/Content/DesignAssets/Population/NPC/Beast', 'AOC/Content/DesignAssets/Population/NPC/Humanoid', 'AOC/Content/DesignAssets/Population/NPC/Monster',
+               # the bandits (raiders, captains, archers, mages, healers: their Blueprints, trees and animation montages) and the one raider montage that lives beside their Blueprints
+               'AOC/Content/DesignAssets/Population/NPC/PCRaces/Bandits', 'AOC/Content/Characters/NPC/Human/BanditRaider', 'AOC/Content/DesignAssets/Population/NPC/PCRaces/Cultists',
+               # the Summoner's pets
+               'AOC/Content/DesignAssets/Population/NPC/TestNPCs/Pets',
+               # the bandit rogues play the Rogue's own Smoke Bomb and Shadowstep
+               'AOC/Content/Characters/Animations/00_ABLT/Rogue')
 # The folders whose montages also export the time of their animation end notify (the montage table's anim_end): where an ability's task is done and its cooldowns start (the bandits').
 # The other creatures' abilities are done when their montage is over.
 $NpcAnimEndFolders = @('AOC/Content/DesignAssets/Population/NPC/PCRaces/Bandits', 'AOC/Content/Characters/NPC/Human/BanditRaider')
@@ -111,7 +115,7 @@ if ($NavThreads -le 0) { $NavThreads = [Math]::Max(2, [Math]::Min(8, [int]($core
 # Output
 # ---------------------------------------------------------------------------------------------------------------------
 function Write-Log([string]$text) {
-    if (Test-Path -LiteralPath $stampDir) { try { Add-Content -LiteralPath $logFile -Value $text -Encoding ASCII } catch { } }
+    if (-not $CheckOnly -and (Test-Path -LiteralPath $stampDir)) { try { Add-Content -LiteralPath $logFile -Value $text -Encoding ASCII } catch { } }
 }
 function Say([string]$text, [string]$color = '') {
     if ($color) { Write-Host $text -ForegroundColor $color } else { Write-Host $text }
@@ -183,7 +187,7 @@ function Find-GameRoot {
             Fail "-GameRoot '$GameRoot' is not the game's folder (it has no $PaksRel and no $DbcRel)." @(
                 'Give the folder that holds AOCClient.exe and the AOC folder (the Game folder of the install), not the launcher folder.',
                 'If the install is incomplete, let Steam verify the game files, then run this again.',
-                'More: README.md, "Build and run", "If something goes wrong".')
+                'More: README.md, "Getting started", "If something goes wrong".')
         }
         return [pscustomobject]@{ Path = $r; Via = '-GameRoot' }
     }
@@ -331,8 +335,10 @@ function Assert-Files([string[]]$rel, [string]$why) {
 # ---------------------------------------------------------------------------------------------------------------------
 # Start
 # ---------------------------------------------------------------------------------------------------------------------
-New-Item -ItemType Directory -Force -Path $stampDir | Out-Null
-Set-Content -LiteralPath $logFile -Value ("extract_game_data.ps1 " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding ASCII
+if (-not $CheckOnly) {      # -CheckOnly changes nothing: no folder, no log
+    New-Item -ItemType Directory -Force -Path $stampDir | Out-Null
+    Set-Content -LiteralPath $logFile -Value ("extract_game_data.ps1 " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding ASCII
+}
 
 $found = Find-GameRoot
 if (-not $found) {
@@ -340,11 +346,11 @@ if (-not $found) {
         'Sandal Core builds its game data from your own installed copy of the game (the game files are only read).',
         'It looked at: -GameRoot, the GAME_ROOT variable, game_executable in config\paths.json, the Steam libraries (libraryfolders.vdf) and the usual folders on every fixed drive.',
         'Install the game (Steam), or tell the script where it is and run this again:',
-        '    extract_game_data.bat -GameRoot "D:\...\steamapps\common\Ashes of Creation\Game"',
-        '-GameRoot counts for that run only. To keep it for build_all.bat and the launchers, set GAME_ROOT once and open a new window:',
+        '    install.bat -GameRoot "D:\...\steamapps\common\Ashes of Creation\Game"',
+        '-GameRoot counts for that run only. To keep it for install.bat and the launchers, set GAME_ROOT once and open a new window:',
         '    setx GAME_ROOT "D:\...\steamapps\common\Ashes of Creation\Game"',
         '(the folder that holds AOCClient.exe and the AOC folder).',
-        'More: README.md, "Build and run", "If something goes wrong".')
+        'More: README.md, "Getting started", "If something goes wrong".')
 }
 $game = $found.Path
 $gameExe  = Join-Path $game $ExeRel
@@ -360,7 +366,7 @@ if (($exeLen -eq $Supported.ExeBytes) -and ($dbcLen -eq $Supported.DbcBytes)) {
 } else {
     Say ("WARNING: this client is not the build this code was made for ({0}: exe {1:N0} bytes, CacheDB.dbc {2:N0} bytes; yours: exe {3:N0}, CacheDB.dbc {4:N0})." -f `
         $Supported.Date, $Supported.ExeBytes, $Supported.DbcBytes, $exeLen, $dbcLen) 'Yellow'
-    Say '         The data may be wrong or a step may fail (README.md, "After a game patch").' 'Yellow'
+    Say '         The data may be wrong or a step may fail (README.md, "The game data", "After a game patch").' 'Yellow'
 }
 
 # what identifies the player's game files: names, sizes and write times of the containers, the exe and the design database
@@ -377,8 +383,8 @@ if (-not $go)     { $missing += 'Go (go on PATH)' }
 if (-not (Test-Path -LiteralPath $usmapSrc)) { $missing += 'layouts\aoc.usmap (part of the repository)' }
 if ($missing.Count -gt 0) {
     Fail ('Missing: ' + ($missing -join '; ') + '.') @(
-        'Run install_dependencies.bat to install what is missing, open a new window (so the new PATH applies), then run this again.',
-        'More: README.md, "Build and run", "What to install".')
+        'Run install.bat to install what is missing, open a new window (so the new PATH applies), then run this again.',
+        'More: README.md, "Getting started", "What you need".')
 }
 Say ("Tools       : Python {0}, .NET SDK, Go; {1} jobs for C++, {2} threads for the navigation mesh" -f $python.Version, $Jobs, $NavThreads)
 
@@ -390,7 +396,7 @@ function Get-CodeContentc { Get-CodeHash @('services\cmd\contentc', 'services\in
 function Get-CodeNpcAbilities { Get-CodeHash @('tools\npcabilities') }
 function Get-CodeItemNames { Get-CodeHash @('tools\itemnames') }
 function Get-CodeGens     { Get-CodeHash @('tools\capture\gen_zoi_surface.py', 'tools\capture\gen_region_rects.py', 'tools\capture\gen_region.py', 'tools\capture\gen_node_constants.py', 'tools\capture\gen_gm_garden.py', 'tools\capture\gen_tooltips.py', 'tools\worldd\gen_gear_fixture.py', 'tools\worldd\gen_talent_fixture.py') }
-function Get-CodeNav      { Get-CodeHash @('server\worldd\nav', 'third_party\recastnavigation', 'CMakeLists.txt', 'server\worldd\CMakeLists.txt', 'vcpkg.json') }
+function Get-CodeNav      { Get-CodeHash @('server\worldd\nav', 'server\worldd\world\town_platform.cpp', 'server\worldd\world\town_platform.h', 'third_party\recastnavigation', 'CMakeLists.txt', 'server\worldd\CMakeLists.txt', 'vcpkg.json') }     # aoc_navbuild links the towns' platform code from world\ as well as nav\
 # The level each node starts at in the server's seed file (deploy\citynode_seed.json): the towns' buildings are listed at those levels (tools\capture\gen_town_layouts.py), so a change of a
 # level there changes the list and the navigation mesh.  Only "nodes" counts: the workshops and the comment do not change what the map holds.
 function Get-SeedLevels {
@@ -402,9 +408,36 @@ function Get-SeedLevels {
     return (($pairs | Sort-Object) -join ';')
 }
 function Get-CodeLayouts  { (Get-CodeHash @('tools\capture\gen_town_layouts.py')) + ' ' + (Get-SeedLevels) }
+# The navigation mesh step reads, of what other steps write, the Riverlands' rectangles (tools\mapc\region_rects.tsv), the towns' buildings (town_layouts.bin) and, in content.db, the
+# rows of city_node (aoc_navbuild stands the towns' floors at the nodes; scripts\nav_inputs.py prints them). It reads nothing else of content.db. Its id holds those bytes and rows,
+# not the ids of the steps that write them: those ids change with every change of content.db (a new ability), the files and rows they write mostly do not, and the step takes
+# 8 minutes or more.
+function Get-NodeRowsHash {
+    $db = Join-Path $outDir 'content.db'
+    if (Test-Path -LiteralPath $db) {
+        $oldPref = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $pyArgs = @($python.Prefix) + @('-I', (Join-Path $PSScriptRoot 'nav_inputs.py'), $db)
+            $rows = @(& $python.Exe @pyArgs 2>$null)
+            if ($LASTEXITCODE -eq 0) { return Get-TextHash ($rows -join "`n") }
+        } catch { } finally { $ErrorActionPreference = $oldPref }
+    }
+    return 'no node rows ' + [guid]::NewGuid()      # unreadable: never equal to a record, so the step runs (and says what is wrong)
+}
+function Get-NavmeshInputs {
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($rel in @('tools\mapc\region_rects.tsv', 'dist\content\town_layouts.bin')) {
+        $full = Join-Path $repoRoot $rel
+        $parts.Add($(if (Test-Path -LiteralPath $full) { "$rel $(Get-FileSha $full)" } else { "$rel missing" }))
+    }
+    $parts.Add('city_node ' + (Get-NodeRowsHash))
+    return ($parts -join "`n")
+}
 $ids = @{}
 
-# A step's id says what its output is a function of: the player's game files, the code that makes it and the ids of the steps it reads.
+# A step's id says what its output is a function of: the player's game files, the code that makes it and the ids of the steps it reads. The navigation mesh step is the one
+# exception: it holds the bytes it reads from two earlier steps' files and the node rows of content.db (above), so a step that runs again and writes the same bytes leaves it current.
 function Get-Id([string]$step) {
     if ($ids.ContainsKey($step)) { return $ids[$step] }
     $usmap = Get-FileSha $usmapSrc
@@ -421,9 +454,9 @@ function Get-Id([string]$step) {
         'townfloors' { Get-TextHash ("townfloors $gameId $usmap " + (Get-CodeMapc)) }
         'townlayouts' { Get-TextHash ("townlayouts $gameId $usmap " + (Get-CodeMapc) + (Get-CodeLayouts) + (Get-Id 'database')) }
         'npcabilities' { Get-TextHash ("npcabilities $gameId $usmap " + (Get-CodeMapc) + (Get-CodeNpcAbilities) + ($NpcFolders -join ';') + ($NpcAnimEndFolders -join ';') + ($NpcSensesFolders -join ';') + (Get-Id 'database')) }
-        'navmesh'  { Get-TextHash ("navmesh $gameId $usmap " + (Get-CodeMapc) + (Get-Id 'region') + (Get-Id 'navbuild') + (Get-Id 'townfloors') + (Get-Id 'townlayouts') + (Get-Id 'database')) }
+        'navmesh'  { Get-TextHash ("navmesh $gameId $usmap " + (Get-CodeMapc) + (Get-Id 'navbuild') + (Get-Id 'townfloors') + (Get-NavmeshInputs)) }
     }
-    $ids[$step] = $v
+    if ($step -ne 'navmesh') { $ids[$step] = $v }      # the navigation mesh step's id is asked for again each time: the steps before it write what it reads while the script runs
     return $v
 }
 
@@ -605,12 +638,13 @@ try {
         Say ''
         Say ("[{0}/{1}] {2}" -f $index, $selected.Count, $s.Title) 'Cyan'
         $script:stepPeak = [long]0
+        $idBefore = if ($s.Outputs.Count -gt 0) { Get-Id $s.Name }      # the id of the inputs the step starts from: an input that changes while the step runs must leave its stamp out of date
         $sw = [Diagnostics.Stopwatch]::StartNew()
         & $s.Run
         $sw.Stop()
         if ($s.Outputs.Count -gt 0) {
             Assert-Files $s.Outputs "the $($s.Name) step finished without writing it"
-            $stamp = [ordered]@{ step = $s.Name; inputs = (Get-Id $s.Name); finished = (Get-Date).ToUniversalTime().ToString('s') + 'Z'; seconds = [Math]::Round($sw.Elapsed.TotalSeconds, 1); outputs = $s.Outputs }
+            $stamp = [ordered]@{ step = $s.Name; inputs = $idBefore; finished = (Get-Date).ToUniversalTime().ToString('s') + 'Z'; seconds = [Math]::Round($sw.Elapsed.TotalSeconds, 1); outputs = $s.Outputs }
             ($stamp | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $stampDir "$($s.Name).json") -Encoding ASCII
         }
         $peakGb = [Math]::Round($script:stepPeak / 1GB, 2)

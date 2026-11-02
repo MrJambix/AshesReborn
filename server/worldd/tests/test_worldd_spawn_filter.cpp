@@ -83,6 +83,27 @@ static void test_conditions() {
     SpawnContext with_node = ctx;
     with_node.node_id = 42;
     CHECK(SpawnFilter(with_node, nullptr).filter(node, none) == Why::Spawns, "...unless the context names the node");
+    // the open world: the node that owns the point's zone answers, at its own level
+    SpawnContext owners = ctx;
+    owners.zone_nodes[7] = {42, 0};
+    owners.zone_nodes[8] = {43, 0};
+    owners.zone_nodes[9] = {42, 3};
+    const SpawnFilter by_owner(owners, nullptr);
+    CHECK(by_owner.filter(node, none, 7) == Why::Spawns, "a point in the named node's zone spawns");
+    CHECK(by_owner.filter(node, none, 8) == Why::NodeOrZone, "...and not in another node's zone");
+    CHECK(by_owner.filter(node, none, 0) == Why::NodeOrZone, "...nor where there is no zone");
+    content::PopFilter low = node;
+    low.node_level_max = "Encampment";
+    CHECK(by_owner.filter(low, none, 7) == Why::Spawns, "a level 0 to 2 filter spawns at the owner's level 0");
+    CHECK(by_owner.filter(low, none, 9) == Why::NodeLevel, "...and not where the owner is at level 3");
+    content::PopFilter high = node;
+    high.node_level_min = "Village";
+    high.node_level_max = "Town";
+    CHECK(by_owner.filter(high, none, 9) == Why::Spawns, "a level 3 to 4 filter spawns at the owner's level 3, in a Wilderness world");
+    CHECK(by_owner.filter(open_filter(), none, 9) == Why::Spawns, "a filter that names no node keeps the world's level");
+    SpawnContext own_node = owners;
+    own_node.node_id = 43;
+    CHECK(SpawnFilter(own_node, nullptr).filter(node, none, 7) == Why::NodeOrZone, "a node's own population asks about that node, not the point's owner");
     content::PopFilter zone = open_filter();
     zone.zones = {7};
     CHECK(f.filter(zone, none) == Why::NodeOrZone, "a zone of influence the area has none of");

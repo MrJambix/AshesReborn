@@ -17,9 +17,11 @@
 //  shop taxes at the root's rate; a shop with no tax tag is not taxed.  The arithmetic is in single precision and the tax rounds up, as the client's does.
 //
 //  What a cart must be to be sold (V2): the cart names the open shop; every line names an item, a variation and an offer that one listing of the shop carries (a listing whose
-//  tab or own predicates do not hold for the player is not sold); every price is in money; the whole cart costs no more than a purse can hold.  Anything else is refused whole.
+//  tab or own predicates do not hold for the player is not sold); every price is in money, in the node currency or in a tier made of items; the whole cart costs no more than a purse can hold.
+//  Anything else is refused whole.
 //
-//  Only the shops in kOpenShops are switched on: the Barracks, the citizen outfitter and the mayor's shop keep answering "nothing to offer yet" until their systems exist.
+//  The shops shop_opens() names are switched on: the towns' general, crafting-district, citizen and commodity shops.  The Barracks (siege contracts), the mayor's shop, siege repairs and the test
+//  shops keep answering "nothing to offer yet" until their systems exist.  A tab or listing that needs a reputation rank, or a citizenship, stays hidden: nobody holds one yet.
 //
 //  The shops of shopkeepers who talk (the Black Market, the caravan salesman, the sheriff's tax vouchers) have no use link: a line of their conversation opens them.  A window can
 //  hide a whole tab, or hide or grey out a listing, for a player the tab's or the listing's predicates do not hold for (unavailable()); a price in Glint is paid with Glint T1 items.
@@ -48,6 +50,25 @@ namespace aoc::worldd::vendor {
 
 /// The shops this step switches on, by their def's name.
 inline constexpr const char* kOpenShops[] = {"Marketplace_Vendor", "Node_Vendor_BlackMarket", "Caravansary_VendorDef", "ServiceBuilding_TownHallAdmin_Vendor"};
+
+/// Whether a shop of this def's name is switched on: those above and every shop of a family whose systems exist.
+inline bool shop_opens(std::string_view name) {
+    for (const char* open : kOpenShops) {
+        if (name == open) return true;
+    }
+    static constexpr std::string_view kFamilies[] = {"ServiceBuilding_", "ArtisanshipPOI_", "Starter_POI", "Node_Citizen_Vendor", "Node_Vendor_", "Node_Guild_Vendor", "NPC_Guy_Gearieri",
+                                                     "Token_Narrative_Gear_Vendor", "Event_RVR_0010_Spiders", "Harbor_Sportfishing_Lures", "Mining_Vendor_T1", "Herbalism_Vendor_T1",
+                                                     "Lumberjacking_Vendor_T1", "Artisan_Vendor_T1", "JUN_HAR_VEN_", "EVT_", "Harbor_Sportfishing_Vendor"};
+    for (const std::string_view family : kFamilies) {
+        if (name.substr(0, family.size()) == family) return true;
+    }
+    return false;
+}
+
+/// Whether a shop of this def's name buys crates through the crate window [data: AR_PlayerCommodity_OpenCrateSellWindow, ICD_Node_ConstructionCrate_Vendor, AR_Harbor_Sportfishing_Vendor].
+inline bool buys_crates(std::string_view name) {
+    return name.find("Commodities") != std::string_view::npos || name == "Node_Vendor_ConstructionCrates" || name == "Harbor_Sportfishing_Vendor";
+}
 
 /// How far the shopkeeper may be from the player, in cm, in three dimensions, for the shop to open and for a purchase to go through (12 m).
 inline constexpr double kShopRangeCm = 1200.0;
@@ -86,8 +107,8 @@ inline int64_t taxed_unit(int64_t price, const TaxRate& rate) {
 }
 
 /// What a shop's predicates are asked against: the node the player stands in and, for a shop a shopkeeper opens, the node the shopkeeper stands in.  GetPlayer, GetInteractionTarget,
-/// GetCurrentNode, Node_GetActorCityNode and Node_InLevelRangeInclusive are the functions the shops' own predicates use; any other function ends the evaluation with no value, and the
-/// predicate does not hold.
+/// GetCurrentNode, Node_GetActorCityNode, Node_InLevelRangeInclusive, GetNodeBiome, GetNodeToPlayerReputationRank and Node_HasServiceBuilding are the functions the shops' own predicates use;
+/// any other function ends the evaluation with no value, and the predicate does not hold.
 class ShopFacts final : public dialogue::ExprHost {
 public:
     const world::CityNodes* nodes = nullptr;
@@ -120,6 +141,22 @@ public:
             const int level = args[0].i == 0 ? 0 : nodes->level_of(args[0].i);
             return ExprValue::of(level >= lo && level <= hi ? 1 : 0);
         }
+        if (name == "GetNodeBiome") {
+            if (!nodes) return std::nullopt;
+            static constexpr const char* kBiomes[] = {"Default", "AlpineForest", "AncientForest", "ArcticTundra", "Asian", "Badlands", "Desert", "Fjords", "Glacier", "Grasslands", "Iceland",
+                                                      "Jungle", "MagicalForest", "RedwoodForest", "Riverlands", "Swamp", "Taiga", "TabletopMountains", "Tropics", "Volcano", "UnderRealm", "Highlands"};
+            const int biome = nodes->node_at(has_npc ? npc_x : player_x, has_npc ? npc_y : player_y).biome;
+            ExprValue v;
+            v.text = std::string("EBiomeType::") + (biome >= 0 && biome < 22 ? kBiomes[biome] : "Default");
+            return v;
+        }
+        if (name == "GetNodeToPlayerReputationRank") {   // no rank is held yet: a rank's tab stays hidden
+            ExprValue v;
+            v.text = "ENodeReputationRank::None";
+            return v;
+        }
+        // [M] the shopkeeper stands in the building its tab asks about: no building state is kept per town here
+        if (name == "Node_HasServiceBuilding") return ExprValue::of(has_npc ? 1 : 0);
         return std::nullopt;
     }
     int64_t random_range(int64_t lo, int64_t) const override { return lo; }
@@ -141,9 +178,7 @@ public:
     TownShops() = default;
     explicit TownShops(content::VendorData data) : d_(std::move(data)) {
         for (const auto& [guid, def] : d_.defs) {
-            for (const char* open : kOpenShops) {
-                if (def.name == open) open_.push_back(guid);
-            }
+            if (shop_opens(def.name)) open_.push_back(guid);
         }
     }
 
@@ -204,8 +239,8 @@ public:
     /// Whether a predicate holds for the player now.
     using Holds = std::function<bool(const content::VendorPredicateRow&)>;
 
-    /// What `cart` comes to at `shop` with the tax `rate`.  Pure: nothing is changed.
-    Quote quote(int64_t shop, const protocol::repl::VendorPurchaseCart& cart, const TaxRate& rate, const Holds& holds) const {
+    /// What `cart` comes to at `shop` with the tax `rate`.  Pure: nothing is changed.  `item_tier` answers whether a tier is made of items, and so can be paid from the bags.
+    Quote quote(int64_t shop, const protocol::repl::VendorPurchaseCart& cart, const TaxRate& rate, const Holds& holds, const std::function<bool(int64_t)>& item_tier = {}) const {
         Quote q;
         const auto refuse = [&](std::string why) {
             q.ok = false;
@@ -262,11 +297,11 @@ public:
                 currency = r->currency;
                 unit += taxed_unit(r->price, rate);
             }
-            // money comes from the purse, Glint from the Glint T1 items of the bags; every other currency waits for its system
-            if (currency != items::kMoneyTier && currency != items::kGlintTier) return refuse("item " + std::to_string(line.item_record) + " is paid in a currency this shop cannot take yet");
+            // money and the node currency come from the purse, Glint and the other tiers made of items from the bags; every other currency waits for its system
+            if (currency != items::kMoneyTier && currency != items::kGlintTier && currency != items::kNodeCurrencyTier && !(item_tier && item_tier(currency))) return refuse("item " + std::to_string(line.item_record) + " is paid in a currency this shop cannot take yet");
             if (q.lines.empty()) q.currency = currency;
             else if (q.currency != currency) return refuse("a cart is paid in one currency, and this one mixes two");
-            const int64_t cap = currency == items::kGlintTier ? items::kGlintCap : items::kMoneyCap;
+            const int64_t cap = currency == items::kMoneyTier ? items::kMoneyCap : items::kGlintCap;
             if (unit > cap) return refuse("item " + std::to_string(line.item_record) + " costs more than can be held");
             q.total += unit * line.quantity;
             if (q.total > cap) return refuse("the cart costs more than can be held");

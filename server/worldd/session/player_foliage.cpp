@@ -102,6 +102,11 @@ void PlayerSession::unlock_foliage_client(Connection& conn, uint32_t index, cons
 
 void PlayerSession::on_foliage_interact(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
     ++foliage_interacts_;
+    if (!within_budget(foliage_budget_, "ServerStartInteractionWithFoliage", now)) {   // (a start over the budget is not worked on, and counts as a refusal)
+        ++foliage_refused_;
+        ++foliage_refusals_["over the request budget"];
+        return;
+    }
     foliage::Foliage* f = npc_world_ ? npc_world_->foliage() : nullptr;
     gather::Gathering* g = npc_world_ ? npc_world_->gathering() : nullptr;
     // the call's parameters when they decoded: the instance (left out when 0), its owner and component by name, the state the client sees it in
@@ -331,6 +336,19 @@ void PlayerSession::cancel_foliage(Connection* conn, const std::string& why, Int
     // The interrupt goes with every cancellation that says why, and with one before FoliageData was sent (the first 116 ms, or a start worldd ended at once): the client set its
     // own FoliageData with the start, a clear of ours would be an empty diff, and nothing else would give it its gathering back (unlock_foliage_client).
     if (interrupt != Interrupt::None || !run.data_sent) unlock_foliage_client(*conn, run.index, run.owner, run.component);
+}
+
+void PlayerSession::on_foliage_start(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
+    // (retest 3: the client sets its own FoliageData the moment it sends this and says "while gathering" to everything else until the server answers; an unreadable call left no line)
+    if (!rpc.call.decoded && ++foliage_unreadable_logged_ <= kLoggedPerKind) {
+        spdlog::warn("[session] {}: ServerStartInteractionWithFoliage arrived and its parameters do not decode: no cutting starts, and the client is told to end its own (ClientInterruptInteractionWithFoliage)", name());
+    }
+    return on_foliage_interact(conn, rpc, now);
+}
+
+/// The client calls of cutting trees and plants (session/rpc_table.h).
+void PlayerSession::register_foliage_rpcs(RpcTable& t) {
+    t.add(RpcScope::PlayerController, "ServerStartInteractionWithFoliage", [](PlayerSession& s, const RpcContext& c) { s.on_foliage_start(c.conn, c.rpc, c.now); });
 }
 
 }}  // namespace aoc::worldd

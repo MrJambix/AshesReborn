@@ -160,6 +160,10 @@ struct EffectRow {
     int64_t     requirement_expr = 0;
     int64_t     crowd_control_guid = 0;
     std::string extra;
+    /// contentc version 38: the effect's group (ab_effect_group; 0: none) and what the group says: effects of one group stack as the group's rule, whatever their own says
+    int64_t     group_guid = 0;
+    std::string group_name, group_stack_type;
+    int         group_limit = 0;
 };
 
 /// ab_effect_hit: a hit an effect fires in a phase (PreApply, Apply, Tick, Consume, Remove, Expire, End).
@@ -199,6 +203,7 @@ struct ZoneRow {
     std::string delay_type;
     double      speed = 0;
     int64_t     expire_after_hits_expr = 0, expire_if_expr = 0, targeting_guid = 0;
+    double      radius = 0;   // the first volume of its targeting record (contentc version 41; 0: an older file, or a record with no sphere)
     std::map<std::string, std::vector<int64_t>> hits;
 };
 
@@ -222,10 +227,17 @@ struct ReactionRow {
     std::vector<int64_t> hits;        // ab_reaction_hit, in order
 };
 
+/// ab_modify_cooldown: what a hit does to the cooldowns of abilities (delta_expr: seconds, added to what is left).
+struct ModifyCooldownRow {
+    int64_t     guid = 0, delta_expr = 0;
+    std::string name, abilities;   // abilities: JSON, the ability guids
+};
+
 /// ab_hit_recursive: a hit a hit fires when it lands, and the targeting record (ab_targeting_def) that aims it.
 struct RecursiveHitRow {
     int     ord = 0;
     int64_t child_hit = 0, targeting = 0;
+    double  radius = 0;   // the targeting record's first volume (0: the record names its target another way)
 };
 
 class AbilityContent {
@@ -282,6 +294,8 @@ public:
     std::optional<ReactionRow> reaction(int64_t guid, std::string& error) const;
     /// ab_hit_recursive: the hits a hit fires when it lands, in order (empty without the reaction tables).
     bool hit_recursive(int64_t hit, std::vector<RecursiveHitRow>& out, std::string& error) const;
+    /// Every row of ab_modify_cooldown (empty without the reaction tables, or in a file older than the table).
+    void modify_cooldowns(std::vector<ModifyCooldownRow>& out) const;
 
     /// The guids of every ability, hit, effect, projectile or zone of the tables, in guid order (what a catalog that holds them all loads).
     /// Reaction lists the reactions (empty without the reaction tables).

@@ -15,6 +15,18 @@ static void test_auto_attack_settings_persist() {
     const auto& cls = class_named("AoCPlayerControllerBP_C");
     auto send_options = [&](Harness& h, const std::map<std::string, bool>& options) {
         repl::RpcParams params;
+        const schema::RpcSchema& rpc = *cls.rpc("ServerUpdateAccountCombatSettings");
+        for (size_t i = 0; i < rpc.commands.size(); ++i) {   // the client sends the struct whole
+            using schema::PropType;
+            switch (rpc.commands[i].type) {
+                case PropType::Bool: params.values[static_cast<uint16_t>(i + 1)] = repl::Value::boolean(false); break;
+                case PropType::Float: params.values[static_cast<uint16_t>(i + 1)] = repl::Value::f32(0.0f); break;
+                case PropType::Double: params.values[static_cast<uint16_t>(i + 1)] = repl::Value::f64(0.0); break;
+                case PropType::Int8: case PropType::Int16: case PropType::Int32: case PropType::Int64: params.values[static_cast<uint16_t>(i + 1)] = repl::Value::i64(0); break;
+                case PropType::UInt8: case PropType::UInt16: case PropType::UInt32: case PropType::UInt64: case PropType::Enum: params.values[static_cast<uint16_t>(i + 1)] = repl::Value::u64(0); break;
+                default: break;   // (a kind this struct does not hold: the write below says so)
+            }
+        }
         for (const auto path : kAutoAttackPaths) {
             const std::string key(path.substr(path.rfind('.') + 1));
             const auto it = options.find(key);
@@ -42,6 +54,7 @@ static void test_auto_attack_settings_persist() {
     svc::Character record = cyb_record();
     record.auto_attack_settings = sink.saved;
     Sink after_login;
+    after_login.saved = record.auto_attack_settings;   // the store holds them: a save names only what changed
     Harness fresh;
     fresh.fx.world->set_position_sink(&after_login);
     CHECK(fresh.join(record), "a fresh session joins with the saved account settings");
@@ -84,3 +97,4 @@ static void test_auto_attack_settings_persist() {
     }
     CHECK(all_disabled, "explicitly disabled options also survive a new login");
 }
+AOC_REGISTER_TEST(test_auto_attack_settings_persist);

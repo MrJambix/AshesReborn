@@ -6,6 +6,40 @@ static bool peer_delivered(const Harness& h, uint32_t channel, bool open, bool c
     });
 }
 
+static void test_guild_on_public_pawn() {
+    std::printf("what other players are given of a guild\n");
+    Harness h;
+    h.start();
+    h.settle();
+    h.play();
+    h.run(milliseconds(3000));
+    auto& registry = h.fx.world->registry();
+    const auto& guids = h.s->bootstrap().setup().guids;
+    const auto component = h.s->guild_component_for_test();
+    const auto* pawn = registry.find(guids.pawn.ObjectId);
+    CHECK(pawn != nullptr, "the player is published");
+    if (!pawn) return;
+    CHECK(h.s->bootstrap().pawn().find(component) != nullptr, "his own pawn has the guild component by now");
+    CHECK(pawn->actor.find(component) == nullptr, "someone in no guild shows others no guild component");
+    h.s->guild_book_for_test()->create(*h.s->guild_member_for_test(), "Iron Wolves", 100);
+    h.run(milliseconds(1500));
+    pawn = registry.find(guids.pawn.ObjectId);
+    const repl::Subobject* c = pawn ? pawn->actor.find(component) : nullptr;
+    CHECK(c != nullptr, "someone in a guild does");
+    if (!c) return;
+    const auto* name = c->obj.state.get(*c->obj.schema, "GuildName");
+    CHECK(name && *name == repl::Value::str("Iron Wolves"), "with its name, which is what the client's IsInGuild reads");
+    const auto* whole = c->obj.state.get(*c->obj.schema, "GuildData");
+    const auto* data = whole ? whole->get_if<repl::GuildDataWire>() : nullptr;
+    CHECK(data && data->name == "Iron Wolves" && (data->guid[0] | data->guid[1] | data->guid[2] | data->guid[3]) != 0, "its name and guid in GuildData, which GetGuildName and IsGuildmate read");
+    CHECK(data && data->members.empty() && data->ranks.empty(), "and not its members or ranks");
+    CHECK(!c->obj.state.get(*c->obj.schema, "GuildCooldown") && !c->obj.state.get(*c->obj.schema, "GuildMemberData.bIsOnline"), "nor the cooldown or the member's own row");
+    const auto* own = h.s->bootstrap().pawn().find(component);
+    const auto* own_value = own ? own->obj.state.get(*own->obj.schema, "GuildData") : nullptr;
+    const auto* own_data = own_value ? own_value->get_if<repl::GuildDataWire>() : nullptr;
+    CHECK(own_data && own_data->members.size() == 1 && own_data->ranks.size() == 3, "his own copy keeps all of it");
+}
+
 static void test_player_presence() {
     std::printf("players: public projection, two connections, movement, range and logout\n");
     Harness first;

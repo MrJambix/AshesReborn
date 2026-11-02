@@ -47,6 +47,7 @@
 namespace aoc::worldd::combat {
 
 struct AftermathConfig {
+    double party_share_cm = 10000.0;   // how near a kill a party member shares it (modelled)
     bool   enabled = true;                  // the kill switch (worldd --no-loot): no experience, loot or respawn
     bool   respawn = true;
     double corpse_seconds = 15.0;           // [R] 15.0 s after the death (7 of 7 corpses with nothing to loot)
@@ -117,6 +118,8 @@ public:
     void set_rarity_of(std::function<int(int64_t item, int quality)> fn) { rarity_of_ = std::move(fn); }
     /// The name of an item record, for the log's death line (without one the record's number is logged).
     void set_name_of(std::function<std::string(int64_t item)> fn) { name_of_ = std::move(fn); }
+    /// Whether two players share a party or raid: those near a kill share its experience, its quest credit and its loot.
+    void set_party_of(std::function<bool(PlayerPort&, PlayerPort&)> fn) { party_of_ = std::move(fn); }
     /// Glint tiers: the currency kinds that are items.  A kill's Glint is rolled in the smallest kind and paid in kinds, the biggest first, each under its rate (27 rolled is 2 of the second
     /// kind and 7 of the first); without a table (null) it is paid as it is rolled.  Outlives the module.
     void set_currencies(const items::CurrencyTable* table) { currencies_ = table; }
@@ -134,8 +137,8 @@ public:
     bool hunt_started(uint64_t npc, double now, double seconds);
     /// The hunt ended without a reward (the player moved, the client interrupted, a disconnect): a living creature is just alive again, its record goes; a corpse keeps its own.
     void hunt_cancelled(uint64_t npc);
-    /// The hunt is done: the creature is dead for its clients now (the done update), goes hunt_done_seconds after `now`, and its spawn point refills it as after a kill.  False when `npc` has no
-    /// hunt record.
+    /// The hunt is done: the creature is dead for its clients now (the done update), goes hunt_done_seconds after `now`, and its spawn point refills it as after a kill.  A creature whose record
+    /// went before the hunt completed (the completion came more than 5 s late) but that still stands huntable gets its record again.  False when `npc` has no hunt record and is no such creature.
     bool hunt_done(uint64_t npc, double now);
 
     /// Takes the death hook of the combat world.
@@ -199,6 +202,7 @@ private:
     std::function<uint64_t(uint32_t, double)> respawner_;
     std::function<int(int64_t)> quality_of_;
     std::function<int(int64_t, int)> rarity_of_;
+    std::function<bool(PlayerPort&, PlayerPort&)> party_of_;
     std::function<std::string(int64_t)> name_of_;
     const items::CurrencyTable* currencies_ = nullptr;
     HuntablePredicate          huntable_;

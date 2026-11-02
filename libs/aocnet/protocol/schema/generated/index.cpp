@@ -62,6 +62,7 @@
 #include "protocol/schema/generated/UFTUEComponent.h"
 #include "protocol/schema/generated/UInteractableComponent.h"
 #include "protocol/schema/generated/UIntrepidFoliageStateComponent.h"
+#include "protocol/schema/generated/UIntrepidGuildComponent.h"
 #include "protocol/schema/generated/UIntrepidRepKeyComponent.h"
 #include "protocol/schema/generated/UItemStorageComponent.h"
 #include "protocol/schema/generated/ULevelingComponent.h"
@@ -138,6 +139,7 @@ constexpr Entry kByName[] = {
     {"UFTUEComponent", &kUFTUEComponent},
     {"UInteractableComponent", &kUInteractableComponent},
     {"UIntrepidFoliageStateComponent", &kUIntrepidFoliageStateComponent},
+    {"UIntrepidGuildComponent", &kUIntrepidGuildComponent},
     {"UIntrepidRepKeyComponent", &kUIntrepidRepKeyComponent},
     {"UItemStorageComponent", &kUItemStorageComponent},
     {"ULevelingComponent", &kULevelingComponent},
@@ -170,6 +172,7 @@ constexpr Entry kComponents[] = {
     {"CombatInfo", &kUPlayerCombatInfo},
     {"EquipmentComponent", &kUItemStorageComponent},
     {"FTUE Component", &kUFTUEComponent},
+    {"GuildComponent", &kUIntrepidGuildComponent},
     {"FlyingMountComponent", &kUMountComponent},
     {"GroundMountComponent", &kUMountComponent},
     {"InteractInfo", &kUNPCSecondaryInfo},
@@ -231,6 +234,7 @@ constexpr const ClassSchema* kAll[] = {
     &kUFTUEComponent,
     &kUInteractableComponent,
     &kUIntrepidFoliageStateComponent,
+    &kUIntrepidGuildComponent,
     &kUIntrepidRepKeyComponent,
     &kUItemStorageComponent,
     &kULevelingComponent,

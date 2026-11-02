@@ -112,6 +112,8 @@ struct GenericConfig {
     /// Quests part 3, slice 1: the interactable definitions of the quest objects (content::ObjectData).  A Blueprint that is no pawn and whose instance names one of them is a quest object
     /// (a body, a crate, a root, a building site): it is made from a recorded one.  Empty: no quest object is made.
     std::set<int64_t>        prop_components;
+    /// ... and the population instances that are quest objects through their actor definition: its state responses give an item a quest asks for (a Heartwood root).
+    std::set<int64_t>        prop_instances;
     /// The ability records of the Blueprint with this archetype path: the abilities of its state tree, which its open lists as the ones its AbilityComponent loads (the client plays only the
     /// abilities it has the record of).  Empty (or null): the Blueprint has none of its own to list, and a hostile humanoid is then not made from a guard's open (see fighting_humanoid).
     std::function<std::vector<int64_t>(const std::string& archetype_path)> abilities_of;
@@ -149,6 +151,8 @@ public:
     const OpenTemplate* station_template(const content::NpcAssetRow& asset, Verdict* why = nullptr) const;
     /// Quests part 3, slice 1: is `component` the interactable definition of a quest object?
     bool is_prop_component(int64_t component) const { return component != 0 && config_.prop_components.count(component) != 0; }
+    /// ... is this population instance one through its actor definition?
+    bool is_prop_instance(int64_t instance) const { return config_.prop_instances.count(instance) != 0; }
     /// The open of a quest object: a recorded one (category "prop", an actor and its interactable component) with this Blueprint's path in place of the recorded one's; the instance's
     /// definitions are put in when it is made (spawns::instantiate).  nullptr with `why` when the captures hold none.  The pointer is valid as long as this object.
     const OpenTemplate* prop_template(const content::NpcAssetRow& asset, Verdict* why = nullptr) const;

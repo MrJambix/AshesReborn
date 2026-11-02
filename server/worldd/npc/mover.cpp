@@ -153,7 +153,7 @@ Mover::Status Mover::advance(double dt) {
     }
     if (!(dt > 0) || !std::isfinite(dt)) return status_;
     const Vec3 before = ground_;
-    double budget = speed_ * dt;
+    double budget = speed_ * pace_ * dt;
     // end short of the destination when asked
     if (stop_distance_ > 0) {
         const double left = remaining();

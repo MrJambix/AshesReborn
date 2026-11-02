@@ -37,6 +37,12 @@ var montageIDs string
 //go:embed ability_names.tsv
 var abilityNames string
 
+// montageAssets lists the NetGUID of the montage ASSETS every consumable's ability plays (contentc version 38), by the asset's first soft path: a consumable
+// ability that montage_ids.tsv has no row for takes the id of its asset.
+//
+//go:embed montage_assets.tsv
+var montageAssets string
+
 // seedByName reads ability_names.tsv and adds every ability row of each name to the seed; a name no row has is an error (the list is stale).
 func seedByName(abilities map[int64]*designdb.Row, seed map[int64]bool) (int, error) {
 	byName := map[string][]int64{}
@@ -197,6 +203,8 @@ type abBuilder struct {
 	abilities, effects, hits, mods, projectiles, zones map[int64]*designdb.Row
 	targetingNames                                     map[int64]string
 	reactions, cooldowns, targetingRows                map[int64]*designdb.Row
+	groups                                             map[int64]*designdb.Row // contentc version 38: the EffectGroup rows, and the ones written to ab_effect_group
+	groupsWritten                                      map[int64]bool
 }
 
 func indexRows(rows []designdb.Row) map[int64]*designdb.Row {
@@ -232,6 +240,25 @@ func montageNetGuids() (map[string]map[int]uint64, error) {
 			out[f[0]] = map[int]uint64{}
 		}
 		out[f[0]][idx] = guid
+	}
+	// the montage assets (version 38): kept under the soft path with the index -1, which no AnimationIndex is
+	for i, line := range strings.Split(montageAssets, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		if len(f) != 2 {
+			return nil, fmt.Errorf("montage_assets.tsv line %d: %d columns, want 2", i+1, len(f))
+		}
+		guid, err := strconv.ParseUint(f[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("montage_assets.tsv line %d: bad number", i+1)
+		}
+		if out[f[0]] == nil {
+			out[f[0]] = map[int]uint64{}
+		}
+		out[f[0]][-1] = guid
 	}
 	return out, nil
 }
@@ -304,6 +331,8 @@ func buildAbilities(w *writer, src *source, opt *Options, meta map[string]string
 		reactions:     indexRows(src.rows["ReactionRecordBase"]),
 		cooldowns:     indexRows(src.rows["ModifyCooldownRecordBase"]),
 		targetingRows: indexRows(src.rows["AbilityTargetingRecordBase"]),
+		groups:        indexRows(src.rows["EffectGroupRecordBase"]),
+		groupsWritten: map[int64]bool{},
 	}
 
 	// ---- the ranks of every skill tree (plan D1's skill_rank: the one table of ranks); the abilities and effects they grant seed the closure ----
@@ -671,6 +700,12 @@ func buildAbilities(w *writer, src *source, opt *Options, meta map[string]string
 		}
 	}
 	for _, g := range sortedBools(zoneSet) {
+		// version 41: a zone's targeting record says how far it reaches
+		if tg, _ := newFields("zone", b.zones[g].Fields).id("LingeringHitTargetingInfoId"); tg != 0 && b.targetingRows[tg] != nil {
+			if _, shaped := b.targetingRows[tg].Fields["HurtBoxInfo"]; shaped {
+				targetingSet[tg] = true
+			}
+		}
 		if err := b.writeZone(b.zones[g], zoneLists); err != nil {
 			return err
 		}
@@ -908,6 +943,8 @@ func (b *abBuilder) writeAbility(r *designdb.Row, netGuids map[string]map[int]ui
 		var net any
 		if g, ok := netGuids[r.Name][mi]; ok {
 			net = int64(g)
+		} else if g, ok := netGuids[first][-1]; ok {
+			net = int64(g) // the montage asset's own id (montage_assets.tsv)
 		}
 		if err := b.w.exec(`INSERT INTO ab_montage (ability_guid, anim_index, soft_path, paths, direction, select_expr, start_section, hit_keys, targeting_key, net_guid)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.Guid, mi, first, jsonOf(append([]string{}, paths...)), direction, eID, section, jsonOf(append([]int64{}, hk...)), tkey, net); err != nil {
@@ -979,6 +1016,27 @@ func (b *abBuilder) targetingName(guid int64) string {
 	return ""
 }
 
+// effectRemovalKind reads a hit's EffectRemovalFilter, the expression that says which of the target's effects it may take off when EffectsToRemoveIds names
+// none: "debuff" or "buff" for the filters that ask only the effect's category, "none" for no filter, "other" for any other (a tag, an instigator, a record).
+func effectRemovalKind(filter string) string {
+	var code strings.Builder
+	for _, line := range strings.Split(filter, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		code.WriteString(strings.Join(strings.Fields(line), ""))
+	}
+	switch code.String() {
+	case "":
+		return "none"
+	case "IsDebuff(GetEffect())":
+		return "debuff"
+	case "IsBuff(GetEffect())", "GetEffectCategory(GetEffect())==EEffectCategory::EFFECT_Buff":
+		return "buff"
+	}
+	return "other"
+}
+
 func (b *abBuilder) writeHit(r *designdb.Row) error {
 	f := newFields(fmt.Sprintf("AbilityHit %s (%d)", r.Name, r.Guid), r.Fields)
 	mask, types := f.int("ApplicableTargets"), f.int("ApplicableTypes")
@@ -997,12 +1055,36 @@ func (b *abBuilder) writeHit(r *designdb.Row) error {
 		"HitFX": hitFX != 0 || activateFX != 0, "MaxNumEffectsToRemove": f.int("MaxNumEffectsToRemove"),
 		"ModifyCooldownsIds": refGuids(f, "ModifyCooldownsIds"), "ModifyEffectsIds": refGuids(f, "ModifyEffectsIds"),
 		"EffectsToRemoveIds": refGuids(f, "EffectsToRemoveIds"), "ReactionsIds": refGuids(f, "ReactionsIds"),
+		"EffectRemoval": effectRemovalKind(f.str("EffectRemovalFilter")), "RemoveAsDispel": f.boolean("bRemoveAsDispel"),
 		"TeleportId": teleport, "ResurrectId": resurrect,
 		"LingeringZonesIds": zones, // the zones the hit spawns (also in ab_hit_zone)
 	}
 	// Plan E1, stage 3: what the damage rules read of a hit besides its mods: its event tags (the element, Melee, ComboStep.End ...), the rates that
 	// override the stats' crit, block and miss chances (expressions, 0 for the default), what it forces and the life states it applies to.
 	extra["EventTags"] = f.tags("EventTags")
+	// version 40: the terms the hit keeps beyond its scope (bKeepBeyondScope), for what it fires and leaves: Bard Gambit's self hit reads the one its hit on the target worked out
+	kept := []map[string]int64{}
+	for ti, tv := range f.list("InputTerms") {
+		ts, ok := tv.(designdb.Struct)
+		if !ok {
+			return fmt.Errorf("%s: InputTerms[%d] is %T", f.where, ti, tv)
+		}
+		tf := newFields(fmt.Sprintf("%s: InputTerms[%d]", f.where, ti), ts)
+		tg, _ := tf.id("TermId")
+		text, keep := tf.str("Value"), tf.boolean("bKeepBeyondScope")
+		if tf.err != nil {
+			return tf.err
+		}
+		if !keep || tg == 0 || strings.TrimSpace(text) == "" {
+			continue
+		}
+		id, err := b.exprs.id(text, nil)
+		if err != nil {
+			return err
+		}
+		kept = append(kept, map[string]int64{"Term": tg, "Expr": id})
+	}
+	extra["KeptTerms"] = kept
 	recursive := f.list("RecursiveHit") // version 35: the hits this one fires when it lands, each with the targeting record that aims it
 	extra["ApplicableLifeStates"] = f.int("ApplicableLifeStates")
 	for _, k := range []string{"bForceCantCrit", "bForceCantBlock", "bForceCantMiss", "bForceRollCrit", "bForceRollBlock", "bForceRollMiss", "bShouldUseItemTags"} {
@@ -1189,25 +1271,13 @@ func (b *abBuilder) writeEffect(r *designdb.Row) error {
 	persDeath, persRelog, dispel, significant := f.boolean("bPersistsThroughDeath"), f.boolean("bPersistsRelog"), f.boolean("bDispellable"), f.boolean("bSignificant")
 	durT, reqT, inPlaceT := f.str("EffectDuration"), f.str("ApplicationRequirements"), f.str("InPlaceStackLimit")
 	cc, _ := f.id("CrowdControlId")
-	extra := map[string]any{"ReactionsIds": refGuids(f, "ReactionsIds"), "HitModsIds": refGuids(f, "HitModsIds"), "FragilityDefinitionsIds": refGuids(f, "FragilityDefinitionsIds")}
-	if _, present := r.Fields["EffectGroupId"]; present {
-		groupID, _ := f.id("EffectGroupId")
-		for _, group := range b.src.rows["EffectGroupRecordBase"] {
-			if group.Guid != groupID || groupID == 0 {
-				continue
-			}
-			gf := newFields(fmt.Sprintf("EffectGroup %s (%d)", group.Name, group.Guid), group.Fields)
-			extra["EffectGroupGuid"] = groupID
-			extra["EffectGroupLimit"] = gf.int("GlobalStackLimit")
-			extra["EffectGroupStackType"] = gf.str("EffectStackType")
-			if gf.err != nil {
-				return gf.err
-			}
-			break
-		}
-	}
+	group := optID(f, "EffectGroupId")
+	extra := map[string][]int64{"ReactionsIds": refGuids(f, "ReactionsIds"), "HitModsIds": refGuids(f, "HitModsIds"), "FragilityDefinitionsIds": refGuids(f, "FragilityDefinitionsIds")}
 	if f.err != nil {
 		return f.err
+	}
+	if err := b.writeEffectGroup(group); err != nil {
+		return err
 	}
 	var ids [3]int64
 	for i, t := range []string{durT, reqT, inPlaceT} {
@@ -1219,9 +1289,9 @@ func (b *abBuilder) writeEffect(r *designdb.Row) error {
 	}
 	if err := b.w.exec(`INSERT INTO ab_effect (guid, name, display_name, category, tags, effect_tags, infinite_duration, duration_expr, tick_timer, ignore_initial_tick,
 		stack_type, global_stack_limit, in_place_stack_limit_expr, stack_duration_refresh, persists_through_death, persists_relog, dispellable, significant,
-		requirement_expr, crowd_control_guid, extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		requirement_expr, crowd_control_guid, extra, group_guid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Guid, r.Name, display, category, jsonOf(tags), jsonOf(etags), b2i(infinite), ids[0], tick, b2i(ignoreTick), stackType, limit, ids[2], refresh,
-		b2i(persDeath), b2i(persRelog), b2i(dispel), b2i(significant), ids[1], cc, jsonOf(extra)); err != nil {
+		b2i(persDeath), b2i(persRelog), b2i(dispel), b2i(significant), ids[1], cc, jsonOf(extra), group); err != nil {
 		return err
 	}
 	for _, p := range effectPhases {
@@ -1232,6 +1302,27 @@ func (b *abBuilder) writeEffect(r *designdb.Row) error {
 		}
 	}
 	return b.writeMods("effect", r, f)
+}
+
+// writeEffectGroup writes the ab_effect_group row of an effect's group once (0: the effect has none).
+func (b *abBuilder) writeEffectGroup(g int64) error {
+	if g == 0 || b.groupsWritten[g] {
+		return nil
+	}
+	r := b.groups[g]
+	if r == nil {
+		return fmt.Errorf("no EffectGroup row %d", g)
+	}
+	f := newFields(fmt.Sprintf("EffectGroup %s (%d)", r.Name, g), r.Fields)
+	stackType, refresh, limit := f.str("EffectStackType"), f.str("StackDurationRefresh"), f.int("GlobalStackLimit")
+	if f.err != nil {
+		return f.err
+	}
+	if err := b.w.exec(`INSERT INTO ab_effect_group (guid, name, stack_type, global_stack_limit, stack_duration_refresh) VALUES (?, ?, ?, ?, ?)`, g, r.Name, stackType, limit, refresh); err != nil {
+		return err
+	}
+	b.groupsWritten[g] = true
+	return nil
 }
 
 // writeMods writes the StatMod rows an effect or hit lists (StatModsIds).
@@ -1330,6 +1421,9 @@ func (b *abBuilder) writeReaction(r *designdb.Row) error {
 // abilityByName matches GetAbilityRecordByName("Name") in a ModifyCooldownRecord's TargetCooldownAbility.
 var abilityByName = regexp.MustCompile(`GetAbilityRecordByName\(\s*"([^"]+)"\s*\)`)
 
+// abilityByRef matches the other form TargetCooldownAbility is written in, a reference: $#<type>:<guid>$.
+var abilityByRef = regexp.MustCompile(`^\s*\$#\d+:(\d+)\$\s*$`)
+
 // writeModifyCooldown writes a ModifyCooldownRecordBase: the abilities it names (the design data writes them as GetAbilityRecordByName("Name")) are
 // resolved to guids.
 func (b *abBuilder) writeModifyCooldown(r *designdb.Row) error {
@@ -1348,6 +1442,10 @@ func (b *abBuilder) writeModifyCooldown(r *designdb.Row) error {
 		g := int64(0)
 		if m := abilityByName.FindStringSubmatch(s); m != nil {
 			g = b.exprs.named["Ability"][m[1]]
+		} else if m := abilityByRef.FindStringSubmatch(s); m != nil {
+			if parsed, err := strconv.ParseInt(m[1], 10, 64); err == nil && b.abilities[parsed] != nil {
+				g = parsed
+			}
 		}
 		guids = append(guids, g)
 	}

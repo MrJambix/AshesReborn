@@ -26,6 +26,7 @@ foreach ($n in 'auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'no
 # Everything but area_geom.bin (only aoc_navbuild reads it, at build time) and the extraction logs.
 robocopy "$repo\dist\content" "$stage\dist\content" /E /XF area_geom.bin /XD .extract /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw 'could not copy dist\content' }
+Copy-Item "$repo\PATCH_NOTES.md" "$stage\dist\services"
 Copy-Item "$repo\deploy\citynode_seed.json" "$stage\deploy"
 Copy-Item "$PSScriptRoot\install.ps1", "$PSScriptRoot\supervisor.ps1", "$PSScriptRoot\sandalctl.ps1", "$PSScriptRoot\sendctrlc.ps1", "$PSScriptRoot\notify-discord.ps1", "$PSScriptRoot\README.md" "$stage\ops"
 Copy-Item "$repo\LICENSE", "$repo\NOTICE" $stage

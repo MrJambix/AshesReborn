@@ -135,6 +135,10 @@ func (r *recStore) Experience(ctx context.Context, id string) ([]character.Exper
 	return r.xp, r.err
 }
 
+func (r *recStore) ListGuilds(ctx context.Context) ([]character.Guild, error) { return nil, nil }
+func (r *recStore) SaveGuild(ctx context.Context, g character.Guild) error     { return nil }
+func (r *recStore) DeleteGuild(ctx context.Context, guid string) error         { return nil }
+
 func (r *recStore) SaveProgress(ctx context.Context, id string, p character.Progress) (character.Character, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

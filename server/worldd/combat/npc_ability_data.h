@@ -41,20 +41,49 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace aoc::worldd::combat {
 
 /// One condition of a task, as the creature table says it (tools/npcabilities writes these as text; see its Conditions.cs for the grammar).
 struct CondAtom {
-    enum class Kind : uint8_t { True, False, In, Out, CentreIn, CentreOut, Angle, Cooldown, Random, HealthUnder, HealthNotUnder, FightTime, FightRoll, Sees, NotSees };
+    enum class Kind : uint8_t { True, False, In, Out, CentreIn, CentreOut, Angle, Cooldown, Random, HealthUnder, HealthNotUnder, FightTime, FightRoll, Sees, NotSees,
+                                SelfEffect, SelfNoEffect, TargetEffect, TargetNoEffect, HatedWithin, HatedBand, Elite, SelfEffectCount, TargetEffectCount, NotAngle, HasTarget, NoTarget,
+                                MissingHealthRoll, EmptyTimer };
     enum Op : int { Eq, Ne, Lt, Le, Gt, Ge };
     Kind        kind = Kind::True;
+    int64_t     effect = 0;  // SelfEffect ... TargetNoEffect: the effect record (STC_HasEffect_C's Effect)
     double      value = 0;   // the distance (cm), angle (degrees), probability, health fraction or seconds; FightRoll: the number it is when the chance does not come up
     int         op = Eq;     // FightTime and FightRoll: how the seconds compare with `value` / the creature's number
-    std::string name;        // Cooldown: the cooldown's name; FightRoll: the tree's variable
-    double      chance = 0, low = 0, high = 0;   // FightRoll: with this chance the number is a fresh one between `low` and `high`
+    std::string name;        // Cooldown: the cooldown's name; FightRoll: the tree's variable; EmptyTimer: the timer's cooldown, which also names its roll
+    double      chance = 0, low = 0, high = 0;   // FightRoll, EmptyTimer: with this chance the number is a fresh one between `low` and `high`
+    /// MissingHealthRoll: the chance over the creature's missing health (1 - its health fraction), as keys of five numbers (mode, time, value, arrive tangent, leave tangent) with
+    /// rising times.  `value` is the health fraction at or under which it always holds.
+    std::vector<double> curve;
 };
+
+/// An engine float curve at `x`, its keys as five numbers each (mode, time, value, arrive tangent, leave tangent; mode 0 holds a key's value up to the next key, 1 runs straight to
+/// it, 2 is the engine's cubic through the two tangents): the first key's value before it, the last key's after it.
+inline double curve_value(const std::vector<double>& k, double x) {
+    constexpr size_t n = 5;
+    if (k.size() < n) return 0;
+    if (x <= k[1]) return k[2];
+    for (size_t i = 0; i + 2 * n <= k.size(); i += n) {
+        const double t0 = k[i + 1], v0 = k[i + 2], leave = k[i + 4], t1 = k[i + n + 1], v1 = k[i + n + 2], arrive = k[i + n + 3];
+        if (x >= t1) continue;
+        const double span = t1 - t0;
+        if (k[i] == 0 || span <= 0) return v0;
+        const double a = (x - t0) / span;
+        if (k[i] == 1) return v0 + (v1 - v0) * a;
+        // the engine's Bezier from the key's value along its leave tangent to the next key's value along that key's arrive tangent
+        const double p0 = v0, p1 = v0 + leave * span / 3, p2 = v1 - arrive * span / 3, p3 = v1;
+        const auto lerp = [a](double from, double to) { return from + (to - from) * a; };
+        const double p01 = lerp(p0, p1), p12 = lerp(p1, p2), p23 = lerp(p2, p3);
+        return lerp(lerp(p01, p12), lerp(p12, p23));
+    }
+    return k[k.size() - n + 2];
+}
 
 /// A condition with how it joins the ones before it: `operand` 'c' (the first of a list), 'a' (and) or 'o' (or), and `delta` the brackets it opens before itself (> 0) or closes after itself (< 0).
 struct CondToken {
@@ -78,6 +107,11 @@ struct CondContext {
     std::function<double()> roll;       // a fresh number in [0, 1)
     /// The number a FightRoll condition compares the fight's seconds with: rolled the first time it is asked in a fight and the same for the rest of that fight.  Null: the condition's own `value`.
     std::function<double(const CondAtom&)> fight_roll;
+    /// The stacks of an effect the creature holds / its target holds (null: not known, and the condition holds either way).
+    std::function<int(int64_t)> self_effect, target_effect;
+    /// Whether someone on the creature's hate list stands farther than lo and nearer than hi cm (centre to centre; lo < 0: no lower bound) (null: not known, and the condition holds).
+    std::function<bool(double, double)> hated_between;
+    int elite = 0;                      // the creature's elite rank
 };
 
 /// Whether `x` compares as `op` with `y`.
@@ -104,6 +138,9 @@ inline bool eval_atom(const CondAtom& a, const CondContext& c) {
         case K::CentreIn: return !c.has_target || c.centre_distance < a.value;
         case K::CentreOut: return !c.has_target || !(c.centre_distance < a.value);
         case K::Angle: return !c.has_target || c.angle <= a.value;
+        case K::NotAngle: return !c.has_target || c.angle > a.value;
+        case K::HasTarget: return c.preview || c.has_target;
+        case K::NoTarget: return c.preview || !c.has_target;
         case K::Cooldown: return !c.cooldown_over || c.cooldown_over(a.name);
         case K::Random: return c.preview || !c.roll || c.roll() < a.value;
         case K::HealthUnder: return c.preview || c.health_fraction < a.value;
@@ -112,6 +149,24 @@ inline bool eval_atom(const CondAtom& a, const CondContext& c) {
         case K::FightRoll: return c.preview || compare_values(a.op, c.fight_seconds, c.fight_roll ? c.fight_roll(a) : a.value);
         case K::Sees: return !c.has_target || !c.sees || c.sees();
         case K::NotSees: return !c.has_target || (c.sees && !c.sees());
+        case K::SelfEffect: return !c.self_effect || c.self_effect(a.effect) > 0;
+        case K::SelfNoEffect: return !c.self_effect || c.self_effect(a.effect) <= 0;
+        case K::TargetEffect: return !c.has_target || !c.target_effect || c.target_effect(a.effect) > 0;
+        case K::TargetNoEffect: return !c.has_target || !c.target_effect || c.target_effect(a.effect) <= 0;
+        case K::HatedWithin: return c.preview || !c.hated_between || c.hated_between(-1, a.value);
+        case K::HatedBand: return c.preview || !c.hated_between || c.hated_between(a.low, a.high);
+        case K::Elite: return compare_values(a.op, static_cast<double>(c.elite), a.value);
+        case K::SelfEffectCount: return !c.self_effect || compare_values(a.op, static_cast<double>(c.self_effect(a.effect)), a.value);
+        case K::TargetEffectCount: return !c.has_target || !c.target_effect || compare_values(a.op, static_cast<double>(c.target_effect(a.effect)), a.value);
+        case K::EmptyTimer:
+            // a tree's timer that starts empty when the fight begins: its first charge comes its seconds into the fight (rolled once per fight), and after that its cooldown rules
+            if (c.preview) return true;
+            if (c.cooldown_over && !c.cooldown_over(a.name)) return false;
+            return c.fight_seconds >= (c.fight_roll ? c.fight_roll(a) : a.value);
+        case K::MissingHealthRoll:
+            // STC_IncreasedRandomChanceForMissingHealth_C (its script, read from the client): always at or under the threshold, else a roll against the curve at the missing health
+            if (c.preview || !(a.value < 1) || !(c.health_fraction > a.value)) return true;
+            return !c.roll || c.roll() <= curve_value(a.curve, 1 - c.health_fraction);
     }
     return false;
 }
@@ -271,69 +326,81 @@ public:
         std::map<std::string, MontageData>                  montages;
         std::map<int64_t, std::map<int, BiteArea>>          areas;
         std::vector<std::vector<std::string>>               rows;
-        if (!read_table(abilities_path, "archetype\tability\ttask\tcooldown\tstop_movement\torder\tmin_distance\tmax_distance\tmax_angle\tgates\tunknown\tfight\tconds\twhy\tstarts\trotate\tarrival", rows, error)) return false;
+        const std::string abilities_header = "archetype\tability\ttask\tcooldown\tstop_movement\torder\tmin_distance\tmax_distance\tmax_angle\tgates\tunknown\tfight\tconds\twhy\tstarts\trotate\tarrival";
+        if (!read_table(abilities_path, abilities_header, rows, error)) return false;
+        const std::vector<std::string> ability_columns = split(abilities_header, '\t');
         for (const auto& r : rows) {
+            const auto bad_at = [&](size_t column) { return bad(abilities_path, r[0], ability_columns[column], r[column], error); };   // (the error names the column that does not read)
             CreatureAbility a;
-            if (!number(r[1], a.ability) || !number(r[3], a.cooldown) || !number(r[5], a.order) || !number(r[6], a.min_distance) || !number(r[7], a.max_distance) || !number(r[8], a.max_angle)) {
-                return bad(abilities_path, r[0], error);
-            }
+            if (!number(r[1], a.ability)) return bad_at(1);
+            if (!number(r[3], a.cooldown)) return bad_at(3);
+            if (!number(r[5], a.order)) return bad_at(5);
+            if (!number(r[6], a.min_distance)) return bad_at(6);
+            if (!number(r[7], a.max_distance)) return bad_at(7);
+            if (!number(r[8], a.max_angle)) return bad_at(8);
             a.task = r[2];
-            a.stop_movement = r[4] == "1";
+            if (!flag(r[4], a.stop_movement)) return bad_at(4);
             for (std::string& g : split(r[9], ';')) {
                 if (!g.empty()) a.gates.push_back(std::move(g));
             }
-            a.unknown = r[10] == "1";
-            a.fight = r[11] == "1";
+            if (!flag(r[10], a.unknown)) return bad_at(10);
+            if (!flag(r[11], a.fight)) return bad_at(11);
             a.why = r[13];
             for (const std::string& st : split(r[14], ';')) {
                 if (st.empty()) continue;
                 const size_t eq = st.find('=');
                 CooldownStart c;
-                if (eq == std::string::npos) return bad(abilities_path, r[0], error);
+                if (eq == std::string::npos) return bad_at(14);
                 c.name = st.substr(0, eq);
                 const std::string span = st.substr(eq + 1);
                 const size_t tilde = span.find('~');
                 if (tilde == std::string::npos) {
-                    if (!number(span, c.low)) return bad(abilities_path, r[0], error);
+                    if (!number(span, c.low)) return bad_at(14);
                     c.high = c.low;
                 } else if (!number(span.substr(0, tilde), c.low) || !number(span.substr(tilde + 1), c.high) || c.high < c.low) {
-                    return bad(abilities_path, r[0], error);
+                    return bad_at(14);
                 }
                 a.starts.push_back(std::move(c));
             }
-            if (!number(r[16], a.arrival_cm)) return bad(abilities_path, r[0], error);
+            if (!number(r[16], a.arrival_cm)) return bad_at(16);
             if (!r[15].empty()) {   // "speed:duration"
                 const size_t colon = r[15].find(':');
-                if (colon == std::string::npos || !number(r[15].substr(0, colon), a.rotate_speed) || !number(r[15].substr(colon + 1), a.rotate_seconds)) return bad(abilities_path, r[0], error);
+                if (colon == std::string::npos || !number(r[15].substr(0, colon), a.rotate_speed) || !number(r[15].substr(colon + 1), a.rotate_seconds)) return bad_at(15);
                 a.rotates = true;
             }
             a.off = !a.unknown && a.why == "off";
-            if (!parse_conditions(r[12], a.groups)) return bad(abilities_path, r[0], error);
+            if (!parse_conditions(r[12], a.groups)) return bad_at(12);
             abilities[r[0]].push_back(std::move(a));
         }
         for (auto& [archetype, tasks] : abilities) {
             std::stable_sort(tasks.begin(), tasks.end(), [](const CreatureAbility& x, const CreatureAbility& y) { return x.order < y.order; });
         }
-        if (!read_table(montages_path, "montage\tguid\tpackage\tpackage_guid\tlength\trate_scale\tsections\thits\troot_motion\troot_unreadable\tanim_end\tfires", rows, error)) return false;
+        const std::string montages_header = "montage\tguid\tpackage\tpackage_guid\tlength\trate_scale\tsections\thits\troot_motion\troot_unreadable\tanim_end\tfires";
+        if (!read_table(montages_path, montages_header, rows, error)) return false;
+        const std::vector<std::string> montage_columns = split(montages_header, '\t');
         for (const auto& r : rows) {
+            const auto bad_at = [&](size_t column) { return bad(montages_path, r[0], montage_columns[column], r[column], error); };
             MontageData m;
             m.path = r[0];
             m.package = r[2];
-            m.root_unreadable = r[9] == "1";
-            if (!r[10].empty() && (!number(r[10], m.anim_end) || !(m.anim_end >= 0))) return bad(montages_path, r[0], error);
-            if (!number(r[1], m.guid) || !number(r[3], m.package_guid) || !number(r[4], m.length) || !number(r[5], m.rate_scale)) return bad(montages_path, r[0], error);
+            if (!flag(r[9], m.root_unreadable)) return bad_at(9);
+            if (!r[10].empty() && (!number(r[10], m.anim_end) || !(m.anim_end >= 0))) return bad_at(10);
+            if (!number(r[1], m.guid)) return bad_at(1);
+            if (!number(r[3], m.package_guid)) return bad_at(3);
+            if (!number(r[4], m.length)) return bad_at(4);
+            if (!number(r[5], m.rate_scale)) return bad_at(5);
             for (const std::string& h : split(r[7], ';')) {
                 if (h.empty()) continue;
                 const size_t colon = h.find(':');
                 MontageData::Hit hit;
-                if (colon == std::string::npos || !number(h.substr(0, colon), hit.time) || !number(h.substr(colon + 1), hit.key)) return bad(montages_path, r[0], error);
+                if (colon == std::string::npos || !number(h.substr(0, colon), hit.time) || !number(h.substr(colon + 1), hit.key)) return bad_at(7);
                 m.hits.push_back(hit);
             }
             for (const std::string& fire : split(r[11], ';')) {
                 if (fire.empty()) continue;
                 const size_t colon = fire.find(':');
                 MontageData::Fire launch;
-                if (colon == std::string::npos || !number(fire.substr(0, colon), launch.time) || !number(fire.substr(colon + 1), launch.key)) return bad(montages_path, r[0], error);
+                if (colon == std::string::npos || !number(fire.substr(0, colon), launch.time) || !number(fire.substr(colon + 1), launch.key)) return bad_at(11);
                 m.fires.push_back(launch);
             }
             for (const std::string& s : split(r[8], ';')) {
@@ -341,38 +408,46 @@ public:
                 const std::vector<std::string> f = split(s, ':');
                 MontageData::Step step;
                 double up = 0;
-                if (f.size() != 4 || !number(f[0], step.time) || !number(f[1], step.x) || !number(f[2], step.y) || !number(f[3], up)) return bad(montages_path, r[0], error);
-                if (!m.root_motion.empty() && step.time < m.root_motion.back().time) return bad(montages_path, r[0], error);
+                if (f.size() != 4 || !number(f[0], step.time) || !number(f[1], step.x) || !number(f[2], step.y) || !number(f[3], up)) return bad_at(8);
+                if (!m.root_motion.empty() && step.time < m.root_motion.back().time) return bad_at(8);
                 m.root_motion.push_back(step);
             }
             montages[m.path] = std::move(m);
         }
-        if (!read_table(targeting_path,
-                        "ability\tkey\tdistance\tmin_distance\tangle\tangle_center\tcone_check\tfreeze\tfreeze_distance\tfreeze_scale\tignore_non_target\tdiscovery\tcheck_validity\tlos_check\tdistance_center\tvolumes\tshapes",
-                        rows, error)) {
-            return false;
-        }
+        const std::string targeting_header =
+            "ability\tkey\tdistance\tmin_distance\tangle\tangle_center\tcone_check\tfreeze\tfreeze_distance\tfreeze_scale\tignore_non_target\tdiscovery\tcheck_validity\tlos_check\tdistance_center\tvolumes\tshapes";
+        if (!read_table(targeting_path, targeting_header, rows, error)) return false;
+        const std::vector<std::string> targeting_columns = split(targeting_header, '\t');
         std::map<int64_t, RootMotionFreezeRule> freezes;
         for (const auto& r : rows) {
+            const auto bad_at = [&](size_t column) { return bad(targeting_path, r[0], targeting_columns[column], r[column], error); };
             int64_t ability = 0;
             int key = 0;
             BiteArea area;
             RootMotionFreezeRule rule;
-            if (!number(r[0], ability) || !number(r[1], key) || !number(r[2], area.distance) || !number(r[3], area.min_distance) || !number(r[4], area.angle) || !number(r[5], area.angle_center) ||
-                !number(r[8], rule.distance) || !number(r[9], rule.radius_scale) || (r[7] != "none" && r[7] != "pause" && r[7] != "stop") || !number(r[14], area.distance_center) ||
-                !number(r[15], area.volume_count)) {
-                return bad(targeting_path, r[0], error);
-            }
-            area.cone_check = r[6] == "1";
+            if (!number(r[0], ability)) return bad_at(0);
+            if (!number(r[1], key)) return bad_at(1);
+            if (!number(r[2], area.distance)) return bad_at(2);
+            if (!number(r[3], area.min_distance)) return bad_at(3);
+            if (!number(r[4], area.angle)) return bad_at(4);
+            if (!number(r[5], area.angle_center)) return bad_at(5);
+            if (!number(r[8], rule.distance)) return bad_at(8);
+            if (!number(r[9], rule.radius_scale)) return bad_at(9);
+            if (r[7] != "none" && r[7] != "pause" && r[7] != "stop") return bad_at(7);
+            if (!number(r[14], area.distance_center)) return bad_at(14);
+            if (!number(r[15], area.volume_count)) return bad_at(15);
+            if (!flag(r[6], area.cone_check)) return bad_at(6);
             rule.kind = r[7] == "stop" ? RootMotionFreezeRule::Kind::Stop : r[7] == "pause" ? RootMotionFreezeRule::Kind::Pause : RootMotionFreezeRule::Kind::None;
-            rule.ignore_non_target = r[10] == "1";
+            if (!flag(r[10], rule.ignore_non_target)) return bad_at(10);
             static const std::map<std::string, BiteArea::Discovery> discoveries = {{"none", BiteArea::Discovery::None},
                                                                                    {"prefers_active", BiteArea::Discovery::PrefersActive},
                                                                                    {"only_locked", BiteArea::Discovery::OnlyLocked},
                                                                                    {"only_active", BiteArea::Discovery::OnlyActive},
                                                                                    {"prefers_locked", BiteArea::Discovery::PrefersLocked}};
             const auto found = discoveries.find(r[11]);
-            if (found == discoveries.end() || (r[12] != "0" && r[12] != "1") || (r[13] != "0" && r[13] != "1")) return bad(targeting_path, r[0], error);
+            if (found == discoveries.end()) return bad_at(11);
+            if (r[12] != "0" && r[12] != "1") return bad_at(12);
+            if (r[13] != "0" && r[13] != "1") return bad_at(13);
             area.discovery = found->second;
             area.check_validity = r[12] == "1";
             area.los_check = r[13] == "1";
@@ -396,15 +471,16 @@ public:
                     area.readable = false;
                     area.unreadable_why = f[1];
                 } else {
-                    return bad(targeting_path, r[0], error);
+                    return bad_at(16);
                 }
             }
-            if (entries != area.volume_count) return bad(targeting_path, r[0], error);   // (the count and the shapes agree)
+            if (entries != area.volume_count) return bad_at(15);   // (the count and the shapes agree)
             areas[ability][key] = area;
             freezes[ability] = rule;   // (the same on every line of the ability)
         }
         abilities_ = std::move(abilities);
         montages_ = std::move(montages);
+        for (const auto& [path, data] : montages_) montage_paths_.emplace(folded_path(path), path);
         areas_ = std::move(areas);
         freezes_ = std::move(freezes);
         return true;
@@ -440,7 +516,11 @@ public:
     }
     /// The montage with the object path an ability record names; null when the tables do not have it.
     const MontageData* montage(const std::string& path) const {
-        const auto it = montages_.find(path);
+        auto it = montages_.find(path);
+        if (it == montages_.end()) {   // asset names ignore case, and the data does not always agree with itself: SklaRisha_Bite.Sklarisha_Bite against SklaRisha_Bite.SklaRisha_Bite
+            const auto named = montage_paths_.find(folded_path(path));
+            if (named != montage_paths_.end()) it = montages_.find(named->second);
+        }
         return it == montages_.end() ? nullptr : &it->second;
     }
 
@@ -529,6 +609,8 @@ private:
                 else if (atom == "F") t.atom.kind = CondAtom::Kind::False;
                 else if (atom == "los") t.atom.kind = CondAtom::Kind::Sees;
                 else if (atom == "nlos") t.atom.kind = CondAtom::Kind::NotSees;
+                else if (atom == "tgt") t.atom.kind = CondAtom::Kind::HasTarget;
+                else if (atom == "ntgt") t.atom.kind = CondAtom::Kind::NoTarget;
                 else if (atom[0] == '?') t.atom.kind = CondAtom::Kind::False;   // (a condition the table does not say: its task is `unknown` and never asked)
                 else {
                     const size_t open = atom.find('(');
@@ -540,6 +622,48 @@ private:
                         if (args.size() != 1) return false;
                         t.atom.kind = K::Cooldown;
                         t.atom.name = percent_decoded(args[0]);
+                    } else if (name == "eff" || name == "neff" || name == "teff" || name == "nteff") {
+                        // eff(G) / neff(G): the creature holds the effect record G / does not; teff(G) / nteff(G): its target does / does not
+                        if (args.size() != 1 || !number(args[0], t.atom.effect) || t.atom.effect == 0) return false;
+                        t.atom.kind = name == "eff" ? K::SelfEffect : name == "neff" ? K::SelfNoEffect : name == "teff" ? K::TargetEffect : K::TargetNoEffect;
+                    } else if (name == "effc" || name == "teffc") {
+                        // effc(OP,N,G) / teffc(OP,N,G): the stacks of the effect record G on the creature / its target against N
+                        static const std::map<std::string, int> cops = {{"eq", CondAtom::Eq}, {"ne", CondAtom::Ne}, {"lt", CondAtom::Lt}, {"le", CondAtom::Le}, {"gt", CondAtom::Gt}, {"ge", CondAtom::Ge}};
+                        const auto it = args.size() == 3 ? cops.find(args[0]) : cops.end();
+                        if (it == cops.end() || !number(args[1], t.atom.value) || !number(args[2], t.atom.effect) || t.atom.effect == 0) return false;
+                        t.atom.kind = name == "effc" ? K::SelfEffectCount : K::TargetEffectCount;
+                        t.atom.op = it->second;
+                    } else if (name == "hateb") {
+                        // hateb(LO,HI): someone on the hate list is farther than LO and nearer than HI
+                        if (args.size() != 2 || !number(args[0], t.atom.low) || !number(args[1], t.atom.high) || !(t.atom.low < t.atom.high)) return false;
+                        t.atom.kind = K::HatedBand;
+                    } else if (name == "accf") {
+                        // accf(NAME,LOW,HIGH): the timer NAME starts empty; it holds once its cooldown NAME is over and the fight's seconds reach a number rolled in [LOW, HIGH] per fight
+                        if (args.size() != 3 || args[0].empty() || !number(args[1], t.atom.low) || !number(args[2], t.atom.high) || t.atom.low < 0 || t.atom.low > t.atom.high) return false;
+                        t.atom.kind = K::EmptyTimer;
+                        t.atom.name = percent_decoded(args[0]);
+                        t.atom.value = t.atom.low;
+                        t.atom.chance = t.atom.low < t.atom.high ? 1 : 0;
+                    } else if (name == "mhr") {
+                        // mhr(T,M,X,V,A,L,...): a roll against the curve of (mode, time, value, arrive tangent, leave tangent) keys at the creature's missing health; always at or under T health
+                        if (args.size() < 6 || (args.size() - 1) % 5 != 0 || !number(args[0], t.atom.value)) return false;
+                        for (size_t i = 1; i < args.size(); ++i) {
+                            double v = 0;
+                            if (!number(args[i], v)) return false;
+                            t.atom.curve.push_back(v);
+                        }
+                        for (size_t i = 0; i < t.atom.curve.size(); i += 5) {
+                            if (t.atom.curve[i] != 0 && t.atom.curve[i] != 1 && t.atom.curve[i] != 2) return false;
+                            if (i > 0 && !(t.atom.curve[i + 1] > t.atom.curve[i - 4])) return false;
+                        }
+                        t.atom.kind = K::MissingHealthRoll;
+                    } else if (name == "elite") {
+                        // elite(OP,N): the creature's elite rank against N
+                        static const std::map<std::string, int> eops = {{"eq", CondAtom::Eq}, {"ne", CondAtom::Ne}, {"lt", CondAtom::Lt}, {"le", CondAtom::Le}, {"gt", CondAtom::Gt}, {"ge", CondAtom::Ge}};
+                        const auto it = args.size() == 2 ? eops.find(args[0]) : eops.end();
+                        if (it == eops.end() || !number(args[1], t.atom.value)) return false;
+                        t.atom.kind = K::Elite;
+                        t.atom.op = it->second;
                     } else if (name == "fc" || name == "fcr") {
                         // fc(OP,V): the fight's seconds against V.  fcr(OP,BASE,CHANCE,LOW,HIGH,NAME): against the creature's number for the tree's variable NAME, rolled once per fight: BASE, or with the chance a fresh one in [LOW, HIGH]
                         const bool rolled = name == "fcr";
@@ -553,7 +677,8 @@ private:
                         if (rolled) t.atom.name = percent_decoded(args[5]);
                     } else {
                         static const std::map<std::string, K> by_name = {{"in", K::In},   {"out", K::Out},   {"cin", K::CentreIn},          {"cout", K::CentreOut},
-                                                                       {"ang", K::Angle}, {"rand", K::Random}, {"hp", K::HealthUnder}, {"nhp", K::HealthNotUnder}};
+                                                                       {"ang", K::Angle}, {"rand", K::Random}, {"hp", K::HealthUnder}, {"nhp", K::HealthNotUnder},
+                                                                       {"hate", K::HatedWithin}, {"nang", K::NotAngle}};
                         const auto it = by_name.find(name);
                         if (it == by_name.end() || args.size() != 1 || !number(args[0], t.atom.value)) return false;
                         t.atom.kind = it->second;
@@ -565,8 +690,9 @@ private:
         }
         return true;
     }
-    static bool bad(const std::string& file, const std::string& row, std::string& error) {
-        error = file + ": a line of " + row + " does not read";
+    /// A value of a line that does not read: the error names the file, the line (its first column), the column and what the column holds.
+    static bool bad(const std::string& file, const std::string& row, const std::string& column, const std::string& text, std::string& error) {
+        error = file + ": a line of " + row + " does not read: the column " + column + " holds \"" + (text.size() > 40 ? text.substr(0, 40) + "..." : text) + "\"";
         return false;
     }
     static std::vector<std::string> split(const std::string& s, char sep) {
@@ -586,7 +712,15 @@ private:
     static bool number(const std::string& s, T& out) {
         if (s.empty()) return false;
         const auto r = std::from_chars(s.data(), s.data() + s.size(), out);
-        return r.ec == std::errc() && r.ptr == s.data() + s.size();
+        if (r.ec != std::errc() || r.ptr != s.data() + s.size()) return false;
+        if constexpr (std::is_floating_point_v<T>) return std::isfinite(out);   // (from_chars reads "nan" and "inf": a NaN length would freeze a creature and an infinite angle would loop)
+        return true;
+    }
+    /// A flag column is exactly "0" or "1"; anything else is a table this build does not read, not a silent 0.
+    static bool flag(const std::string& s, bool& out) {
+        if (s != "0" && s != "1") return false;
+        out = s == "1";
+        return true;
     }
     static bool read_table(const std::string& path, std::string_view header, std::vector<std::vector<std::string>>& rows, std::string& error) {
         rows.clear();
@@ -624,7 +758,14 @@ private:
     }
 
     std::map<std::string, std::vector<CreatureAbility>> abilities_;
+    static std::string folded_path(std::string path) {
+        for (char& c : path) {
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        }
+        return path;
+    }
     std::map<std::string, MontageData>                  montages_;
+    std::map<std::string, std::string>                  montage_paths_;   // a montage's path in lower case -> its key in montages_
     std::map<int64_t, std::map<int, BiteArea>>          areas_;
     std::map<int64_t, RootMotionFreezeRule>             freezes_;
 };

@@ -173,6 +173,17 @@ struct WarehouseRequest {
     bool operator==(const WarehouseRequest&) const = default;
 };
 
+/// ServerPurchaseWarehouseStorageItemChunk or ServerPurchaseWarehouseStorageMaterialTab from a decoded call: the record to buy; nullopt for another RPC, an undecoded call or a record of 0 or less.
+inline std::optional<int64_t> parse_warehouse_purchase(const RpcCall& call) {
+    if (!warehouse_detail::call_is(call, "ServerPurchaseWarehouseStorageItemChunk") && !warehouse_detail::call_is(call, "ServerPurchaseWarehouseStorageMaterialTab")) return std::nullopt;
+    for (const auto& c : call.rpc->commands) {
+        const auto it = call.params.values.find(c.handle);
+        if (it == call.params.values.end()) continue;
+        if (const int64_t* record = it->second.get_if<int64_t>(); record && *record > 0) return *record;
+    }
+    return std::nullopt;
+}
+
 /// ServerRequestWarehouseSummary, ServerVisitWarehouse or ServerFetchWarehouse from a decoded call; nullopt for another RPC, an undecoded call or a value out of range.
 inline std::optional<WarehouseRequest> parse_warehouse_request(const RpcCall& call) {
     const bool summary = warehouse_detail::call_is(call, "ServerRequestWarehouseSummary");

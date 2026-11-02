@@ -1,5 +1,5 @@
 {
-    "exp_rate":    5.0,
+    "exp_rate":    10.0,
     "drop_rate":   5.0,
     "gather_rate": 5.0,
     "craft_rate":  5.0

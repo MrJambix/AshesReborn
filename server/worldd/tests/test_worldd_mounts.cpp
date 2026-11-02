@@ -1123,6 +1123,20 @@ static void test_one_mount(const spawns::MountBook& book) {
 static void test_refusals(const spawns::MountBook& book) {
     std::printf("a refused summon: no actor, the ability item and the callout\n");
     const content::MountRow* row = first_of_kind(book, "ground");
+    // deep water: a swimmer's aquatic mount needs no ground; a ground mount and a swimmer who is not one still do
+    {
+        const content::MountRow* aquatic = first_of_kind(book, "aquatic");
+        const auto outcome = [&](const content::MountRow& which, bool swimming) {
+            Rig rig(book);
+            rig.mc->set_ground([](double, double, double) -> std::optional<double> { return std::nullopt; });
+            MountController::Request r = rig.request(which);
+            r.swimming = swimming;
+            return rig.mc->summon(r, 50.0);
+        };
+        CHECK(aquatic && outcome(*aquatic, true) == MountController::Outcome::Started, "an aquatic mount comes to a swimmer over deep water");
+        CHECK(aquatic && outcome(*aquatic, false) == MountController::Outcome::Refused, "... and not to someone on foot with no ground there");
+        CHECK(outcome(*row, true) == MountController::Outcome::Refused, "a ground mount does not come to a swimmer in deep water");
+    }
     {
         Rig rig(book);
         rig.mc->set_ground([](double, double, double) -> std::optional<double> { return std::nullopt; });

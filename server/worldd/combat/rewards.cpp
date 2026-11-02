@@ -209,7 +209,7 @@ private:
             const content::LootReward& r = c.rewards[i];
             for (const content::LootXp& x : r.xp) {
                 const std::optional<double> v = value(x.expr);
-                if (v && *v > 0) out_.xp.push_back({x.type, static_cast<int64_t>(std::llround(*v))});
+                if (v && *v > 0) out_.xp.push_back({x.type, rolled_xp(*v)});
             }
             for (const content::LootItem& it : r.items) {
                 // a harvest: the item's variation rolls its quality first (the quantity formula reads what it gave)
@@ -249,11 +249,24 @@ private:
                 const std::optional<double> q = value(it.qty);
                 if (borrowed) ctx_.gather->context = saved;
                 // a line the design data gives no Quantity (the quests' rewards: the medallion a guard hands over, a reward box) is one item; a formula that does not run is none
-                const int64_t qty = it.qty == 0 ? 1 : q ? static_cast<int64_t>(std::floor(*q + 1e-9)) : 0;
+                const int64_t qty = it.qty == 0 ? 1 : q ? rolled_quantity(*q) : 0;
                 if (qty <= 0 || it.item == 0) continue;
                 add(c.grant == "Auto" ? out_.direct : out_.loot, {it.item, it.variation, qty, quality});
             }
             out_.currency += r.currency.size();
+            for (const content::LootCurrency& u : r.currency) {
+                const std::optional<double> amount = value(u.amount);
+                if (!amount || *amount < 1.0 || *amount > 1e12) continue;
+                const int64_t n = static_cast<int64_t>(*amount);
+                bool joined = false;
+                for (RolledCurrency& p : out_.paid) {
+                    if (p.currency == u.currency) {
+                        p.amount += n;
+                        joined = true;
+                    }
+                }
+                if (!joined) out_.paid.push_back({u.currency, n});
+            }
         }
     }
 

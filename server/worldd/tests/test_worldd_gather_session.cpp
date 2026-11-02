@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  test_worldd_gather_session.cpp  (Gathering stage 2, part "Harvesting")
+// =====================================================================//  test_worldd_gather_session.cpp  (Gathering stage 2, part "Harvesting")
 //
 //  The harvest on connections: sessions with fake clients (the harness of test_worldd_area_session) on a PlayerWorld over the real content.db (AOC_CONTENT_DB, else
 //  dist/content/content.db of the working tree; "[skip]" without it) whose registry holds resource nodes made from the captured template around the login spot.
@@ -16,11 +15,11 @@
 //                   interacts, a replayed interact; a client that never cancels (the channel ends by the clock, the rewards once); a disconnect mid-channel, the tool taken off
 //                   or swapped, a teleport away, a death, the client's ServerInterruptChannel, a node removed from the world: no reward, the node Available, nothing stuck
 //  a full bag       the result has no storage event, a callout says why, and 100 ms after the experience frame an APlayerLootPile holds the stacks
-// ============================================================================
-#include "capture_gather.h"
+// =====================================================================#include "capture_gather.h"
 #include "content_db_fixture.h"
 #include "cyb_appearance.h"
 #include "fake_client.h"
+#include "test_registry.h"
 #include "bootstrap/character_setup.h"
 #include "gather/gathering.h"
 #include "items/inventory.h"
@@ -829,7 +828,12 @@ static void test_refusals() {
     for (Player* p : {&bare, &novice, &apprentice}) play(*p);
     CHECK(novice.s->actor_view()->state_of(far_node) == world::ClientState::Awake && novice.s->actor_view()->state_of(dormant) != world::ClientState::Awake,
           "the 10 m node is open on the client, the 250 m node is only dormant there");
-    const size_t pc_before = pc_calls_since(novice, 0).size();
+    const auto pc_answers = [&]() {
+        size_t n = 0;   // (ClientSetTime is the clock sync, on its own timer: 1 s and 5 s after the phase-in, then every 120 s)
+        for (const repl::RpcCall& c : pc_calls_since(novice, 0)) n += !(c.rpc && std::string(c.rpc->name) == "ClientSetTime");
+        return n;
+    };
+    const size_t pc_before = pc_answers();
     // no tool
     bare.send_now(interact(rig.component_of(daffodil)), bare.pawn_ch);
     CHECK(refusal_count(bare, "no tool") == 1 && bare.s->harvests_started() == 0 && rig.board().state_of(daffodil) == gather::NodeState::Available, "nothing worn in the Sickle's slot: refused (no tool)");
@@ -847,7 +851,7 @@ static void test_refusals() {
     // a node that is not one: the component of an NPC would be ignored; an id no actor has is ignored by the generic path
     novice.send_now(interact(999999999), novice.pawn_ch);
     CHECK(novice.s->harvests_started() == 0 && novice.s->interactions_ignored() >= 1, "a component no actor owns is ignored");
-    CHECK(pc_calls_since(novice, 0).size() == pc_before, "and none of this sent the PlayerController a call");
+    CHECK(pc_answers() == pc_before, "and none of this sent the PlayerController a call");
     std::string all = "bare: " + refusals_of(bare) + "; novice: " + refusals_of(novice) + "; apprentice: " + refusals_of(apprentice);
     std::printf("      (%s)\n", all.c_str());
     // the positive controls: a Journeyman Herbalist with the T3 sickle harvests the Apprentice node (the tool is a higher tier)
@@ -1294,6 +1298,7 @@ static void test_testing_rate() {
             saved = saved || profession.xp == before + 400;
     CHECK(saved, "the scaled XP is handed to persistence");
 }
+#include "gather_session_registered.inc"
 
 int main() {
     {   // the lines of the log (info and above) go to g_log: the tests read what the user's test would
@@ -1323,6 +1328,7 @@ int main() {
     test_relog_keeps_the_resource_bag();
     test_levels();
     test_testing_rate();
+    g_fail += aoc_tests::run();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -46,12 +46,15 @@
 #include "bootstrap/captured_setup.h"
 #include "bootstrap/character_setup.h"
 #include "items/inventory.h"
+#include "items/reward_boxes.h"
 #include "net/endpoint.h"
 #include "protocol/repl/ability_rpc.h"
 #include "protocol/repl/fast_array.h"
+#include "protocol/repl/hit_rpc.h"
 #include "protocol/repl/item_rpc.h"
 #include "protocol/repl/leveling.h"
 #include "protocol/repl/rep_block.h"
+#include "protocol/repl/rpc_fields.h"
 #include "protocol/repl/skill_rpc.h"
 #include "protocol/repl/storage_rpc.h"
 #include "protocol/schema/generated/index.h"
@@ -367,13 +370,15 @@ struct Mirror {
                         events.push_back(*ev);
                         const int s = storage_of(guids, ev->targets[0].object);
                         const std::pair<int, int> key{s, ev->targets[0].slots[0].slot};
-                        const int32_t leaving = ev->targets[0].slots[0].count;
-                        if (ev->type == static_cast<uint8_t>(repl::StorageEventType::Add)) storage[key] = ev->item;
-                        else if (leaving > 0 && leaving < static_cast<int32_t>(ev->item.quantity)) {   // part of the stack leaves: the rest stays in the slot
-                            repl::ItemInstance rest = ev->item;
-                            rest.quantity = ev->item.quantity - static_cast<decltype(rest.quantity)>(leaving);
-                            storage[key] = std::move(rest);
-                        } else storage.erase(key);
+                        if (ev->type == static_cast<uint8_t>(repl::StorageEventType::Add)) {
+                            storage[key] = ev->item;
+                        } else {
+                            // a Remove that names a count smaller than the stack takes that many and leaves the rest in the slot (a use, a payment)
+                            const auto held = storage.find(key);
+                            const int32_t leaves = ev->targets[0].slots[0].count;
+                            if (held != storage.end() && leaves > 0 && leaves < held->second.quantity) held->second.quantity -= leaves;
+                            else storage.erase(key);
+                        }
                     } else if (std::string(c.rpc->name) == "ClientReceiveStoragePayload") {
                         absorb_payload(repl::parse_storage_payload(c));
                     }
@@ -2789,6 +2794,60 @@ static void test_d1_join_has_the_tracker() {
     CHECK(h.sink.progress.empty() && !h.s->progress_changed(), "nothing is saved at the join");
 }
 
+/// The items a ClientOpenRewardSelection among the chains got[from..] lists; nullopt when none was sent.
+static std::optional<repl::RewardInstance> reward_window_since(const Harness& h, size_t from_chain) {
+    for (size_t i = from_chain; i < h.got.size(); ++i) {
+        if (h.got[i].channel != h.pc_ch) continue;
+        const auto blocks = repl::read_content_blocks(h.got[i].content.data(), h.got[i].content.bit_pos(), 0);
+        if (!blocks) continue;
+        for (const auto& b : *blocks) {
+            size_t p = b.payload_pos;
+            const auto calls = repl::read_rpc_fields(class_named("AoCPlayerControllerBP_C"), h.got[i].content.data(), b.payload_pos + b.payload_bits, p);
+            if (!calls) continue;
+            for (const auto& c : *calls) {
+                if (std::string(c.rpc->name) != "ClientOpenRewardSelection") continue;
+                const repl::Value* v = repl::rpcf::value_of(*c.rpc, c.params, "InData.RewardInstance");
+                const auto* reward = v ? v->get_if<repl::RewardInstance>() : nullptr;
+                if (reward) return *reward;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+static BunchWriter select_reward(int index) {
+    const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
+    repl::RpcParams p;
+    repl::set_rpc_param(*pc.rpc("ServerSelectReward"), p, "Index", repl::Value::i64(index));
+    return actor_rpc(pc, "ServerSelectReward", p);
+}
+
+static void test_level_up_refills() {
+    std::printf("a level gained gives Health, Mana and Stamina back\n");
+    Harness h(record_with_scrolls());
+    const int64_t kHealth = guid_named(h, "Health"), kMaxHealth = guid_named(h, "MaxHealth"), kMana = guid_named(h, "Mana"), kMaxMana = guid_named(h, "MaxMana");
+    const emit::FIntrepidNetworkGUID ability = h.s->bootstrap().setup().guids.ability;
+    const svc::InventoryItem* scepter = h.s->inventory().at(Worn, 15);
+    CHECK(scepter != nullptr, "(the Bard wears the Scepter)");
+    if (!scepter) return;
+    h.settle();
+    CHECK(h.s->set_current_value(kHealth, 1.0f) && h.s->set_current_value(kMana, 1.0f), "(Health and Mana are spent)");
+    h.request(trigger_with_item(ability, content::kGuidDodge, 6, 15, items::to_instance(*scepter), 4), h.pawn_ch);
+    CHECK(h.s->abilities() && h.s->abilities()->stamina() < h.s->abilities()->max_stamina(), "(a Dodge spends Stamina)");
+    h.request_both(item_used(3, 4, guid_n(210)), item_activate(3, 4, guid_n(210)));
+    CHECK(h.s->progress().level == 10, "(the scroll takes the character to level 10)");
+    h.settle();
+    const sg::CharacterStats* cs = h.s->character_stats();
+    CHECK(cs->find(kHealth)->value == cs->find(kMaxHealth)->value && client_stat(h, kHealth) == client_stat(h, kMaxHealth) && client_stat(h, kMaxHealth) > 1.0f, "Health is at the new maximum, on the server and the client");
+    CHECK(cs->find(kMana)->value == cs->find(kMaxMana)->value && client_stat(h, kMana) == client_stat(h, kMaxMana) && client_stat(h, kMaxMana) > 1.0f, "Mana is at the new maximum, on the server and the client");
+    CHECK(h.s->abilities()->stamina() == h.s->abilities()->max_stamina() && client_stat(h, content::kGuidStamina) == client_stat(h, content::kGuidMaxStamina), "Stamina is at its maximum, in the runtime and on the client");
+    for (int i = 0; i < 300; ++i) h.step(milliseconds(20));   // (the Dodge's pause of the recovery ends)
+    std::string why;
+    const bool agree = stats_match(h, &why);
+    if (!agree) std::printf("  [info] %s\n", why.c_str());
+    CHECK(agree && !h.s->abilities_failed(), "the session's stats agree with the client's and the abilities stay on");
+}
+
 static void test_d1_level_scroll() {
     std::printf("plan D1: the level-10 scroll, then the level-25 scroll\n");
     Harness h(record_with_scrolls());
@@ -4042,6 +4101,43 @@ static void test_d1s2_weapon_swap() {
     CHECK(h.s->weapon_swaps() == 2 && h.s->known_abilities().back() == 6064631845843960261ll && h.s->known_abilities().size() == 57, "back to the melee set: the Scepter's combo is the last again");
     CHECK(ranged_flag() == std::optional<bool>(false), "...and CombatInfo.bIsUsingRangedWeapon is false again");
 }
+
+/// The ranks the stats hold are the Book's for the weapon in hand: the join (character setup) and every swap (refresh_rank_mods) hand the line in hand to Book::held_ranks.  The
+/// Bard carries the Scepter (main hand) and the Book (ranged) with both weapon lines at level 25; the Scepter's tree grants ranks and the Book's does not, so the stats show
+/// which weapon is in hand.
+static void test_weapon_ranks_follow_the_hand() {
+    std::printf("the ranks the stats hold follow the weapon in hand\n");
+    constexpr int64_t kScepterLineType = 6064632150851584017ll, kBookLineType = 6064632150850207758ll, kBookLine = 6064631670991093890ll, kMaxLineXp = 5718160;
+    svc::Character record = bard_at(1);
+    record.experience.push_back({kScepterLineType, kMaxLineXp, 0});
+    record.experience.push_back({kBookLineType, kMaxLineXp, 0});
+    Harness h(record);
+    const tl::Book* book = h.s->talents();
+    const auto line_in_hand = [&]() -> int64_t {
+        const repl::Subobject* info = h.s->bootstrap().pawn().find(h.s->bootstrap().setup().guids.owner_info);
+        const repl::Value* v = info ? info->obj.state.get(*info->obj.schema, "WeaponSkillLineId.Guid") : nullptr;
+        return v && v->get_if<int64_t>() ? *v->get_if<int64_t>() : 0;
+    };
+    const auto same_ranks = [](const std::vector<sg::SkillRank>& a, const std::vector<sg::SkillRank>& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (!(a[i].cls == b[i].cls) || !(a[i].skill == b[i].skill)) return false;
+        }
+        return true;
+    };
+    const auto stats_hold = [&](int64_t line) { return book && h.s->character_stats() && same_ranks(h.s->character_stats()->ranks(), book->held_ranks(line)); };
+    const int64_t scepter_line = line_in_hand();
+    CHECK(book && scepter_line != 0 && scepter_line != kBookLine, "(the Scepter's weapon line is in hand)");
+    if (!book || scepter_line == 0) return;
+    CHECK(!same_ranks(book->held_ranks(scepter_line), book->held_ranks(kBookLine)) && !same_ranks(book->held_ranks(scepter_line), book->held_ranks(0)),
+          "(the Scepter's weapon tree grants ranks that neither the Book's tree nor an empty hand holds, so the stats show which weapon is in hand)");
+    CHECK(stats_hold(scepter_line), "at the join the stats hold the ranks of the weapon line in hand (the Scepter's)");
+    h.request(ranged_rpc(true), h.pawn_ch);
+    CHECK(line_in_hand() == kBookLine && stats_hold(kBookLine) && !stats_hold(scepter_line), "after the swap to the Book the stats hold the Book's ranks and no longer the Scepter's");
+    h.step(milliseconds(120));
+    h.request(ranged_rpc(false), h.pawn_ch);
+    CHECK(line_in_hand() == scepter_line && stats_hold(scepter_line), "...and after the swap back the Scepter's again");
+}
 // [C-O-A x C Y B]
 
 /// The talents: nodes that offer a choice of skills (a SkillTreeSlot) are ranks of the tree like any other (the first stage-2 draft left them out, and the
@@ -4476,6 +4572,25 @@ static void test_resource_requests() {
         h.request(storage_move(join), h.pc_ch);
         CHECK(!h.s->inventory().at(R0, 10) && h.s->inventory().at(R0, 2)->quantity == all_coal && mirror_matches(h), "a Fill joins it again, and the client agrees");
     }
+    // the client's own join: a Move onto a stack of the same item, whole or in part (exe: UInventorySlotBase::FinalizeDrop)
+    h.step(milliseconds(2100));
+    h.request(storage_move(part), h.pc_ch);
+    const svc::InventoryItem* second = h.s->inventory().at(R0, 10);
+    CHECK(second && second->quantity == 5, "(a stack of 5 again)");
+    if (second) {
+        const std::string second_guid = second->instance_guid;
+        MoveSpec some = part;
+        some.from_slot = 10;
+        some.from_count = 2;
+        some.source_guid = some.event_guid = second_guid;
+        some.to_slot = 2;
+        some.target_guid = coal;
+        h.request(storage_move(some), h.pc_ch);
+        CHECK(h.s->inventory().at(R0, 10) && h.s->inventory().at(R0, 10)->quantity == 3 && h.s->inventory().at(R0, 2)->quantity == all_coal - 3 && mirror_matches(h), "a Move of part of a stack onto the same item joins that part, and the client agrees");
+        some.from_count = 3;
+        h.request(storage_move(some), h.pc_ch);
+        CHECK(!h.s->inventory().at(R0, 10) && h.s->inventory().at(R0, 2)->quantity == all_coal && mirror_matches(h), "a Move of the rest onto the same item joins it, and the client agrees");
+    }
 }
 
 static void test_resource_repair() {
@@ -4520,6 +4635,230 @@ static void test_resource_no_room_at_login() {
 }
 
 #include "consumable_session_tests.inc"
+// ============================================================================================================================
+//  Consumables: a scroll and an elixir are used through their ability (the real content.db)
+// ============================================================================================================================
+
+namespace gc {
+inline constexpr int64_t kProcessingXpScroll = 6064634041989399767ll;   // the Processing XP commission scroll (Common: Artisan_Processing_XP_Rating +370, 300 s)
+inline constexpr int64_t kProcessingXpAbility = 6064634041996149977ll, kProcessingXpHit = 6064634041997853914ll, kProcessingXpEffect = 6064634041998836955ll;
+inline constexpr int64_t kConstitutionScroll = 6064630417664311553ll;   // the Constitution scroll (Common: Constitution +26, 10,800 s)
+inline constexpr int64_t kConstitutionAbility = 6064630560632275139ll, kConstitutionHit = 6064630560632275140ll;
+inline constexpr int64_t kHerbalismElixir = 6064632105782280214ll;      // the Herbalism elixir (Uncommon: Herbalism Quantity and Speed ratings +458, 3,600 s)
+inline constexpr int64_t kHerbalismAbility = 6064632320007733313ll, kHerbalismHit = 6064632320007733314ll, kHerbalismEffect = 6064632320007733315ll;
+inline constexpr int64_t kProcessingXpRating = 6064629302956655088ll, kHerbalismQuantityRating = 6064629302956589530ll, kConstitution = 109183598614140ll;
+inline constexpr int64_t kSelfTargeting = 6064628968549646338ll;
+inline constexpr int64_t kRoastedChicken = 6064630417660903452ll, kRoastedChickenAbility = 6064632320235340026ll;   // a meal: not served yet
+}  // namespace gc
+
+/// ServerTriggerAbility's neighbours on the AbilityComponent: RequestHitVerification_Server for a hit of `ability`, the caster's own cylinder as its one component.
+static BunchWriter hit_request_for(const bs::PlayerSetup& setup, int64_t ability, int64_t targeting, int64_t hit) {
+    const schema::ClassSchema& cls = class_named("UAoCAbilityComponent");
+    const schema::RpcSchema* rpc = cls.rpc("RequestHitVerification_Server");
+    BunchWriter out;
+    repl::HitRequest req;
+    repl::HitComponentRef c;
+    c.object = setup.guids.collision_cylinder;
+    c.server_timestamp = 1.0f;
+    req.components.push_back(c);
+    req.ability_guid = ability;
+    req.targeting_guid = targeting;
+    req.hit_guid = hit;
+    const auto params = rpc ? repl::hit_request_params(*rpc, req) : std::nullopt;
+    BunchWriter field;
+    bool failed = false;
+    if (!params || repl::write_rpc_field(cls, *rpc, *params, field, client_options(), &failed) == 0 || failed) return out;
+    repl::BlockHeader header;
+    header.is_actor = false;
+    header.has_rep_layout = false;
+    header.object = setup.guids.ability;
+    repl::write_content_block(out, header, field, /*server_form=*/false);
+    return out;
+}
+
+static const Mirror::EffectSeen* effect_of(const Harness& h, int64_t guid) {
+    for (const auto& [id, e] : h.mirror.effect_items) {
+        if (e.guid == guid) return &e;
+    }
+    return nullptr;
+}
+
+static void test_consumables_scroll_and_elixir() {
+    const char* path = professions_db_path();
+    if (!path) {
+        std::printf("Consumables: a scroll and an elixir: skipped (no real content.db)\n");
+        return;
+    }
+    std::printf("Consumables: a scroll and an elixir are used through their ability\n");
+    svc::Character rec = cyb_record();
+    std::vector<svc::InventoryItem> items;
+    for (const auto& it : rec.items)
+        if (it.container == Worn) items.push_back(it);
+    items.push_back(make_item(Bag, 4, gc::kProcessingXpScroll, 310, 5));
+    items.push_back(make_item(Bag, 5, gc::kConstitutionScroll, 311, 1));
+    svc::InventoryItem elixir = make_item(Bag, 6, gc::kHerbalismElixir, 312, 4);
+    elixir.quality = 6;   // Uncommon
+    items.push_back(elixir);
+    items.push_back(make_item(Bag, 7, gc::kRoastedChicken, 313, 1));
+    rec.items = items;
+    Harness h(rec, true, true, path);
+    const sg::CharacterStats* cs = h.s->character_stats();
+    const bs::PlayerSetup& setup = h.s->bootstrap().setup();
+    CHECK(h.mirror.unreadable == 0 && !h.s->failed(), "(joined)");
+    // the client loads an item's ability only when the join lists it: the abilities of the three consumables are in ReplicatedRecordsToLoad
+    const auto listed = [&](int64_t a) { return std::find(h.mirror.records.begin(), h.mirror.records.end(), a) != h.mirror.records.end(); };
+    CHECK(listed(gc::kProcessingXpAbility) && listed(gc::kConstitutionAbility) && listed(gc::kHerbalismAbility),
+          "the join lists the abilities of the carried scrolls and the elixir in ReplicatedRecordsToLoad (the client sends no trigger for an ability it has not loaded)");
+
+    const auto use = [&](int slot, int64_t ability, int64_t hit, uint32_t guid, int32_t id, int hit_after_steps) {
+        const svc::InventoryItem* item = h.s->inventory().at(Bag, slot);
+        if (!item) return false;
+        std::vector<fake::Bunch> sent;
+        sent.push_back(h.client.actor(h.pawn_ch, item_used(3, slot, guid_n(guid)), true));
+        sent.push_back(h.client.actor(h.pawn_ch, trigger_with_item(setup.guids.ability, ability, id, slot, items::to_instance(*item), 3), true));
+        if (hit_after_steps == 0) sent.push_back(h.client.actor(h.pawn_ch, hit_request_for(setup, ability, gc::kSelfTargeting, hit), true));
+        h.client_sends(std::move(sent));
+        for (int i = 0; i < 10; ++i) h.step();
+        if (hit_after_steps > 0) {
+            h.client_sends({h.client.actor(h.pawn_ch, hit_request_for(setup, ability, gc::kSelfTargeting, hit), true)});
+            for (int i = 0; i < 15; ++i) h.step();
+        } else {
+            for (int i = 0; i < 15; ++i) h.step();
+        }
+        return true;
+    };
+
+    // the Processing XP scroll: one off the stack of five, the 300 s buff, +370 on the rating
+    const float xp_before = cs->find(gc::kProcessingXpRating)->value;
+    const size_t chains = h.got.size();
+    CHECK(use(4, gc::kProcessingXpAbility, gc::kProcessingXpHit, 310, 21, 0) && h.mirror.unreadable == 0 && !h.s->failed(), "the Processing XP scroll is used (ServerItemUsed, the trigger and the hit request in one datagram)");
+    CHECK(h.s->inventory().at(Bag, 4) && h.s->inventory().at(Bag, 4)->quantity == 4 && h.s->uses_applied() == 1 && h.s->uses_refused() == 0, "one scroll of the stack of five is taken, no refusal");
+    const size_t storage_calls = count_calls(pc_calls_since(h, chains), "ClientReceiveStorageEvent");
+    CHECK(storage_calls == 1, "the client is told with one storage event");
+    CHECK(!h.mirror.events.empty() && h.mirror.events.back().type == static_cast<uint8_t>(repl::StorageEventType::Remove), "... a Remove");
+    CHECK(mirror_matches(h), "... and the client's bag agrees with the session's");
+    if (storage_calls != 1) std::printf("    %zu storage event call(s) since the use\n", storage_calls);
+    const Mirror::EffectSeen* e1 = effect_of(h, gc::kProcessingXpEffect);
+    CHECK(e1 && e1->duration == 300.0f, "the buff is on the pawn for 300 s");
+    CHECK(cs->find(gc::kProcessingXpRating)->value == xp_before + 370.0f, "Artisan_Processing_XP_Rating rose by the scroll's own 370 (the item's stat block at its quality)");
+    CHECK(stats_match(h), "the client's stat arrays are the session's");
+
+    // the Constitution scroll replaces it (one scroll buff at a time) and raises Constitution by 26 for 10,800 s
+    const float con_before = cs->find(gc::kConstitution)->value;
+    CHECK(use(5, gc::kConstitutionAbility, gc::kConstitutionHit, 311, 22, 0), "the Constitution scroll is used");
+    CHECK(h.s->inventory().at(Bag, 5) == nullptr && mirror_matches(h), "the scroll is gone from its slot");
+    CHECK(effect_of(h, gc::kProcessingXpEffect) == nullptr, "the first scroll's buff is gone: one scroll at a time");
+    CHECK(cs->find(gc::kProcessingXpRating)->value == xp_before && cs->find(gc::kConstitution)->value == con_before + 26.0f, "the XP rating is back, Constitution rose by the scroll's 26");
+    bool long_buff = false;
+    for (const auto& [id, e] : h.mirror.effect_items) long_buff = long_buff || e.duration == 10800.0f;
+    CHECK(long_buff, "the Constitution scroll's buff lasts 10,800 s");
+
+    // the Herbalism elixir (Uncommon): its request comes 150 ms after the use; its buff lasts an hour and does not replace the scroll's
+    const float herb_before = cs->find(gc::kHerbalismQuantityRating)->value;
+    CHECK(use(6, gc::kHerbalismAbility, gc::kHerbalismHit, 312, 23, 7), "the Herbalism elixir is used");
+    const Mirror::EffectSeen* e3 = effect_of(h, gc::kHerbalismEffect);
+    CHECK(e3 && e3->duration == 3600.0f && long_buff, "the elixir's buff lasts 3,600 s and the scroll's is still on");
+    CHECK(cs->find(gc::kHerbalismQuantityRating)->value == herb_before + 458.0f, "the Herbalism Quantity rating rose by the Uncommon 458");
+    CHECK(h.s->inventory().at(Bag, 6) && h.s->inventory().at(Bag, 6)->quantity == 3 && mirror_matches(h) && stats_match(h), "three elixirs are left and the client agrees");
+
+    // a trigger that names a slot holding something else is refused and takes nothing
+    const uint64_t used = h.s->uses_applied();
+    const svc::InventoryItem* other = h.s->inventory().at(Bag, 6);
+    h.client_sends({h.client.actor(h.pawn_ch, trigger_with_item(setup.guids.ability, gc::kProcessingXpAbility, 24, 6, items::to_instance(*other), 3), true)});
+    for (int i = 0; i < 15; ++i) h.step();
+    CHECK(h.s->uses_applied() == used && h.s->inventory().at(Bag, 6)->quantity == 3 && h.s->ability_ends_sent() >= 1, "the ability of another item in that slot is refused (ClientEndAbility) and nothing is taken");
+
+    // two uses of one scroll within 65 ms: the second finds the cooldown running at its cost step, is refused and takes nothing
+    for (int i = 0; i < 60; ++i) h.step();   // the first scroll's cooldown has ended
+    const svc::InventoryItem* xp = h.s->inventory().at(Bag, 4);
+    const int32_t xp_left = xp ? xp->quantity : 0;
+    const repl::ItemInstance xp_item = xp ? items::to_instance(*xp) : repl::ItemInstance{};
+    const uint64_t used_before_pair = h.s->uses_applied();
+    h.client_sends({h.client.actor(h.pawn_ch, item_used(3, 4, guid_n(310)), true),
+                    h.client.actor(h.pawn_ch, trigger_with_item(setup.guids.ability, gc::kProcessingXpAbility, 30, 4, xp_item, 3), true),
+                    h.client.actor(h.pawn_ch, item_used(3, 4, guid_n(310)), true),
+                    h.client.actor(h.pawn_ch, trigger_with_item(setup.guids.ability, gc::kProcessingXpAbility, 31, 4, xp_item, 3), true)});
+    for (int i = 0; i < 25; ++i) h.step();
+    CHECK(xp_left == 4 && h.s->uses_applied() == used_before_pair + 1 && h.s->inventory().at(Bag, 4) && h.s->inventory().at(Bag, 4)->quantity == xp_left - 1 && mirror_matches(h),
+          "two presses of one scroll within 65 ms: one is taken, the second is refused at its cost step and takes nothing");
+}
+
+/// A use is paid at its cost step, 65 ms after the trigger: the stack must still be in the bag then, and a death before it lets the scroll go.
+static void test_consumables_item_gone_and_death() {
+    const char* path = professions_db_path();
+    if (!path) {
+        std::printf("Consumables: the stack gone before the cost step, a death before it: skipped (no real content.db)\n");
+        return;
+    }
+    std::printf("Consumables: the stack leaves the bag between the trigger and the cost step; the character dies in that window\n");
+    svc::Character rec = cyb_record();
+    std::vector<svc::InventoryItem> carried;
+    for (const auto& it : rec.items)
+        if (it.container == Worn) carried.push_back(it);
+    carried.push_back(make_item(Bag, 4, gc::kConstitutionScroll, 330, 1));   // a stack of one: the destroy takes it whole
+    carried.push_back(make_item(Bag, 5, gc::kConstitutionScroll, 331, 2));
+    carried.push_back(make_item(Bag, 6, gc::kProcessingXpScroll, 332, 1));
+    rec.items = carried;
+    Harness h(rec, true, true, path);
+    const sg::CharacterStats* cs = h.s->character_stats();
+    const bs::PlayerSetup& setup = h.s->bootstrap().setup();
+    const auto* pipe = h.s->pipeline();
+    CHECK(h.mirror.unreadable == 0 && !h.s->failed() && pipe, "(joined)");
+    if (!pipe) return;
+
+    // the use of the scroll in slot 4 comes with a destroy of that stack in the same datagram: a sale to a shop or a hand-in within the 65 ms between the trigger and the
+    // cost step takes the same way, and the stack is gone when the cost step runs
+    MoveSpec destroy;
+    destroy.type = static_cast<uint8_t>(repl::StorageEventType::Remove);
+    destroy.to_object = setup.guids.backpack;
+    destroy.to_slot = 4;
+    destroy.to_count = 1;
+    destroy.has_source = false;
+    destroy.source_guid = destroy.event_guid = destroy.target_guid = guid_n(330);
+    const float con_before = cs->find(gc::kConstitution)->value;
+    const size_t effects_before = pipe->effect_count(), ends_before = h.s->ability_ends_sent(), chains = h.got.size();
+    const uint64_t used_before = h.s->uses_applied();
+    const svc::InventoryItem* first = h.s->inventory().at(Bag, 4);
+    const repl::ItemInstance first_item = first ? items::to_instance(*first) : repl::ItemInstance{};
+    h.client_sends({h.client.actor(h.pawn_ch, item_used(3, 4, guid_n(330)), true),
+                    h.client.actor(h.pawn_ch, trigger_with_item(setup.guids.ability, gc::kConstitutionAbility, 41, 4, first_item, 3), true),
+                    h.client.actor(h.pawn_ch, hit_request_for(setup, gc::kConstitutionAbility, gc::kSelfTargeting, gc::kConstitutionHit), true),
+                    h.client.actor(h.pc_ch, storage_move(destroy), true)});
+    CHECK(h.s->inventory().at(Bag, 4) == nullptr, "the trigger was accepted (the scroll is reserved) and the stack is destroyed in the same datagram");
+    for (int i = 0; i < 25; ++i) h.step();
+    CHECK(h.s->uses_applied() == used_before && h.s->items_destroyed() == 1, "the cast took nothing: its item was gone at the cost step");
+    CHECK(cs->find(gc::kConstitution)->value == con_before && pipe->effect_count() == effects_before, "no buff: Constitution did not rise and no effect is on the pawn (the hit the client asked for went with the cast)");
+    CHECK(pipe->charges_left(gc::kConstitutionAbility) == -1, "no cooldown: the cast that could not be paid started none");
+    CHECK(h.s->ability_ends_sent() == ends_before + 1, "the cast was ended (ClientEndAbility) and nothing stays reserved");
+    CHECK(count_calls(pc_calls_since(h, chains), "ClientReceiveStorageEvent") == 1 && mirror_matches(h), "the client was told once, by the destroy, and its bag agrees");
+    CHECK(h.mirror.unreadable == 0 && !h.s->failed(), "(nothing unreadable)");
+
+    // the next use of the same scroll, at once (500 ms on, inside the 1 s a cooldown would hold), is paid and gives its buff as always
+    const svc::InventoryItem* second = h.s->inventory().at(Bag, 5);
+    const repl::ItemInstance second_item = second ? items::to_instance(*second) : repl::ItemInstance{};
+    h.client_sends({h.client.actor(h.pawn_ch, item_used(3, 5, guid_n(331)), true),
+                    h.client.actor(h.pawn_ch, trigger_with_item(setup.guids.ability, gc::kConstitutionAbility, 42, 5, second_item, 3), true),
+                    h.client.actor(h.pawn_ch, hit_request_for(setup, gc::kConstitutionAbility, gc::kSelfTargeting, gc::kConstitutionHit), true)});
+    for (int i = 0; i < 25; ++i) h.step();
+    CHECK(h.s->uses_applied() == used_before + 1 && h.s->inventory().at(Bag, 5) && h.s->inventory().at(Bag, 5)->quantity == 1 && mirror_matches(h),
+          "the next use is paid: one scroll of the stack of two is taken and the client agrees");
+    CHECK(cs->find(gc::kConstitution)->value == con_before + 26.0f, "... and its buff is on (Constitution rose by the scroll's 26)");
+
+    // the character dies after the trigger and before the cost step: the scroll stays in the bag, the reservation is let go, and the hit the client asked for gives nothing
+    for (int i = 0; i < 60; ++i) h.step();   // (the cooldown has ended)
+    const float xp_before = cs->find(gc::kProcessingXpRating)->value;
+    const uint64_t used_before_death = h.s->uses_applied();
+    const svc::InventoryItem* last = h.s->inventory().at(Bag, 6);
+    const repl::ItemInstance last_item = last ? items::to_instance(*last) : repl::ItemInstance{};
+    h.client_sends({h.client.actor(h.pawn_ch, item_used(3, 6, guid_n(332)), true),
+                    h.client.actor(h.pawn_ch, trigger_with_item(setup.guids.ability, gc::kProcessingXpAbility, 43, 6, last_item, 3), true),
+                    h.client.actor(h.pawn_ch, hit_request_for(setup, gc::kProcessingXpAbility, gc::kSelfTargeting, gc::kProcessingXpHit), true)});
+    h.s->take_damage(h.conn, 1.0e9, h.t);
+    for (int i = 0; i < 25; ++i) h.step();
+    CHECK(h.s->dead() && h.s->deaths() == 1, "the character died before the cost step");
+    CHECK(h.s->inventory().at(Bag, 6) && h.s->inventory().at(Bag, 6)->quantity == 1 && h.s->uses_applied() == used_before_death, "the scroll is still in its slot and nothing was taken");
+    CHECK(cs->find(gc::kProcessingXpRating)->value == xp_before && pipe->stacks_of(gc::kProcessingXpEffect) == 0, "the hit the client asked for before the death gave no buff");
+}
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // (a crash must not take the last results with it)
@@ -4551,6 +4890,8 @@ int main() {
     test_stats_at_the_join();
     test_stats_follow_the_chest();
     test_health_and_mana_clamp();
+    test_level_up_refills();
+    test_reward_box();
     test_nothing_changes_nothing_sent();
     test_stats_wait_for_the_window();
     test_stats_through_the_runtime();
@@ -4582,12 +4923,15 @@ int main() {
     test_d1s2_relog();
     test_d1s2_talent_slots();
     test_d1s2_weapon_swap();
+    test_weapon_ranks_follow_the_hand();
     test_d1s2_shapes();
     test_d1s2_stored_garbage();
     test_d1s2_regeneration();
     test_g2_join();
     test_g2_scrolls();
     test_g2_saver_round_trip();
+    test_consumables_scroll_and_elixir();
+    test_consumables_item_gone_and_death();
     test_resource_join();
     test_resource_requests();
     test_resource_repair();

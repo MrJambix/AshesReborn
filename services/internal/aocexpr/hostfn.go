@@ -52,6 +52,8 @@ const (
 	HostLootAvgLuck  = 31  // GetPlayerLootAvgLuck(): their average luck (0 when the game has no luck stat)
 	HostPlayerLevel  = 161 // GetPlayerLevel(): the level of the player the reward or the experience is for
 	// Quests, slice 2: the formulas of a quest's rewards (the experience and the Glint of a quest) read the level of the quest they are rolled for.
+	// A term a hit keeps beyond its own scope (bKeepBeyondScope): name: the term's guid: what that hit worked it out to, for the hits it fires and the effects it leaves.
+	HostKeptTerm       = 163
 	HostNarrativeLevel = 162 // GetNarrativeContentLevel(): the Level of the quest whose reward is evaluated (0 for a reward that belongs to no quest)
 	HostNpcTag         = 160 // DoesNPCContainTag(tag): 1 when the NPC (the owner) carries the gameplay tag (name: the tag); past the role reads (HostRoleBase + 7*16 + 16 = 160)
 

@@ -4,6 +4,8 @@
 
 #include "quest/quest_log.h"
 
+#include "quest/destiny_table.h"
+
 #include <algorithm>
 #include <bit>
 #include <cstring>
@@ -464,6 +466,7 @@ size_t QuestLog::load(const svc::SavedQuestLog& saved, const content::QuestData&
             }
             q.objectives.push_back(st);
         }
+        q.awaiting_claim = q.status == Status::Completed && pays_on_claim(def->second);
         instances_.push_back(std::move(q));
     }
     for (const svc::SavedCompleted& c : saved.completed) {
@@ -473,7 +476,48 @@ size_t QuestLog::load(const svc::SavedQuestLog& saved, const content::QuestData&
         if (!v.name.empty() && v.value != 0) variables_[v.name] = v.value;
     }
     changed_ = dropped != 0;
+    // Once per character: the tracks' roots and the quests they run were sent without their links, and the client's auto-track saved them (the blank rows).  The client drops a saved id that names no
+    // instance, and saves that (0x146678ae0, on every quest update), so new guids clear those rows from its own save.  Only once: the player may track these quests on purpose afterwards.
+    if (variable(kDestinyLinksVariable) == 0) {
+        bool any = false;
+        for (const destiny::Track& t : destiny::kTracks) {
+            if (QuestInstance* running = find(t.quest)) {
+                running->guid = new_guid();
+                any = true;
+            }
+            const auto root = book.quests.find(t.quest);
+            if (root == book.quests.end()) continue;
+            for (const content::QuestObjectiveRow& o : root->second.objectives) {
+                for (const destiny::SubQuestLink& l : destiny::kSubQuests) {
+                    if (l.objective != o.guid) continue;
+                    if (QuestInstance* inner = find(l.quest)) {
+                        inner->guid = new_guid();
+                        any = true;
+                    }
+                }
+            }
+        }
+        if (any) {
+            set_variable(kDestinyLinksVariable, 1);
+            changed_ = true;
+        }
+    }
     return dropped;
+}
+
+std::vector<int64_t> quest_reward_tables(const content::QuestRow& def, const QuestInstance& q) {
+    std::vector<int64_t> tables = def.rewards;
+    for (size_t i = 0; i < q.objectives.size() && i < def.objectives.size(); ++i) {
+        if (!q.objectives[i].completed) continue;
+        tables.insert(tables.end(), def.objectives[i].rewards.begin(), def.objectives[i].rewards.end());
+    }
+    return tables;
+}
+
+bool pays_on_claim(const content::QuestRow& def) {
+    if (def.flavor != "Destiny") return false;
+    if (!def.rewards.empty()) return true;
+    return std::any_of(def.objectives.begin(), def.objectives.end(), [](const content::QuestObjectiveRow& o) { return !o.rewards.empty(); });
 }
 
 std::vector<std::pair<uint64_t, int32_t>> instance_variables(const QuestInstance& q) {
@@ -481,7 +525,7 @@ std::vector<std::pair<uint64_t, int32_t>> instance_variables(const QuestInstance
     const auto put = [&](const std::string& name, bool on) { out.emplace_back(city_hash64(name), on ? 1 : 0); };
     // the order the game lists them in (a quest with one objective, captured: Completed, Active, Failed, Paused; then the objective's Completed, Active, Failed, Succeeded, Hidden, Count, Awake)
     put(quest_variable_name(q.record, "Completed"), q.status == Status::Completed);
-    put(quest_variable_name(q.record, "Active"), q.status == Status::Active);
+    put(quest_variable_name(q.record, "Active"), q.status == Status::Active || q.awaiting_claim);
     put(quest_variable_name(q.record, "Failed"), q.status == Status::Failed);
     put(quest_variable_name(q.record, "Paused"), q.status == Status::Paused);
     for (const ObjectiveState& o : q.objectives) {

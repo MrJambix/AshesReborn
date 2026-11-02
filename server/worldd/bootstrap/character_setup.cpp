@@ -674,15 +674,25 @@ std::vector<int64_t> carried_combos(const content::ContentDb& content, const ite
     return out;
 }
 
-std::vector<int64_t> carried_item_abilities(const content::MountData* mounts, const items::Inventory& inventory) {
+std::vector<int64_t> carried_item_abilities(const content::MountData* mounts, const items::Inventory& inventory, const std::function<int64_t(int64_t)>& cast_of) {
     std::vector<int64_t> out;
-    if (!mounts) return out;
+    const auto add = [&out](int64_t ability) {
+        if (ability != 0 && std::find(out.begin(), out.end(), ability) == out.end()) out.push_back(ability);
+    };
     for (const int64_t record : inventory.records()) {
-        const content::MountRow* row = mounts->find(record);
-        if (!row || row->cast_ability == 0) continue;
-        if (std::find(out.begin(), out.end(), row->cast_ability) == out.end()) out.push_back(row->cast_ability);
+        const content::MountRow* row = mounts ? mounts->find(record) : nullptr;
+        if (row) add(row->cast_ability);
+        else if (cast_of) add(cast_of(record));
     }
     return out;
+}
+
+int64_t item_cast_ability(const content::ContentDb& content, int64_t item_record) {
+    std::string error;
+    const auto activation = content.item_use(item_record, error);
+    if (!error.empty() || !activation || activation->activation != "CastAbility") return 0;
+    const auto cast = content.item_cast(item_record, error);
+    return error.empty() && cast ? *cast : 0;
 }
 
 namespace {
@@ -1001,7 +1011,7 @@ CharacterSetupResult build_player_setup(const svc::Character& ch, const content:
             s.weapon_skill_line.name = primary->line_name;
             out.wielded_line = primary->line;
         }
-        const std::vector<int64_t> item_abilities = carried_item_abilities(stat_context.mounts, *inventory);
+        const std::vector<int64_t> item_abilities = carried_item_abilities(stat_context.mounts, *inventory, [&content](int64_t record) { return item_cast_ability(content, record); });
         const talents::AbilityLists lists = talents::join_abilities(book, general_unstuck(), primary ? primary->combo : 0, carried_combos(content, *inventory),
                                                                     static_known_tail(), item_abilities);
         s.known_abilities = lists.known;
@@ -1052,7 +1062,7 @@ CharacterSetupResult build_player_setup(const svc::Character& ch, const content:
         out.book = std::move(book);
     } else {
         // no talents catalog (a test's context): the captured Bard's records, and the abilities of the items carried before their static tail
-        add_item_records(s.records_to_load, carried_item_abilities(stat_context.mounts, *inventory));
+        add_item_records(s.records_to_load, carried_item_abilities(stat_context.mounts, *inventory, [&content](int64_t record) { return item_cast_ability(content, record); }));
     }
 
     // the stats (plan B3): the class at its level wearing what it wears, by the stat program; the captured Bard's ids, keys and order lay them out
@@ -1062,7 +1072,7 @@ CharacterSetupResult build_player_setup(const svc::Character& ch, const content:
         // (plan D2: through the effect state, the one path for every stat mod; the ranks held are what GetSkillPurchased reads)
         if (out.book) {
             character_stats.set_passives(out.book->passives(out.wielded_line));
-            character_stats.set_ranks(out.book->held_ranks());
+            character_stats.set_ranks(out.book->held_ranks(out.wielded_line));
         } else {
             character_stats.set_passives(rank_effects_of(granted));
         }

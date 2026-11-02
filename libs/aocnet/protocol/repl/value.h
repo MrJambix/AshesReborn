@@ -29,6 +29,7 @@
 
 #include "protocol/emit/intrepid_netguid.h"
 
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -662,6 +663,37 @@ struct CraftExperience {
 
 /// FCraftingResourceTagCostSelection (an entry of ServerStartCraft's TagResources): the stacks the player chose for ONE recipe input that is named by gameplay tags, by record and rarity
 /// as the general resources are, and the names of the tags that input asks for.  NetSerialize; craft_codec.h has the layout.
+/// FGuildData: its own NetSerialize (0x145a63700), an archive's bytes in this order: the general info (0x145a6ac30), the members (0x145a66a70), and a map of
+/// wars (0x145a66600), which is empty, as the skill points, the purchased ranks, the war charges and the unlocked groups are: each an int32 count of 0.
+/// A bool in here is a whole uint32 of 0 or 1 (a UBOOL), not one bit.
+struct GuildDataWire {
+    static constexpr size_t kPermissions = 35;
+    struct Rank {
+        std::string name;
+        std::array<bool, kPermissions> permissions{};
+        bool operator==(const Rank&) const = default;
+    };
+    struct Member {
+        std::string name;
+        std::array<uint32_t, 4> guid{};
+        uint8_t rank = 0, level = 0, character_class = 0;
+        uint64_t last_online = 0, joined = 0;
+        int8_t group = 0;
+        std::array<uint32_t, 4> guild{};
+        bool online = false;
+        bool operator==(const Member&) const = default;
+    };
+    std::string name;
+    std::array<uint32_t, 4> guid{};
+    std::vector<Rank> ranks;
+    uint8_t level = 0;
+    uint32_t experience = 0;
+    uint16_t capacity = 0;
+    uint8_t level_cap = 0;
+    std::vector<Member> members;
+    bool operator==(const GuildDataWire&) const = default;
+};
+
 struct CraftTagSelection {
     std::vector<CraftResource> resources;
     std::vector<std::string>   tags;
@@ -751,7 +783,7 @@ public:
         GameplayTag, GameplayTagContainer, StatInt32Inst,
         Quat, GuidToBoolWrapper, AlignmentContainer, AppearanceId, CharacterCustomization, ItemInstance, InlineObject,
         EventBox, HitConfirmations, PlayerMovementInput, VendorPurchaseCart, VendorTransactionCart, NodeTaxDetails, LocalizedMessage, ChannelingData, CraftItemState,
-        RewardInstance, HashedVariable, WarehouseSummaryEntry, CraftTagSelection>;
+        RewardInstance, HashedVariable, WarehouseSummaryEntry, CraftTagSelection, GuildDataWire>;
 
     Value() = default;
 // built by C | Y | B with C | O | A

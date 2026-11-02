@@ -20,7 +20,7 @@ NATS is not installed: the docs mention it, but no code uses it.
 | Port | Program | Reachable from |
 |---|---|---|
 | TCP 8443 | gateway, TLS | everyone, or the owner after `close` |
-| TCP 8444 | auth, sign-in over TLS, rate limited | everyone, or the owner after `close` |
+| TCP 8444 | auth, sign-in over TLS, rate limited; the launcher's public status and changelog, cached and not limited; the GM web tools at `/gm/` (`GM-COMMANDS.md`) | everyone, or the owner after `close` |
 | UDP 7777 | worldd | everyone, or the owner after `close` |
 | TCP 8081 | auth, plain HTTP, not rate limited, for the health check | loopback |
 | TCP 5432, 50051-50058 | PostgreSQL, internal services, admin API | loopback |
@@ -51,6 +51,8 @@ GM tools are in `dist\services` (`worldctl`, `nodectl`, `questctl`); give them `
 On the build PC: pull, run `build_all.bat`, then `deploy\vps\package.ps1 -PublicIp <ip>`, copy the package over with scp, and run `sandalctl update <package.tar>`.
 
 ### Discord notifications
+
+The launcher reads `GET /api/v1/status` (world name, connected players, time since `run\worldd.started`, which the supervisor writes each time it starts `worldd`) and `GET /api/v1/changelog` on 8444, without a login. The changelog is `PATCH_NOTES.md` as packaged into `dist\services`, read when `auth` starts, so new notes reach players with the next package. `package.ps1` copies it: keep its unreleased sections out of a package.
 
 The operator webhook is stored separately in `C:\SandalCore\secrets\discord-webhook.secret`. Keep that directory restricted to SYSTEM, Administrators and LOCAL SERVICE, as configured by `install.ps1`. The webhook is never included in source or release packages. Updates preserve this file.
 

@@ -23,6 +23,7 @@
 #include "combat/combat_world.h"
 #include "combat/hit_resolver.h"
 #include "content/content_db.h"
+#include "items/inventory.h"
 #include "protocol/repl/replicator.h"
 #include "protocol/schema/generated/index.h"
 #include "npc/area_npcs.h"
@@ -322,6 +323,16 @@ static void test_population(const content::ContentDb& db, const spawns::Captured
     }
     spawns::GenericNpcs generic(captured, &table, spawns::GenericConfig{});
     CHECK(!generic.donor().empty(), "a plain creature's open the captures hold is the donor of the generic NPCs (the Wolf's)");
+    {   // a quest object made as a prop has a key of its own: the same Blueprint asked for as a pawn does not get the prop's open
+        content::NpcAssetRow quest_object;
+        quest_object.guid = 9000001;
+        quest_object.archetype_path = "/Game/DesignAssets/Interactables/Quest/CSQ_INT_PropKeyCheck.CSQ_INT_PropKeyCheck_C";
+        spawns::Verdict v_prop = spawns::Verdict::Generic, v_pawn = spawns::Verdict::Generic;
+        const spawns::OpenTemplate* as_prop = generic.prop_template(quest_object, &v_prop);
+        const spawns::OpenTemplate* as_pawn = generic.template_for(quest_object, &v_pawn);
+        CHECK(as_prop && as_prop->category == "prop", "a quest object's Blueprint is made as a prop from a recorded quest object");
+        CHECK(as_prop && (!as_pawn || as_pawn != as_prop), "the same Blueprint asked for as a pawn does not get the prop's open (the prop is kept under its own key)");
+    }
     spawns::PopulationStats gs;
     const auto all = spawns::select_data_spawns(*data, spawns::TemplateSource{&captured, &generic}, area, gs);
     CHECK(gs.points_in_area + gs.area_points == gs.spawned + gs.blacklisted + gs.no_asset + gs.no_template, "with the generic NPCs every point is still counted once");
@@ -664,8 +675,17 @@ static void test_gm_vendors(const content::ContentDb& db) {
     plan = gm->plan_purchase(db, materials, mats, 70);
     CHECK(plan.ok && plan.stacks.size() == 3 && plan.stacks[0].quantity == max_stack && plan.stacks[1].quantity == max_stack && plan.stacks[2].quantity == 1,
           "a quantity of two stacks and one is three stacks: MaxStackSize, MaxStackSize, 1");
+    // the stacks of materials go to the material bags, which the item bag's free slots do not count (the grant checks the room those bags have); the stacks of items are counted
+    std::string material_error;
+    const auto material_rec = db.item(stackable, material_error);
+    CHECK(material_rec && material_rec->resource, "the item that stacks in the materials def is a material");
     plan = gm->plan_purchase(db, materials, mats, 2);
-    CHECK(!plan.ok && plan.stacks.empty() && plan.refusal.find("free slot") != std::string::npos, "a bag with two free slots refuses it whole");
+    CHECK(plan.ok && plan.stacks.size() == 3, "three stacks of materials are planned although the item bag has two free slots");
+    const auto gear_rec = db.item(gear_item, material_error);
+    repl::VendorPurchaseCart three = cart;
+    three.items[0].quantity = (gear_rec && gear_rec->max_stack_size > 1 ? gear_rec->max_stack_size : 1) * 2 + 1;
+    plan = gm->plan_purchase(db, gear, three, 2);
+    CHECK(!plan.ok && plan.stacks.empty() && plan.refusal.find("free slot") != std::string::npos, "three stacks of items do not fit two free slots: the cart is refused whole");
     // refusals
     repl::VendorPurchaseCart wrong = cart;
     wrong.vendor = materials.guid;
@@ -687,7 +707,8 @@ static void test_gm_vendors(const content::ContentDb& db) {
     repl::VendorPurchaseCart huge = mats;
     huge.items[0].quantity = vendor::kMaxQuantity;
     const auto big = gm->plan_purchase(db, materials, huge, 70);
-    CHECK(big.ok == (static_cast<int64_t>(vendor::kMaxQuantity + max_stack - 1) / max_stack <= 70), "the largest quantity costs stacks, never a loop over the quantity");
+    const int64_t material_cells = static_cast<int64_t>(items::kResourceContainers) * items::kMaxResourceCells;   // the most stacks of materials the material bags can hold
+    CHECK(big.ok == (static_cast<int64_t>(vendor::kMaxQuantity + max_stack - 1) / max_stack <= material_cells), "the largest quantity costs stacks, never a loop over the quantity");
     repl::VendorPurchaseCart zero = cart;
     CHECK(!gm->plan_purchase(db, gear, zero, 0).ok, "no free slot at all refuses even one item");
     // hidden listings are not sold

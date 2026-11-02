@@ -273,6 +273,7 @@ struct ItemUse {
     bool                 consume_on_use = false;
     double               cooldown = 0;
     bool                 disabled_in_combat = false;
+    int64_t              cast_ability = 0;  // the ability a CastAbility item casts when used (contentc version 38; 0: none)
     std::vector<int64_t> actions;           // ActionResponse guids, in the record's order
 };
 
@@ -937,6 +938,7 @@ struct CraftRecipe {
     int         fuel = 0;
     bool        blacklisted = false;
     std::string category_tag;    // CategoryTag: for a piece of gear its slot ("Slot.Head"), else the kind of thing ("Item.Caravan.Component")
+    bool        has_duration_formula = false, has_quantity_formula = false, has_quality_formula = false;   // crafting quality: the recipe has such a formula (the text is in the data); a processing recipe's three read the crafter's artisan ratings, a crafting recipe's quality formula does
     std::vector<CraftInput> inputs;   // the general resources in order, then the reagents
     std::vector<CraftPred>  preds;
 };
@@ -977,10 +979,27 @@ inline constexpr int64_t kCurveBaseKillXp = 6064630639394422811ll;
 inline constexpr int64_t kCurveTierModNovice = 6064633469604267308ll, kCurveTierModApprentice = 6064633469606364461ll, kCurveTierModJourneyman = 6064633469607937326ll;
 /// The TypeId of a CharacterProfessions record, as the experience rows of a finished job name it.
 inline constexpr int64_t kTypeCharacterProfession = 5612931243805009072ll;
+/// Crafting quality: the rating stats of a crafting or processing profession (Artisan_Crafting_<Profession>_Quality_Rating ...), found by name in stat_def; 0 where the profession has none.
+struct ArtisanProfession {
+    bool    processing = false;   // a processing profession (time, quantity, rarity, experience), else a crafting one (quality, experience)
+    int64_t quality = 0, xp = 0, time = 0, quantity = 0, rarity = 0;
+};
+/// What the recipes' artisan formulas read: the curves of their equations (stat_curve, by name) and the rating stats whose two values (the general one and the profession's own) a formula adds up.
+struct ArtisanData {
+    using Curve = std::vector<std::pair<double, double>>;
+    Curve                                crafting_quality, crafting_xp, processing_time, processing_xp;
+    Curve                                rarity_step[5];       // the chance of one rarity up, by the rarity the unit has: Common to Epic (a Legendary or Artifact unit never steps up)
+    Curve                                quantity_chance[6];   // the chance of an extra unit, by rarity: Common to Legendary (an Artifact unit never)
+    ArtisanProfession                    general_crafting, general_processing;   // the ratings every crafting / processing recipe adds to its profession's own
+    std::map<int64_t, ArtisanProfession> by_profession;        // the CharacterProfessions guid -> its own rating stats
+    size_t                               crafting_professions = 0, processing_professions = 0;
+    bool ok() const { return !crafting_quality.empty() && !crafting_xp.empty() && !processing_time.empty() && !processing_xp.empty() && !by_profession.empty(); }
+};
 struct CraftRecipeData {
     std::unordered_map<int64_t, CraftRecipe>           recipes;
     std::unordered_map<int64_t, CraftReward>           rewards;       // by reward table guid (CraftRecipe::reward)
     CraftXpCurves                                      xp_curves;
+    ArtisanData                                        artisan;       // crafting quality: the curves and the rating stats of the artisan formulas
     std::map<int64_t, CraftCost>                       costs;
     std::map<int64_t, std::vector<int64_t>>            set_lists;     // recipe set -> its lists, in order
     std::map<int64_t, std::vector<int64_t>>            list_recipes;  // list -> its recipes, in order
@@ -1197,6 +1216,12 @@ struct ObjectData {
     std::map<int64_t, int64_t>         instance_iad;    // population instance -> its IAD
     std::map<int64_t, bool>            quest_items;     // item record -> Major (it belongs in the Quest bag)
     std::map<int64_t, int64_t>         item_boxes;      // item record -> the reward table its choose-one window lists
+    /// (contentc version 39) what a use gives through its action responses, by the ICD or IAD that names them; empty from an older file
+    struct Reward {
+        int64_t              table = 0;
+        std::vector<int64_t> items;   // the items that table can give
+    };
+    std::map<int64_t, std::vector<Reward>> rewards;
 };
 
 // ---- vendors, step 0 (contentc version 18): which NPC opens which shop and what its listings cost (npc_vendor_link, vendor_def_data, vendor_price, vendor_availability) ----------
@@ -1489,6 +1514,8 @@ public:
     /// Plan B2: the item with the record Guid. nullopt with `error` empty when there is no such item (an instance of a record the
     /// file does not know); nullopt with `error` set when the query failed or the row holds an EEquipSlot that does not fit a byte.
     std::optional<ItemRecord> item(int64_t guid, std::string& error) const;
+    /// The item belongs in the Quest bag (quest_item) and nothing is done with it there: an item that is worn or used stays in the Backpack, where wearing and using look for it.
+    bool goes_to_quest_bag(int64_t guid) const;
     /// The item records with this name (exact, case does not count), at most 8: how a GM tool finds an item it was given by name.  `error` is set when the query fails.
     std::vector<int64_t> items_named(const std::string& name, std::string& error) const;
 
@@ -1519,6 +1546,11 @@ public:
     /// The ability configured by an item's CastAbility activation (contentc 38).
     /// No row means this item grants no cast; the client never chooses this mapping.
     std::optional<int64_t> item_cast(int64_t item_guid, std::string& error) const;
+    /// Whether the item carries the gameplay tag `tag` or a child of it ("Item.Consumable.Scroll" matches itself and "Item.Consumable.Scroll.Anything").
+    bool item_has_tag(int64_t item_guid, const std::string& tag, std::string& error) const;
+    /// The ability a consumable item casts when it is used, for the kinds the server runs (scrolls and elixirs); 0 for any other item, a meal, a potion or a mount among them.
+    /// Using such an item is the ability's work: the item is taken from the bag when the ability's cost is paid.
+    int64_t consumable_ability(int64_t item_guid, std::string& error) const;
     /// Plan D1: an ActionResponse; nullopt with `error` empty when there is none.
     std::optional<ActionResponse> action_response(int64_t guid, std::string& error) const;
     /// Plan D1: a RewardTable; nullopt with `error` empty when there is none. A row of another storage class than its column's is an error.

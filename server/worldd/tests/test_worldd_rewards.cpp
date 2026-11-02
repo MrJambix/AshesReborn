@@ -513,6 +513,95 @@ void test_quest_start_tables(Fixture& f) {
     CHECKF(extracts == 1, "the extract's table gives exactly one Heartwood Extract (%lld)", static_cast<long long>(extracts));
 }
 
+/// The roll itself cuts a quantity that is too big: a table made here has one item whose quantity formula is ab_expr 2130, a constant of the data (15,000,000), and one experience
+/// line with the same formula.  The item is cut at the most one line gives; the experience (below its own cap) is the 15,000,000.
+void test_roll_cuts_a_huge_quantity(Fixture& f) {
+    std::printf("a roll cuts a quantity that is too big\n");
+    constexpr int64_t kTable = 7000000001ll, kBread = 6064634776923734016ll;
+    int64_t kHugeConstant = 0;   // (rows are numbered as the data is built: it is found by what it says)
+    for (int64_t id = 1; id < 40000 && kHugeConstant == 0; ++id) {
+        const content::ExprRow* row = f.catalog->expr(id);
+        if (row && row->text == "15000000") kHugeConstant = id;
+    }
+    CHECK(kHugeConstant != 0, "(the data holds the constant 15000000)");
+    if (kHugeConstant == 0) return;
+    content::LootTable table;
+    table.guid = kTable;
+    content::LootContainer container;
+    container.grant = "Always";
+    container.algo = "All";
+    content::LootReward reward;
+    reward.items.push_back({kBread, 0, kHugeConstant});
+    reward.xp.push_back({"Adventuring", kHugeConstant});
+    container.rewards.push_back(std::move(reward));
+    table.containers.push_back(std::move(container));
+    std::map<int64_t, content::LootTable> tables;
+    tables[kTable] = std::move(table);
+    combat::RewardBook book(*f.catalog, std::move(tables), 0);
+    Kill k;
+    if (!k.make(f, "Rabid_C", 8, 1)) {
+        CHECK(false, "a Rabid");
+        return;
+    }
+    const combat::Rolled out = book.roll({kTable}, k.ctx);
+    int64_t items = 0, xp = 0;
+    for (const combat::RolledItem& it : out.loot) items += it.item == kBread ? it.quantity : 0;
+    for (const combat::RolledXp& x : out.xp) xp += x.type == "Adventuring" ? x.amount : 0;
+    CHECKF(items == combat::kMaxRolledQuantity, "the 15,000,000 items are cut at the most one line gives (%lld)", static_cast<long long>(items));
+    CHECKF(xp == 15000000, "the 15,000,000 experience is under its own cap and stays (%lld)", static_cast<long long>(xp));
+}
+
+/// The roll cuts an experience amount that is too big, too.  The cap sits above every amount the data gives, so a table made here has one experience line whose formula is a loot-chance
+/// formula of the data (ab_expr 1862: 0.15 x (1 + the players' average luck) x the falloff, which is 1 at the creature's own level).  The roller reads the average luck from its context: a luck
+/// of 100 gives 15.15, which the line hands out as 15, and a luck of 10^12 gives 1.5 x 10^11, which is cut at the most one line gives.
+void test_roll_cuts_a_huge_experience(Fixture& f) {
+    std::printf("a roll cuts an experience amount that is too big\n");
+    constexpr int64_t kTable = 7000000002ll;
+    int64_t kLuckFormula = 0;   // (rows are numbered as the data is built: it is found by what it says)
+    for (int64_t id = 1; id < 40000 && kLuckFormula == 0; ++id) {
+        const content::ExprRow* row = f.catalog->expr(id);
+        if (row && row->text.find("0.15 * (1 + GetPlayerLootAvgLuck())") != std::string::npos) kLuckFormula = id;
+    }
+    CHECK(kLuckFormula != 0, "(the data holds the formula that reads the players' average luck)");
+    if (kLuckFormula == 0) return;
+    content::LootTable table;
+    table.guid = kTable;
+    content::LootContainer container;
+    container.grant = "Always";
+    container.algo = "All";
+    content::LootReward reward;
+    reward.xp.push_back({"Adventuring", kLuckFormula});
+    container.rewards.push_back(std::move(reward));
+    table.containers.push_back(std::move(container));
+    std::map<int64_t, content::LootTable> tables;
+    tables[kTable] = std::move(table);
+    combat::RewardBook book(*f.catalog, std::move(tables), 0);
+    Kill k;
+    if (!k.make(f, "Rabid_C", 8, 1)) {
+        CHECK(false, "a Rabid");
+        return;
+    }
+    const auto xp_with_luck = [&](double luck) {
+        k.ctx.avg_luck = luck;
+        int64_t amount = -1;
+        for (const combat::RolledXp& x : book.roll({kTable}, k.ctx).xp) amount = x.type == "Adventuring" ? x.amount : amount;
+        return amount;
+    };
+    const int64_t ordinary = xp_with_luck(100.0), huge = xp_with_luck(1.0e12);
+    CHECKF(ordinary == 15, "an ordinary amount is the formula's value, rounded (%lld)", static_cast<long long>(ordinary));
+    CHECKF(huge == combat::kMaxRolledXp, "an amount of 1.5 x 10^11 is cut at the most one line gives (%lld)", static_cast<long long>(huge));
+}
+
+/// A rolled quantity is a count that cannot grow without bound (a formula of bad data).
+void test_rolled_quantity() {
+    std::printf("a rolled quantity and a rolled experience amount are bounded\n");
+    CHECK(combat::rolled_quantity(3.0) == 3 && combat::rolled_quantity(2.9999999999) == 3 && combat::rolled_quantity(0.4) == 0, "an ordinary roll is its whole number");
+    CHECK(combat::rolled_quantity(1.0e9) == combat::kMaxRolledQuantity && combat::rolled_quantity(1.0e30) == combat::kMaxRolledQuantity, "a billion is cut to the largest stack");
+    CHECK(combat::rolled_quantity(std::nan("")) == 0 && combat::rolled_quantity(HUGE_VAL) == 0 && combat::rolled_quantity(-5.0) == 0, "a number that is none, an infinite one and a negative one give nothing");
+    CHECK(combat::rolled_xp(2792.4) == 2792 && combat::rolled_xp(0.4) == 0 && combat::rolled_xp(1.0e30) == combat::kMaxRolledXp, "an experience amount is rounded and cut at the most one line gives");
+    CHECK(combat::rolled_xp(std::nan("")) == 0 && combat::rolled_xp(HUGE_VAL) == 0 && combat::rolled_xp(-1.0) == 0, "...and a number that is none, an infinite one and a negative one give nothing");
+}
+
 int main() {
     if (!real_db_present()) {
         std::printf("test_worldd_rewards: no content.db at %s (set AOC_CONTENT_DB): skipped\n", real_db_path().c_str());
@@ -530,6 +619,9 @@ int main() {
     test_rules(f);
     test_biome(f);
     test_quest_start_tables(f);
+    test_rolled_quantity();
+    test_roll_cuts_a_huge_quantity(f);
+    test_roll_cuts_a_huge_experience(f);
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -77,6 +77,10 @@ inline constexpr TownBowl kTownBowls[] = {
     {108646608033403ll, "Verra_RVR_NewAela", "Layout_Flat_D", kFlatDPlatformSet},
     {108646610851452ll, "Verra_RVR_Halcyon", "Layout_River_C", kRiverCPlatformSet},
     {108646615701117ll, "Verra_RVR_Miraleth", "Layout_River_C", kRiverCPlatformSet},
+    {6064633651969589265ll, "Verra_ANV_Vexhelm", "Layout_Flat_D", kFlatDPlatformSet},
+    {6064633651985711129ll, "Verra_ANV_Duunhold", "Layout_Flat_D", kFlatDPlatformSet},
+    {6064633652009173023ll, "Verra_ANV_Dhurgrum", "Layout_Flat_D", kFlatDPlatformSet},
+    {6064633652023394340ll, "Verra_ANV_Vhalgadim", "Layout_River_C", kRiverCPlatformSet},
 };
 // ~ C | O | A & Cyb ~
 

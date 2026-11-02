@@ -187,6 +187,7 @@ class Context:
         self.zone = 0                      # Nodes 1, stage 3b: the context's own zone of influence, used when the point has none (a node's)
         self.active_gates = set()          # Nodes 1, stage 3b: the spawn sources that are running (a node's populations: Layout, BuildingLevelSpawn)
         self.looks_ok = None               # People's looks: a function of an asset (node_pop_oracle.Looks.can_dress) that lets a humanoid through; None: only the shown ones pass
+        self.zone_nodes = {}               # a zone of influence -> (the node that owns it, its level): what a filter of the open world that names nodes is about (spawn_filter.cpp)
 # [C.O.A - Cyb]
 
 
@@ -209,7 +210,8 @@ ANVILS_ZONES = set()   # the Anvils' zones: their people are Dunir and their bio
 
 
 def f_filter(f, tags, ctx, zoi):
-    level = lvl(ctx.node_level)
+    owner = ctx.zone_nodes.get(zoi if zoi else ctx.zone) if not ctx.node_id and f['node_ids'] else None
+    level = owner[1] if owner else lvl(ctx.node_level)
     lo = lvl(f['node_level_min'])
     hi = lvl(f['node_level_max'])
     if lo < 0 or hi < 0 or lo >= 7 or hi >= 7 or level < lo or level > hi:
@@ -218,7 +220,7 @@ def f_filter(f, tags, ctx, zoi):
     anvils = zone_ in ANVILS_ZONES
     if f['cultures'] and ('Dunir' if anvils else ctx.culture) not in f['cultures']:
         return 'Culture'
-    if f['node_ids'] and ctx.node_id not in f['node_ids']:
+    if f['node_ids'] and (owner[0] if owner else ctx.node_id) not in f['node_ids']:
         return 'NodeOrZone'
     zone = zoi if zoi else ctx.zone
     if f['zones_of_influence'] and (zone == 0 or zone not in f['zones_of_influence']):

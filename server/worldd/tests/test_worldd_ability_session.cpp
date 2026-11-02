@@ -47,6 +47,7 @@
 #include "content_db_fixture.h"
 #include "cyb_appearance.h"
 #include "fake_client.h"
+#include "test_registry.h"
 #include "net/endpoint.h"
 #include "protocol/repl/ability_rpc.h"
 #include "protocol/repl/hit_rpc.h"
@@ -347,6 +348,7 @@ struct Mirror {
     std::vector<std::pair<float, float>> shields;    // the TempHealth item's elements: (Base, Value)
     size_t hit_calls = 0;
     size_t unreadable = 0, chains = 0, chains_with_exports = 0;
+    emit::FIntrepidNetworkGUID guild_component{};    // its opening is an export of its own, a while after the join: not one the abilities caused
     /// ClientInstanceId -> ServerInstanceId of the triggers the server accepted (the Run records them): the item has the server's
     /// own number, ClientEndAbility the client's.
     std::map<int32_t, int64_t> server_of;
@@ -454,7 +456,8 @@ struct Mirror {
             return;
         }
         ++chains;
-        if (!d.exports.empty()) ++chains_with_exports;
+        const bool guilds_own = std::any_of(views->begin(), views->end(), [&](const repl::BlockView& v) { return !v.header.is_actor && v.header.object == guild_component; });
+        if (!d.exports.empty() && !guilds_own) ++chains_with_exports;
         for (const repl::BlockView& v : *views) {
             if (v.header.is_actor) {   // the pawn's own blocks: the move acknowledgements, and since E1 stage 3 the death's calls
                 if (!v.header.has_rep_layout) pawn_calls_of(d, v);
@@ -618,13 +621,13 @@ struct Harness {
 
     /// `clog_pc_channel` bunches of filler on channel 3, held (the client acknowledges nothing): the PlayerController's chains of
     /// the join do not all fit the window, so the join stays queued until release() and settle().
-    explicit Harness(size_t clog_pc_channel = 0, bool real = false, const svc::Character* record = nullptr, const std::function<void(PlayerWorld&)>& prepare = {}) : fx(real) {
+    explicit Harness(size_t clog_pc_channel = 0, bool real = false, const svc::Character* record = nullptr, const std::function<void(PlayerWorld&)>& prepare = {}, PlayerWorld* shared = nullptr) : fx(real) {
         if (prepare) prepare(*fx.world);   // (plan E1, stage 3: the NPCs' ground and the fights are the world's before the session joins)
         if (clog_pc_channel) {
             hold = true;
             filler(3, clog_pc_channel);
         }
-        s = PlayerSession::join(conn, *fx.world, record ? *record : cyb_record(), identity(), world_time_at(t), error);
+        s = PlayerSession::join(conn, shared ? *shared : *fx.world, record ? *record : cyb_record(), identity(), world_time_at(t), error);
         if (!s) {
             std::printf("  [FAIL] the session does not join: %s\n", error.c_str());
             std::exit(2);
@@ -704,8 +707,8 @@ struct Run {
     double x = kX;
     int32_t next_id = 0;   // the client counts every trigger of any ability from 0
 
-    explicit Run(size_t clog_pc_channel = 0, bool real = false, const svc::Character* record = nullptr, const std::function<void(PlayerWorld&)>& prepare = {})
-        : h(clog_pc_channel, real, record, prepare), m(h.s->bootstrap().setup()), seen(h.got.size()) {}
+    explicit Run(size_t clog_pc_channel = 0, bool real = false, const svc::Character* record = nullptr, const std::function<void(PlayerWorld&)>& prepare = {}, PlayerWorld* shared = nullptr)
+        : h(clog_pc_channel, real, record, prepare, shared), m(h.s->bootstrap().setup()), seen(h.got.size()) { m.guild_component = h.s->guild_component_for_test(); }
 // built by C O A with Cyb
 
     double now() const { return world_time_at(h.t); }
@@ -2447,7 +2450,9 @@ struct WolfWorld {
     uint64_t next_actor_id = 5000000;
     bool ground = false;
     int level = 8;
+    double ahead = 120;              // how far in front of the player the Wolves stand, cm
     int extra = 0;                   // E1 stage 3 fix 3: more Wolves, minted right after the first (their blocks follow its), 1 m apart
+    int extra_level = 0;             // ... of this level (0: the first Wolf's)
     std::vector<uint64_t> wolves;    // their ids
     void prepare(PlayerWorld& w) {
         std::string err;
@@ -2470,9 +2475,9 @@ struct WolfWorld {
         for (const auto& [p, row] : w.blueprints().rows()) {
             if (p.find("/Beast/Canine/Wolf.Default__Wolf_C") != std::string::npos) path = p;
         }
-        wolf = combat_rig::spawn_npc(w.registry(), w.npcs(), *captured, next_actor_id, path, kX + 120, kY, kZ, level, 800);
+        wolf = combat_rig::spawn_npc(w.registry(), w.npcs(), *captured, next_actor_id, path, kX + ahead, kY, kZ, level, 800);
         for (int i = 0; i < extra; ++i) {
-            const uint64_t id = combat_rig::spawn_npc(w.registry(), w.npcs(), *captured, next_actor_id, path, kX + 120, kY + 100 * (i + 1), kZ, level, 800);
+            const uint64_t id = combat_rig::spawn_npc(w.registry(), w.npcs(), *captured, next_actor_id, path, kX + ahead, kY + 100 * (i + 1), kZ, extra_level > 0 ? extra_level : level, 800);
             if (id != 0) wolves.push_back(id);
         }
     }
@@ -3942,6 +3947,303 @@ static void test_e1_player_death() {
 }
 // built by C Y B with CoA
 
+/// ServerPromptedResurrectResponse(Response).
+static BunchWriter resurrect_response_bunch(bool response) {
+    const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
+    const schema::RpcSchema* rpc = pc.rpc("ServerPromptedResurrectResponse");
+    repl::RpcParams p;
+    if (!rpc || !repl::set_rpc_param(*rpc, p, "Response", repl::Value::boolean(response))) {
+        std::printf("  [FAIL] the resurrect response's parameters do not fit\n");
+        return BunchWriter();
+    }
+    return actor_bunch(pc, "ServerPromptedResurrectResponse", p);
+}
+
+static void test_e1_resurrect() {
+    std::printf("Resurrect: the dead player is asked, and comes back where it fell with a quarter of its Health and Mana %s\n", kAftermathNote);
+    svc::Character rec = bard25_bagged();
+    std::vector<uint64_t> wolves;
+    uint64_t far_wolf = 0, next_actor_id = 5000000;
+    bool ground = false;
+    auto prepare = [&](PlayerWorld& w) { spawn_wolves(w, wolves, far_wolf, 2, 24, 800, ground, next_actor_id); };
+    Run r(0, true, &rec, prepare);
+    CHECK(ground && wolves.size() == 2 && r.h.fx.world->aftermath(), "(a world with a creature)");
+    if (!ground || wolves.size() != 2 || !r.h.fx.world->aftermath()) return;
+    combat::CombatWorld& cw = *r.h.fx.world->combat();
+    r.play(0.5, false);
+    phase_in(r);
+    world_play(r, 1.0);
+    const uint64_t pawn = r.h.s->bootstrap().setup().guids.pawn.ObjectId;
+    combat::PlayerPort* port = cw.find_player(pawn);
+    CHECK(port != nullptr, "(the combat world knows the player)");
+    if (!port) return;
+    const auto prompts = [&] { return std::count(r.m.pc_calls.begin(), r.m.pc_calls.end(), std::string("ClientPromptResurrect")); };
+    const std::array<uint32_t, 4> healer{1, 2, 3, 4};
+    // an answer nobody asked for, and a Resurrect on the living, do nothing
+    send_on_pc(r, resurrect_response_bunch(true));
+    port->prompt_resurrect(healer, r.now());
+    world_play(r, 0.3);
+    CHECK(!r.h.s->dead() && prompts() == 0, "the living are not asked");
+    combat::IncomingHit lethal;
+    lethal.instigator = wolves[0];
+    lethal.hit_guid = 1;
+    lethal.mods.push_back({1, content::kGuidHealth, -1.0e9});
+    lethal.at = r.now();
+    port->receive_hit(lethal, r.now());
+    r.ts = 0.0f;
+    world_play(r, 0.6);
+    CHECK(r.h.s->dead(), "(the player is dead)");
+    const GoodPosition fell = r.h.s->movement().good();
+    send_on_pc(r, resurrect_response_bunch(true));
+    world_play(r, 0.3);
+    CHECK(r.h.s->dead(), "an answer before any Resurrect does not raise it");
+    port->prompt_resurrect(healer, r.now());
+    world_play(r, 0.3);
+    CHECK(prompts() == 1, "another player's Resurrect asks the client");
+    send_on_pc(r, resurrect_response_bunch(false));
+    world_play(r, 0.3);
+    CHECK(r.h.s->dead(), "declined, the player stays dead");
+    send_on_pc(r, resurrect_response_bunch(true));
+    world_play(r, 0.3);
+    CHECK(r.h.s->dead(), "a decline used the offer up");
+    port->prompt_resurrect(healer, r.now());
+    world_play(r, 0.3);
+    CHECK(prompts() == 2, "the next Resurrect asks again");
+    send_on_pc(r, resurrect_response_bunch(true));
+    world_play(r, 0.3);
+    CHECK(!r.h.s->dead(), "accepted, the player lives");
+    const float health = r.m.stats[content::kGuidHealth], max_health = r.m.stats[content::kGuidMaxHealth];
+    const float mana = r.m.stats[content::kGuidMana], max_mana = r.m.stats[content::kGuidMaxMana];
+    CHECKF(max_health > 0 && health >= max_health * 0.25f && health < max_health * 0.40f, "a quarter of its Health (%.0f of %.0f, and what it regenerated since)", health, max_health);
+    CHECKF(max_mana > 0 && mana >= max_mana * 0.25f && mana < max_mana * 0.40f, "a quarter of its Mana (%.0f of %.0f, and what it regenerated since)", mana, max_mana);
+    const GoodPosition back = r.h.s->movement().good();
+    CHECK(std::fabs(back.x - fell.x) < 100 && std::fabs(back.y - fell.y) < 100, "where it fell");
+    CHECK(r.h.s->deaths() == 1 && !r.h.s->abilities_failed(), "(one death, nothing failed)");
+}
+
+static void test_e1_cleric_helps_player() {
+    std::printf("a Cleric and another player: Mend reaches him, a heal gives Divine Power, Resurrect raises him %s\n", kAftermathNote);
+    svc::Character cleric = bard25_bagged();
+    cleric.class_id = 3;
+    svc::Character patient_rec = bard25_bagged();
+    patient_rec.id = "bbec5c86eb101fe5f38c87f0fa22e7d1";
+    patient_rec.name = "AshesPatient";
+    std::vector<uint64_t> wolves;
+    uint64_t far_wolf = 0, next_actor_id = 5000000;
+    bool ground = false;
+    auto prepare = [&](PlayerWorld& w) { spawn_wolves(w, wolves, far_wolf, 2, 24, 800, ground, next_actor_id); };
+    Run a(0, true, &cleric, prepare);
+    CHECK(ground && a.h.fx.world->combat(), "(a world with fights)");
+    if (!ground || !a.h.fx.world->combat()) return;
+    Run b(0, true, &patient_rec, {}, a.h.fx.world.get());
+    PlayerWorld& world = *a.h.fx.world;
+    combat::CombatWorld& cw = *world.combat();
+    const auto both = [&](double seconds) {
+        for (int i = 0; i < static_cast<int>(std::llround(seconds * 10)); ++i) {
+            a.play(0.1, false);
+            b.play(0.1, false);
+            world.tick_world(a.now());
+        }
+    };
+    a.play(0.5, false);
+    b.play(0.5, false);
+    phase_in(a);
+    phase_in(b);
+    both(1.0);
+    const bs::PlayerSetup sa = a.h.s->bootstrap().setup(), sb = b.h.s->bootstrap().setup();
+    combat::PlayerPort* patient = cw.find_player(sb.guids.pawn.ObjectId);
+    CHECK(patient != nullptr && world.registry().find(sb.guids.pawn.ObjectId) != nullptr, "the other player is in the world and in the fights");
+    if (!patient) return;
+    CHECK(cw.actor_of_object(sb.guids.collision_cylinder.ObjectId) == sb.guids.pawn.ObjectId, "the cylinder the client names is his");
+    const abilities::Catalog& cat = *world.ability_catalog();
+    const abilities::AbilityDef* mend = cat.ability_named("Cleric_Mend");
+    const abilities::AbilityDef* res = cat.ability_named("Cleric_Resurrect");
+    CHECK(mend && res, "(the skills are in the tables)");
+    if (!mend || !res) return;
+    a.h.s->teach_ability(mend->row.guid);
+    a.h.s->teach_ability(res->row.guid);
+
+    // Mend, cast at him: the projectile flies and heals him, not the caster
+    const double max_hp = b.m.stats[content::kGuidMaxHealth];
+    combat::IncomingHit wound;
+    wound.instigator = wolves[0];
+    wound.hit_guid = 1;
+    wound.mods.push_back({1, content::kGuidHealth, -max_hp * 0.5});
+    wound.at = a.now();
+    patient->receive_hit(wound, a.now());
+    both(0.3);
+    const double hurt = b.m.stats[content::kGuidHealth];
+    CHECK(hurt < max_hp * 0.6, "(he is wounded)");
+    const double own_before = a.m.stats[content::kGuidHealth];
+    const int32_t id = a.next_id++;
+    const BunchWriter trig = trigger_at_object(sa, mend->row.guid, id, sb.guids.collision_cylinder);
+    a.send_trigger(mend->row.guid, id, &trig);
+    both(1.5);
+    const std::vector<int32_t> ends = a.m.end_ids();
+    CHECK(a.m.has_ability(mend->row.guid) || std::find(ends.begin(), ends.end(), id) == ends.end(), "the cast at him is accepted");
+    CHECKF(b.m.stats[content::kGuidHealth] > hurt + 1, "his Health rises (%.1f to %.1f)", hurt, b.m.stats[content::kGuidHealth]);
+    const repl::HitInstance* conf = nullptr;
+    for (const repl::HitInstance& h : a.m.hits) {
+        if (!h.targets.empty()) conf = &h;
+    }
+    CHECK(conf != nullptr && conf->targets.size() == 1, "the caster's client is told of the hit on him, and on nobody else");
+    (void)own_before;
+    constexpr int64_t kGen = 6064629623761404733ll;
+    CHECKF(a.m.stats[kGen] > 0, "the heal gives the Cleric Divine Power's Gen (%.3f)", a.m.stats[kGen]);
+
+    // a heal does not reach the dead, and Resurrect does not reach the living
+    int64_t targeting = 0;
+    const int64_t res_hit = res->hits.empty() ? 0 : res->hits[0].hit_guid;
+    for (const content::TargetingRow& t : res->targetings) {
+        if (!res->hits.empty() && t.key == res->hits[0].key) targeting = t.guid;
+    }
+    const int32_t early = a.next_id++;
+    const BunchWriter trig_early = trigger_at_object(sa, res->row.guid, early, sb.guids.collision_cylinder);
+    a.send_trigger(res->row.guid, early, &trig_early);
+    both(0.3);
+    const std::vector<int32_t> ends2 = a.m.end_ids();
+    CHECK(std::find(ends2.begin(), ends2.end(), early) != ends2.end(), "Resurrect at the living is refused");
+
+    wound.mods[0].value = -1.0e9;
+    wound.at = a.now();
+    patient->receive_hit(wound, a.now());
+    b.ts = 0.0f;
+    both(0.6);
+    CHECK(b.h.s->dead(), "(he falls)");
+    const int32_t raise = a.next_id++;
+    const BunchWriter trig_raise = trigger_at_object(sa, res->row.guid, raise, sb.guids.collision_cylinder);
+    a.send_trigger(res->row.guid, raise, &trig_raise);
+    both(0.6);
+    const std::vector<int32_t> ends3 = a.m.end_ids();
+    CHECK(std::find(ends3.begin(), ends3.end(), raise) == ends3.end(), "Resurrect at the dead is accepted");
+    a.send_reliable(hit_request_at_object(sa, res->row.guid, targeting, res_hit, sb.guids.collision_cylinder));
+    both(4.0);
+    CHECK(std::count(b.m.pc_calls.begin(), b.m.pc_calls.end(), std::string("ClientPromptResurrect")) == 1, "his client is asked");
+    CHECK(b.h.s->dead(), "he stays dead until he answers");
+    send_on_pc(b, resurrect_response_bunch(true));
+    both(0.3);
+    CHECK(!b.h.s->dead(), "he answers yes, and lives");
+    CHECKF(b.m.stats[content::kGuidHealth] >= max_hp * 0.25 && b.m.stats[content::kGuidHealth] < max_hp * 0.4, "with a quarter of his Health (%.0f of %.0f)", b.m.stats[content::kGuidHealth], max_hp);
+    CHECK(!a.h.s->abilities_failed() && !b.h.s->abilities_failed(), "(nothing failed)");
+}
+
+static void test_e1_cleric_zones() {
+    std::printf("Chains of Restraint and Divine Flare: the server lands the hits of the zones they spawn %s\n", kAftermathNote);
+    svc::Character rec = bard25_bagged();
+    rec.class_id = 3;
+    std::vector<uint64_t> wolves;
+    uint64_t far_wolf = 0, next_actor_id = 5000000;
+    bool ground = false;
+    auto prepare = [&](PlayerWorld& w) { spawn_wolves(w, wolves, far_wolf, 2, 5, 1, ground, next_actor_id); };
+    Run r(0, true, &rec, prepare);
+    CHECK(ground && r.h.fx.world->combat(), "(a world with fights)");
+    if (!ground || !r.h.fx.world->combat()) return;
+    combat::CombatWorld& cw = *r.h.fx.world->combat();
+    r.play(0.5, false);
+    phase_in(r);
+    world_play(r, 1.0);
+    const bs::PlayerSetup setup = r.h.s->bootstrap().setup();
+    const abilities::Catalog& cat = *r.h.fx.world->ability_catalog();
+    const auto cast_zone = [&](const char* name, const char* spawn_hit) {
+        const abilities::AbilityDef* def = cat.ability_named(name);
+        if (!def) return false;
+        r.h.s->teach_ability(def->row.guid);
+        int64_t hit = 0, targeting = 0;
+        for (const auto& h : def->hits) {
+            const abilities::HitDef* hd = cat.hit(h.hit_guid);
+            if (!hd || hd->row.name != spawn_hit) continue;
+            hit = h.hit_guid;
+            for (const content::TargetingRow& t : def->targetings) {
+                if (t.key == h.key) targeting = t.guid;
+            }
+        }
+        const int32_t id = r.next_id++;
+        r.send_trigger(def->row.guid, id);
+        world_play(r, 2.2);
+        r.send_reliable(hit_request_bunch(setup, def->row.guid, targeting, hit, /*with_component=*/false));
+        return hit != 0;
+    };
+    // the caster stands by the Wolf: a call with no place has the zone at his feet
+    const world::WorldActor* wolf = r.h.fx.world->registry().find(wolves[0]);
+    CHECK(wolf != nullptr, "(the Wolf)");
+    if (!wolf) return;
+    const double wx = wolf->x, wy = wolf->y;
+    r.h.s->gm_teleport(r.h.conn, wx + 100, wy, wolf->z + 88, r.h.t, "zone test");
+    world_play(r, 0.3);
+    const double before = cw.health_of(wolves[0]);
+    CHECK(cast_zone("Cleric_ChainsOfRestraint", "Cleric_ChainsOfRestraint_Spawn"), "(Chains of Restraint is cast)");
+    // (this client sends no branch: the bar runs to the server's deadline, and the zone comes with it)
+    for (int i = 0; i < 80 && cw.health_of(wolves[0]) >= before; ++i) world_play(r, 0.1);
+    const double first = cw.health_of(wolves[0]);
+    CHECKF(first < before, "its first hit lands on the Wolf (%.0f to %.0f)", before, first);
+    world_play(r, 2.2);
+    const double later = cw.health_of(wolves[0]);
+    CHECKF(later < first, "and it goes on a second at a time (%.0f to %.0f)", first, later);
+    size_t from_zone = 0;
+    for (const repl::HitInstance& h : r.m.hits) from_zone += h.source_record_type == content::kSourceTypeZone ? 1 : 0;
+    CHECK(from_zone >= 2, "the client is told, with the zone as the source");
+    world_play(r, 9.0);
+    const double after = cw.health_of(wolves[0]);
+    world_play(r, 3.0);
+    CHECK(cw.health_of(wolves[0]) >= after, "it ends with its life");
+
+    CHECK(!r.h.s->abilities_failed(), "(nothing failed)");
+}
+
+static void test_e1_cleric_flare() {
+    std::printf("Divine Flare heals who stands in it, once, nearly three seconds on %s\n", kAftermathNote);
+    svc::Character rec = bard25_bagged();
+    rec.class_id = 3;
+    std::vector<uint64_t> wolves;
+    uint64_t far_wolf = 0, next_actor_id = 5000000;
+    bool ground = false;
+    auto prepare = [&](PlayerWorld& w) { spawn_wolves(w, wolves, far_wolf, 2, 5, 1, ground, next_actor_id); };
+    Run r(0, true, &rec, prepare);
+    CHECK(ground && r.h.fx.world->combat(), "(a world with fights)");
+    if (!ground || !r.h.fx.world->combat()) return;
+    combat::CombatWorld& cw = *r.h.fx.world->combat();
+    r.play(0.5, false);
+    phase_in(r);
+    world_play(r, 1.0);
+    const bs::PlayerSetup setup = r.h.s->bootstrap().setup();
+    const abilities::AbilityDef* def = r.h.fx.world->ability_catalog()->ability_named("Cleric_DivineFlare");
+    combat::PlayerPort* port = cw.find_player(setup.guids.pawn.ObjectId);
+    CHECK(def && port, "(the skill and the player)");
+    if (!def || !port) return;
+    r.h.s->teach_ability(def->row.guid);
+    int64_t hit = 0, targeting = 0;
+    for (const auto& h : def->hits) {
+        const abilities::HitDef* hd = r.h.fx.world->ability_catalog()->hit(h.hit_guid);
+        if (!hd || hd->row.name != "Cleric_DivineFlare_SpawnLinger") continue;
+        hit = h.hit_guid;
+        for (const content::TargetingRow& t : def->targetings) {
+            if (t.key == h.key) targeting = t.guid;
+        }
+    }
+    const double max_hp = r.m.stats[content::kGuidMaxHealth];
+    combat::IncomingHit wound;
+    wound.instigator = wolves[0];
+    wound.hit_guid = 1;
+    wound.mods.push_back({1, content::kGuidHealth, -max_hp * 0.6});
+    wound.at = r.now();
+    port->receive_hit(wound, r.now());
+    world_play(r, 0.2);
+    r.send_trigger(def->row.guid, r.next_id++);
+    world_play(r, 0.2);
+    const size_t hits_before = r.m.hits.size();
+    r.send_reliable(hit_request_bunch(setup, def->row.guid, targeting, hit, /*with_component=*/false));
+    world_play(r, 2.0);
+    size_t from_zone = 0;
+    for (size_t i = hits_before; i < r.m.hits.size(); ++i) from_zone += r.m.hits[i].source_record_type == content::kSourceTypeZone ? 1 : 0;
+    CHECK(from_zone == 0, "two seconds on it has not landed");
+    const double before = r.m.stats[content::kGuidHealth];
+    world_play(r, 1.2);
+    for (size_t i = hits_before; i < r.m.hits.size(); ++i) from_zone += r.m.hits[i].source_record_type == content::kSourceTypeZone ? 1 : 0;
+    CHECK(from_zone == 1, "by three it has, once, with the zone as the source");
+    CHECKF(r.m.stats[content::kGuidHealth] > before + 10, "and the Cleric standing in it is healed (%.0f to %.0f)", before, r.m.stats[content::kGuidHealth]);
+    CHECK(!r.h.s->dead() && !r.h.s->abilities_failed(), "(nothing failed)");
+}
+
 static void test_e1_death_without_loss() {
     std::printf("E1 stage 3, part 2: with --no-death-loss a death costs experience only %s\n", kAftermathNote);
     svc::Character rec = bard25();
@@ -3973,6 +4275,347 @@ static void test_e1_death_without_loss() {
 }
 
 #include "summoner_pet_session_tests.inc"
+/// One confirmation the client got, with the time it came after the trigger and the names of its hit and of the projectile that carried it.
+struct TimedHit {
+    double          at = 0;
+    std::string     hit, source;
+    repl::HitInstance raw;
+};
+
+/// A cast of one ability at a Wolf in a real session (the Wolf `ahead` cm in front of the player, `extra` more of them beside it): every hit confirmation from the trigger for `seconds`.
+struct FlightCast {
+    const char* ability = "";
+    int         anim = 0;
+    double      ahead = 1500;
+    int         extra = 0;
+    int         wolf_level = 25;   // the first Wolf's level (a low one dies to the first hits)
+    int         extra_level = 0;   // the extra Wolves' (0: the first's)
+    double      seconds = 3.0;
+    int64_t     branch = 0;   // a cast bar's branch (the client asks for it when its bar ends, `bar` seconds after the trigger)
+    double      bar = 0;
+    bool        no_target = false;   // the trigger names nobody
+    const char* then = "";    // a second ability pressed `then_at` seconds after the first, at the same Wolf: its item takes the pawn's place
+    double      then_at = 0;
+};
+/// What a flight cast leaves besides its confirmations: the log of the cast, the Wolves' Health and the cast ability's charges at the end.
+struct FlightEnd {
+    std::string         log;
+    std::vector<double> wolf_health;   // the first Wolf's, then the extra ones'
+    int                 charges_left = -1;
+};
+/// The seconds after the trigger that the log gives for each line that holds `who` and then " leaves " (a note, an arrow or a bounce leaving).
+static std::vector<double> flight_leaves(const std::string& log, const std::string& who) {
+    std::vector<double> out;
+    std::istringstream in(log);
+    for (std::string line; std::getline(in, line);) {
+        const size_t at = line.find(who);
+        if (at == std::string::npos) continue;
+        const size_t lv = line.find(" leaves ", at);
+        if (lv != std::string::npos) out.push_back(std::strtod(line.c_str() + lv + 8, nullptr));
+    }
+    return out;
+}
+static bool run_flight_cast(const svc::Character& rec, const FlightCast& fc, std::vector<TimedHit>& out, FlightEnd* end = nullptr) {
+    g_log.str("");
+    WolfWorld ww;
+    ww.level = fc.wolf_level;
+    ww.extra_level = fc.extra_level;
+    ww.ahead = fc.ahead;
+    ww.extra = fc.extra;
+    Run r(0, true, &rec, [&](PlayerWorld& w) { ww.prepare(w); });
+    if (!ww.ground || ww.wolf == 0 || !r.h.fx.world->combat()) return false;
+    r.play(0.5, false);
+    const bs::PlayerSetup setup = r.h.s->bootstrap().setup();
+    const world::WorldActor* wa = r.h.fx.world->registry().find(ww.wolf);
+    const abilities::Catalog* cat = r.h.fx.world->ability_catalog();
+    const abilities::AbilityDef* def = cat ? cat->ability_named(fc.ability) : nullptr;
+    if (!wa || !def) return false;
+    const repl::InlineObject cyl = inline_cylinder_of(*wa);
+    r.h.s->teach_ability(def->row.guid);
+    const abilities::AbilityDef* then_def = (cat && fc.then[0] != '\0') ? cat->ability_named(fc.then) : nullptr;
+    if (fc.then[0] != '\0' && !then_def) return false;
+    if (then_def) r.h.s->teach_ability(then_def->row.guid);
+    r.h.fx.world->tick_world(r.now());
+    const size_t before = r.m.hits.size();
+    const int32_t id = r.next_id++;
+    const BunchWriter trig = trigger_at_value(setup, def->row.guid, id, repl::Value(cyl), fc.anim);
+    const double base = r.now();
+    r.send_trigger(def->row.guid, id, fc.no_target ? nullptr : &trig);
+    bool requested = false, then_sent = false;
+    size_t reported = 0;
+    for (int i = 0; i < static_cast<int>(fc.seconds / 0.05); ++i) {
+        if (then_def && !then_sent && (i + 1) * 0.05 >= fc.then_at - 1e-9) {
+            then_sent = true;
+            const int32_t then_id = r.next_id++;
+            const BunchWriter then_trig = trigger_at_value(setup, then_def->row.guid, then_id, repl::Value(cyl), 0);
+            r.send_trigger(then_def->row.guid, then_id, &then_trig);
+        }
+        if (fc.branch != 0 && !requested && (i + 1) * 0.05 >= fc.bar - 1e-9) {
+            requested = true;
+            const schema::RpcSchema* rpc = class_named("UAoCAbilityComponent").rpc("ServerRequestBranchVerification");
+            repl::RpcParams bp;
+            bool ok = rpc && repl::set_rpc_param(*rpc, bp, "Request.Branch.BranchGuid", repl::Value::i64(fc.branch));
+            ok = ok && repl::set_rpc_param(*rpc, bp, "Request.Branch.MontageIndex", repl::Value::i64(0));
+            ok = ok && repl::set_rpc_param(*rpc, bp, "Request.Branch.MeshYaw", repl::Value::u64(0));
+            ok = ok && repl::set_rpc_param(*rpc, bp, "Request.Branch.Instigator", repl::Value(setup.guids.pawn));
+            ok = ok && repl::set_rpc_param(*rpc, bp, "ClientInstanceId", repl::Value::i64(id));
+            if (ok) r.send_reliable(ability_rpc(setup.guids.ability, "ServerRequestBranchVerification", bp));
+        }
+        r.tick(false, std::chrono::milliseconds(50));
+        r.h.fx.world->tick_world(r.now());
+        for (; before + reported < r.m.hits.size(); ++reported) {
+            const repl::HitInstance& h = r.m.hits[before + reported];
+            TimedHit t;
+            t.at = r.now() - base;
+            t.raw = h;
+            const abilities::HitDef* hd = cat->hit(h.record_guid);
+            const content::ProjectileRow* pr = cat->projectile(h.source_record_guid);
+            t.hit = hd ? hd->row.name : "";
+            t.source = pr ? pr->name : "";
+            out.push_back(std::move(t));
+        }
+    }
+    if (end) {
+        spdlog::default_logger()->flush();
+        end->log = g_log.str();
+        if (r.h.s->pipeline()) end->charges_left = r.h.s->pipeline()->charges_left(def->row.guid);
+        const combat::CombatWorld& cw = *r.h.fx.world->combat();
+        end->wolf_health.push_back(cw.health_of(ww.wolf));
+        for (const uint64_t w : ww.wolves) end->wolf_health.push_back(cw.health_of(w));
+    }
+    return true;
+}
+
+/// Milestone 1c, part A: one projectile's hits a cast (the Firebolt's two hands, the Frostbolt's bolt without its shard), the bounce's Source (the enemy the projectile flew from) and the Salvo's
+/// arrows, which land when they get to the target (the same shots at 5 and at 25 m land a flight apart).
+static void test_flight_leftovers() {
+    std::printf("Flight leftovers: one projectile's hits a cast, the bounce's Source, the Salvo's arrows by distance\n");
+    const svc::Character mage = class25(8, "Mage", 17750);
+    // the Firebolt: AnimationIndex 0, 1 and 2 launch the right hand's projectile, the left's and the right's, and only that one's hits land (one Hit a cast); an index no montage has (3, -1: the client
+    // may send any) takes the first row, the right hand's, and still throws one
+    for (const int anim : {0, 1, 2, 3, -1}) {
+        FlightCast fc;
+        fc.ability = "Mage_Firebolt";
+        fc.anim = anim;
+        fc.seconds = 2.0;
+        std::vector<TimedHit> hits;
+        const bool ok = run_flight_cast(mage, fc, hits);
+        CHECK(ok, "a world with ground and a Wolf for the Firebolt");
+        if (!ok) return;
+        int landed = 0;
+        std::set<std::string> carried;
+        for (const TimedHit& h : hits) {
+            if (h.hit != "Mage_FireballCombo_Projectile_Hit") continue;
+            ++landed;
+            carried.insert(h.source);
+        }
+        const std::string want = anim == 1 ? "Mage_FireballCombo_Projectile_L" : "Mage_FireballCombo_Projectile_R";
+        CHECK(landed == 1, (std::string("Firebolt, montage ") + std::to_string(anim) + ": one Hit confirmation, not one for each hand").c_str());
+        CHECK(carried == std::set<std::string>{want}, (std::string("Firebolt, montage ") + std::to_string(anim) + ": the Hit came from " + want).c_str());
+    }
+    // the Frostbolt: the bolt lands when its bar ends; the shard (fired by a hit of the bolt, with a talent and a Shocked enemy) does not land with it
+    {
+        FlightCast fc;
+        fc.ability = "Mage_Frostbolt";
+        fc.seconds = 4.5;
+        fc.branch = 6064628890262700041ll;
+        fc.bar = 2.2;
+        std::vector<TimedHit> hits;
+        const bool ok = run_flight_cast(mage, fc, hits);
+        CHECK(ok, "a world with ground and a Wolf for the Frostbolt");
+        if (!ok) return;
+        int bolt = 0, shard = 0;
+        for (const TimedHit& h : hits) {
+            if (h.hit == "Mage_Frostbolt_Hit") ++bolt;
+            if (h.hit == "Mage_Frostbolt_Hit_Shard") ++shard;
+        }
+        CHECK(bolt == 1 && shard == 0, "Frostbolt: the bolt's Hit lands once and the shard's Hit does not land with it");
+    }
+    // ... and the same when the bar's end is never asked for: the cast goes on at its deadline and still lands the bolt alone
+    {
+        FlightCast fc;
+        fc.ability = "Mage_Frostbolt";
+        fc.seconds = 6.5;
+        std::vector<TimedHit> hits;
+        const bool ok = run_flight_cast(mage, fc, hits);
+        CHECK(ok, "a world with ground and a Wolf for the Frostbolt without a request");
+        if (!ok) return;
+        int bolt = 0, shard = 0;
+        for (const TimedHit& h : hits) {
+            if (h.hit == "Mage_Frostbolt_Hit") ++bolt;
+            if (h.hit == "Mage_Frostbolt_Hit_Shard") ++shard;
+        }
+        CHECK(bolt == 1 && shard == 0, "Frostbolt, the bar's end never asked for (the deadline): the bolt's Hit lands once and the shard's does not");
+    }
+    // the Salvo: the arrows land when they get to the target, so the same cast at 25 m lands about 0.29 s (20 m over 7,000 cm/s) after the one at 5 m
+    {
+        const svc::Character ranger = class25(1, "Ranger", 17751);
+        std::vector<TimedHit> near_hits, far_hits;
+        FlightCast fc;
+        fc.ability = "Ranger_Salvo";
+        fc.seconds = 3.0;
+        fc.ahead = 500;
+        bool ok = run_flight_cast(ranger, fc, near_hits);
+        fc.ahead = 2500;
+        ok = ok && run_flight_cast(ranger, fc, far_hits);
+        CHECK(ok, "a world with ground and a Wolf for the Salvo");
+        if (!ok) return;
+        std::vector<double> near_at, far_at;
+        for (const TimedHit& h : near_hits) {
+            if (h.hit == "Ranger_Salvo") near_at.push_back(h.at);
+        }
+        for (const TimedHit& h : far_hits) {
+            if (h.hit == "Ranger_Salvo") far_at.push_back(h.at);
+        }
+        CHECK(near_at.size() >= 4 && near_at.size() == far_at.size(), "Salvo: the same number of arrows land at 5 and at 25 m");
+        if (!near_at.empty() && !far_at.empty()) {
+            const double gap = far_at.front() - near_at.front();
+            std::printf("  (the first arrow lands %.2f s after the trigger at 5 m and %.2f s at 25 m)\n", near_at.front(), far_at.front());
+            CHECK(gap > 0.2 && gap < 0.4, "Salvo: the first arrow lands about 0.29 s later at 25 m than at 5 m (its flight)");
+        }
+    }
+    // the Salvo at a rate of 0.79 (a level-15 Ranger's): its six charges are six paid shots, six arrows and six hits, and the loop does not end before the last arrow has left
+    {
+        svc::Character slow = class25(1, "Ranger", 17751);
+        slow.level = 15;
+        FlightCast fc;
+        fc.ability = "Ranger_Salvo";
+        fc.seconds = 2.6;
+        std::vector<TimedHit> hits;
+        FlightEnd end;
+        const bool ok = run_flight_cast(slow, fc, hits, &end);
+        CHECK(ok, "a world with ground and a Wolf for the Salvo at a slow rate");
+        if (!ok) return;
+        const std::vector<double> arrows = flight_leaves(end.log, "Ranger_Salvo: arrow ");
+        int landed = 0;
+        for (const TimedHit& h : hits) landed += (h.hit == "Ranger_Salvo" && !h.raw.targets.empty()) ? 1 : 0;
+        std::printf("  (the slow Salvo: %zu arrows, the first %.3f s after the trigger; %d hits; %d charges left)\n", arrows.size(), arrows.empty() ? 0.0 : arrows.front(), landed, end.charges_left);
+        CHECK(!arrows.empty() && arrows.front() > 0.33 && arrows.front() < 0.42, "Salvo at a rate of 0.79: the first arrow leaves about 0.37 s after the trigger (0.2943 s of montage over 0.79)");
+        CHECK(end.charges_left == 0 && arrows.size() == 6 && landed == 6, "Salvo at a rate of 0.79: six shots paid, six arrows left and six hits landed");
+    }
+    // another ability's item takes the pawn in the middle of the Salvo: the arrows stop leaving and so do the payments, so no shot is paid for an arrow that stays behind and no arrow leaves for a shot not paid
+    {
+        const svc::Character ranger = class25(1, "Ranger", 17751);
+        FlightCast fc;
+        fc.ability = "Ranger_Salvo";
+        fc.then = "Ranger_PowerShot";
+        fc.then_at = 0.7;   // (pressed 0.65 s after the first: its item comes just after the second arrow has left and before the third shot's cost; a moment between a shot's cost and its arrow would leave that one arrow behind)
+        fc.seconds = 2.8;
+        std::vector<TimedHit> hits;
+        FlightEnd end;
+        const bool ok = run_flight_cast(ranger, fc, hits, &end);
+        CHECK(ok, "a world with ground and a Wolf for the Salvo and a second ability");
+        if (!ok) return;
+        const std::vector<double> arrows = flight_leaves(end.log, "Ranger_Salvo: arrow ");
+        int landed = 0;
+        for (const TimedHit& h : hits) landed += (h.hit == "Ranger_Salvo" && !h.raw.targets.empty()) ? 1 : 0;
+        const int paid = 6 - end.charges_left;
+        std::printf("  (the Salvo cut by a second ability: %d shots paid, %zu arrows (%.3f s after the trigger for the first), %d hits)\n", paid, arrows.size(), arrows.empty() ? 0.0 : arrows.front(), landed);
+        CHECK(paid >= 1 && paid < 6, "Salvo with another ability pressed in the middle: the loop ended early, not all six shots were paid");
+        CHECK(paid == static_cast<int>(arrows.size()) && static_cast<int>(arrows.size()) == landed, "... every shot paid sent its arrow and landed its hit, and no arrow left or landed unpaid");
+    }
+    // the Discordance's bounce: the child hit's Source is the enemy the note landed on
+    {
+        const svc::Character bard = bard25();
+        FlightCast fc;
+        fc.ability = "Bard_Misc_Discordance";
+        fc.extra = 1;
+        fc.seconds = 5.0;
+        std::vector<TimedHit> hits;
+        const bool ok = run_flight_cast(bard, fc, hits);
+        CHECK(ok, "a world with ground and two Wolves for the Discordance");
+        if (!ok) return;
+        const TimedHit* first = nullptr;
+        const TimedHit* child = nullptr;
+        for (const TimedHit& h : hits) {
+            if (!first && h.hit == "Bard_Misc_Discordance_Hit1" && !h.raw.targets.empty()) first = &h;
+            if (!child && h.hit == "Bard_Misc_Discordance_Bounce1" && !h.raw.targets.empty()) child = &h;
+        }
+        CHECK(first != nullptr && child != nullptr, "the note's Hit1 and its bounce's child hit are both confirmed");
+        if (first && child) {
+            CHECK(child->raw.source.ObjectId != 0 && child->raw.source == first->raw.targets[0].hit_comp, "the bounce's child hit names the enemy the note landed on as its Source");
+            CHECK(!(child->raw.targets[0].hit_comp == first->raw.targets[0].hit_comp), "... and the other Wolf as its target");
+        }
+    }
+    // a note that lands on an enemy an earlier note killed fires no bounce: a level-1 Wolf dies to the first notes (the second Wolf, level 25, lives through all of them), and the last note is in the
+    // air by then and lands on the body
+    {
+        const svc::Character bard = bard25();
+        FlightCast fc;
+        fc.ability = "Bard_Misc_Discordance";
+        fc.extra = 1;
+        fc.wolf_level = 1;
+        fc.extra_level = 25;
+        fc.seconds = 5.0;
+        std::vector<TimedHit> hits;
+        FlightEnd end;
+        const bool ok = run_flight_cast(bard, fc, hits, &end);
+        CHECK(ok, "a world with ground and two weak Wolves for the Discordance");
+        if (!ok) return;
+        int notes = 0, bounces = 0;
+        for (const TimedHit& h : hits) {
+            if (h.raw.targets.empty()) continue;
+            if (h.hit == "Bard_Misc_Discordance_Hit1") ++notes;
+            if (h.hit == "Bard_Misc_Discordance_Bounce1") ++bounces;
+        }
+        std::printf("  (the weak Wolf: %.1f Health left; %d note Hit1 confirmed, %d first bounces; the sturdy Wolf: %.1f Health left)\n", end.wolf_health.empty() ? -1.0 : end.wolf_health[0], notes, bounces,
+                    end.wolf_health.size() > 1 ? end.wolf_health[1] : -1.0);
+        CHECK(end.wolf_health.size() == 2 && end.wolf_health[0] <= 0 && end.wolf_health[1] > 0, "the notes killed the weak Wolf and the sturdy Wolf lived through the bounces");
+        CHECK(notes >= 1 && notes < 3 && bounces == notes, "every note that landed fired one bounce, and the note that landed on the body confirmed nothing and fired none");
+    }
+    // the Throw: its damage formula cannot be worked out yet, but the hit reached an enemy, so its shuriken bounces once to the second Wolf (a third enemy is not there)
+    {
+        const svc::Character rogue = class25(5, "Rogue", 17752);
+        FlightCast fc;
+        fc.ability = "Rogue_Throw";
+        fc.extra = 1;
+        fc.ahead = 1200;
+        fc.seconds = 3.0;
+        std::vector<TimedHit> hits;
+        FlightEnd end;
+        const bool ok = run_flight_cast(rogue, fc, hits, &end);
+        CHECK(ok, "a world with ground and two Wolves for the Throw");
+        if (!ok) return;
+        int bounces = 0;
+        const TimedHit* child = nullptr;
+        for (const TimedHit& h : hits) {
+            if (h.hit != "Rogue_Throw_Bounce" || h.raw.targets.empty()) continue;
+            ++bounces;
+            if (!child) child = &h;
+        }
+        std::printf("  (the Throw at two Wolves: %d bounce child hits; %zu bounces left in the log)\n", bounces, flight_leaves(end.log, "Rogue_Throw: bounce ").size());
+        CHECK(bounces == 1, "the Throw at two Wolves bounces once: one child hit is confirmed");
+        std::vector<float> dealt;
+        for (const TimedHit& h : hits) {
+            if (h.hit == "Rogue_Throw" && !h.raw.targets.empty() && !h.raw.targets[0].stat_mods.empty()) dealt.push_back(h.raw.targets[0].stat_mods[0].value);
+        }
+        std::printf("  (the Throw's hits: %zu, first %.2f, on the bounce %.2f)\n", dealt.size(), dealt.empty() ? 0.f : dealt[0], dealt.size() > 1 ? dealt[1] : 0.f);
+        CHECK(dealt.size() == 2 && std::abs(dealt[1] / dealt[0] - 0.9f) < 0.001f, "the Throw's bounce deals 10% less than its first hit");
+        if (child) CHECK(child->raw.source.ObjectId != 0 && !(child->raw.targets[0].hit_comp == child->raw.source), "... it names the first Wolf as its Source and the second Wolf as its target");
+    }
+    // Ball Lightning: cast at nobody, the ball rolls the way the caster faces and hits the Wolf beside its path each half second while the Wolf is within 5 m of it
+    {
+        const svc::Character mage = class25(8, "Mage", 17753);
+        FlightCast fc;
+        fc.ability = "Mage_BallLightning";
+        fc.no_target = true;
+        fc.ahead = 300;
+        fc.branch = 6064629048751489028ll;
+        fc.bar = 2.0;
+        fc.seconds = 9.0;
+        std::vector<TimedHit> hits;
+        FlightEnd end;
+        const bool ok = run_flight_cast(mage, fc, hits, &end);
+        CHECK(ok, "a world with ground and a Wolf for Ball Lightning");
+        if (!ok) return;
+        int rolled = 0;
+        for (const TimedHit& h : hits) rolled += h.hit == "Mage_BallLightning" && !h.raw.targets.empty() ? 1 : 0;
+        std::printf("  (Ball Lightning past a Wolf 3 m away: %d hits; the Wolf has %.1f Health left)\n", rolled, end.wolf_health.empty() ? -1.0 : end.wolf_health[0]);
+        CHECK(rolled >= 2, "Ball Lightning's ball hits the Wolf again each half second while it is near");
+    }
+}
+
+#include "ability_session_registered.inc"
 
 int main() {
     auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
@@ -3997,6 +4640,8 @@ int main() {
     test_hostile_client();
     if (ability_rig::real_db_present()) {
         test_summoner_pet_session();
+        test_summoner_hunter_stance();
+        test_summoner_pet_ability_session();
         test_summoner_spawn_failure();
         test_d2_glee_heals();
         test_d2_flourish_dash();
@@ -4023,16 +4668,22 @@ int main() {
         test_e1_npc_cylinder_export();
         test_e1_one_clock();
         test_e1_ranged_book_at_wolf();
+        test_flight_leftovers();
         test_e1_cylinder_in_own_block();
         test_e1_zone_abilities_export_rule();
         test_e1_clock_resync();
         test_e1_whole_fight();
         test_e1_loot_with_full_bag();
         test_e1_player_death();
+        test_e1_resurrect();
+        test_e1_cleric_helps_player();
+        test_e1_cleric_zones();
+        test_e1_cleric_flare();
         test_e1_death_without_loss();
     } else {
         std::printf("no content.db at %s: the plan D2 session tests are skipped\n", ability_rig::real_db_path().c_str());
     }
+    g_fail += aoc_tests::run();   // every check registered in ability_session_registered.inc
 
     if (const char* f = std::getenv("AOC_TEST_LOG_FILTER")) {   // (a debugging aid: the log lines that contain the text)
         std::istringstream in(g_log.str());

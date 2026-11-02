@@ -1067,6 +1067,73 @@ std::optional<Send> PlayerBootstrap::skill_on_actionbar(const repl::SkillOnActio
 }
 // (C Y B) (CoA)
 
+std::optional<Send> PlayerBootstrap::destiny_client_data(const std::vector<DestinyTrackOut>& tracks) {
+    if (!ok_ || !pc_.obj.schema) return std::nullopt;
+    const schema::RpcSchema* rpc = pc_.obj.schema->rpc("ClientReceiveDestinyClientData");
+    if (!rpc) return std::nullopt;
+    constexpr const char* kArray = "DestinyClientData.DestinyTrackClientDataArray";
+    const schema::RepCommand* cmd = repl::rpc_command(*rpc, kArray);
+    if (!cmd) return std::nullopt;
+    const auto elems = repl::rpcf::elements_of(*rpc, *cmd);
+    const auto h = [&](const char* member) { return repl::rpcf::local(elems, std::string("DestinyTrackClientDataArray.") + member); };
+    constexpr int64_t kQuestTypeId = 6732126019658962568LL;
+    repl::ArrayValue a;
+    for (const DestinyTrackOut& t : tracks) {
+        repl::ElementState e;
+        e.values[h("DestinyTrackQuest.Guid")] = Value::i64(t.quest);
+        e.values[h("DestinyTrackQuest.TypeId")] = Value::i64(kQuestTypeId);
+        e.values[h("DestinyTrackQuest.Name")] = Value(repl::NameValue::hardcoded_name(0));
+        e.values[h("DestinyTrackInstanceGuid.A")] = Value::i64(static_cast<int32_t>(t.instance[0]));
+        e.values[h("DestinyTrackInstanceGuid.B")] = Value::i64(static_cast<int32_t>(t.instance[1]));
+        e.values[h("DestinyTrackInstanceGuid.C")] = Value::i64(static_cast<int32_t>(t.instance[2]));
+        e.values[h("DestinyTrackInstanceGuid.D")] = Value::i64(static_cast<int32_t>(t.instance[3]));
+        e.values[h("CompletedTrackQuests")] = Value::i64(t.completed);
+        e.values[h("TotalTrackQuests")] = Value::i64(t.total);
+        e.values[h("bIsActive")] = Value::boolean(t.active);
+        a.elements.push_back(std::move(e));
+    }
+    repl::RpcParams params;
+    if (!repl::set_rpc_param(*rpc, params, kArray, Value(std::move(a)))) return std::nullopt;
+    return finish(Role::PlayerController, false, "ClientReceiveDestinyClientData", repl::call_rpc(pc_, nullptr, "ClientReceiveDestinyClientData", params, {}, acks_));
+}
+
+std::optional<Send> PlayerBootstrap::destiny_milestones(int64_t track, const std::vector<DestinyMilestoneOut>& milestones) {
+    if (!ok_ || !pc_.obj.schema) return std::nullopt;
+    const schema::RpcSchema* rpc = pc_.obj.schema->rpc("ClientReceiveDestinyTrackMilestoneRewards");
+    if (!rpc) return std::nullopt;
+    constexpr const char* kArray = "DestinyTrackMilestoneObjectiveRewardPreviews";
+    const schema::RepCommand* cmd = repl::rpc_command(*rpc, kArray);
+    if (!cmd) return std::nullopt;
+    const auto elems = repl::rpcf::elements_of(*rpc, *cmd);
+    const auto h = [&](const char* member) { return repl::rpcf::local(elems, std::string(kArray) + "." + member); };
+    constexpr int64_t kQuestTypeId = 6732126019658962568LL, kObjectiveTypeId = 2174867120698124769LL;
+    repl::ArrayValue a;
+    for (const DestinyMilestoneOut& m : milestones) {
+        repl::ElementState e;
+        e.values[h("InstanceGuid.A")] = Value::i64(static_cast<int32_t>(m.instance[0]));
+        e.values[h("InstanceGuid.B")] = Value::i64(static_cast<int32_t>(m.instance[1]));
+        e.values[h("InstanceGuid.C")] = Value::i64(static_cast<int32_t>(m.instance[2]));
+        e.values[h("InstanceGuid.D")] = Value::i64(static_cast<int32_t>(m.instance[3]));
+        e.values[h("QuestId.Guid")] = Value::i64(m.quest);
+        e.values[h("QuestId.TypeId")] = Value::i64(kQuestTypeId);
+        e.values[h("QuestId.Name")] = Value(repl::NameValue::hardcoded_name(0));
+        repl::ArrayValue objectives;
+        repl::ElementState objective;
+        objective.values[1] = Value::i64(m.objective);
+        objective.values[2] = Value::i64(kObjectiveTypeId);
+        objective.values[3] = Value(repl::NameValue::hardcoded_name(0));
+        objectives.elements.push_back(std::move(objective));
+        e.values[h("InitialObjectives")] = Value(std::move(objectives));
+        e.values[h("BaseQuestRewards")] = Value(m.reward);
+        e.values[h("NodeId")] = Value::i64(0);
+        e.values[h("bCompletedAlready")] = Value::boolean(m.completed);
+        a.elements.push_back(std::move(e));
+    }
+    repl::RpcParams params;
+    if (!repl::set_rpc_param(*rpc, params, "DestinyTrackQuest", Value::i64(track)) || !repl::set_rpc_param(*rpc, params, kArray, Value(std::move(a)))) return std::nullopt;
+    return finish(Role::PlayerController, false, "ClientReceiveDestinyTrackMilestoneRewards", repl::call_rpc(pc_, nullptr, "ClientReceiveDestinyTrackMilestoneRewards", params, {}, acks_));
+}
+
 std::optional<std::vector<Send>> PlayerBootstrap::join_sequence() {
     if (!ok_) return std::nullopt;
     const Checkpoint before = checkpoint();
@@ -1346,6 +1413,19 @@ std::optional<Send> PlayerBootstrap::death_location(double x, double y, double z
     return rpcs(Role::Pawn, "ClientSetLastDeathLocation", std::span<const repl::RpcRequest>(&call, 1));
 }
 
+std::optional<Send> PlayerBootstrap::prompt_resurrect(const std::array<uint32_t, 4>& by) {
+    if (!ok_ || !second_state_added_) return std::nullopt;
+    const schema::RpcSchema* rpc = pc_.obj.schema->rpc("ClientPromptResurrect");
+    if (!rpc) return std::nullopt;
+    repl::RpcRequest call;
+    call.rpc = "ClientPromptResurrect";
+    if (!repl::set_rpc_param(*rpc, call.params, "InstigatorGuid.A", Value::i64(static_cast<int32_t>(by[0]))) ||
+        !repl::set_rpc_param(*rpc, call.params, "InstigatorGuid.B", Value::i64(static_cast<int32_t>(by[1]))) ||
+        !repl::set_rpc_param(*rpc, call.params, "InstigatorGuid.C", Value::i64(static_cast<int32_t>(by[2]))) ||
+        !repl::set_rpc_param(*rpc, call.params, "InstigatorGuid.D", Value::i64(static_cast<int32_t>(by[3])))) return std::nullopt;
+    return rpcs(Role::PlayerController, "ClientPromptResurrect", std::span<const repl::RpcRequest>(&call, 1));
+}
+
 std::optional<Send> PlayerBootstrap::death_restart() {
     if (!ok_ || !second_state_added_) return std::nullopt;
     const schema::ClassSchema& cls = *pc_.obj.schema;
@@ -1413,6 +1493,19 @@ std::optional<Send> PlayerBootstrap::open_vendor(int64_t merch_set, const emit::
     return rpcs(Role::PlayerController, "ClientOpenVendor", std::span<const repl::RpcRequest>(&call, 1));
 }
 
+std::optional<Send> PlayerBootstrap::open_crate_sell(int64_t vendor_def, const emit::FIntrepidNetworkGUID& vendor) {
+    if (!ok_ || !second_state_added_) return std::nullopt;
+    const schema::RpcSchema* rpc = pc_.obj.schema->rpc("ClientOpenCrateSellWindow");
+    if (!rpc) return std::nullopt;
+    repl::RpcRequest call;
+    call.rpc = "ClientOpenCrateSellWindow";
+    if (!repl::set_rpc_param(*rpc, call.params, "VendorDefRecordGuid", repl::Value::i64(vendor_def)) || !repl::set_rpc_param(*rpc, call.params, "Vendor", repl::Value(vendor)) ||
+        !repl::set_rpc_param(*rpc, call.params, "CommoditySellCounts", repl::Value::i64(0)) || !repl::set_rpc_param(*rpc, call.params, "CommodityCostsPerNode", repl::Value::i64(0))) {
+        return std::nullopt;
+    }
+    return rpcs(Role::PlayerController, "ClientOpenCrateSellWindow", std::span<const repl::RpcRequest>(&call, 1));
+}
+
 std::optional<Send> PlayerBootstrap::open_station(const emit::FIntrepidNetworkGUID& station, const repl::StationTax& tax, const std::vector<repl::CraftItemState>& jobs) {
     if (!ok_ || !second_state_added_) return std::nullopt;
     const schema::RpcSchema* rpc = pc_.obj.schema->rpc("ClientOpenCraftingStationUI");
@@ -1423,6 +1516,22 @@ std::optional<Send> PlayerBootstrap::open_station(const emit::FIntrepidNetworkGU
     call.rpc = "ClientOpenCraftingStationUI";
     call.params = std::move(*params);
     return rpcs(Role::PlayerController, "ClientOpenCraftingStationUI", std::span<const repl::RpcRequest>(&call, 1));
+}
+
+std::optional<Send> PlayerBootstrap::open_reward_selection(const repl::GuidValue& box, const repl::RewardInstance& reward) {
+    if (!ok_ || !second_state_added_) return std::nullopt;
+    const schema::RpcSchema* rpc = pc_.obj.schema->rpc("ClientOpenRewardSelection");
+    if (!rpc) return std::nullopt;
+    repl::RpcRequest call;
+    call.rpc = "ClientOpenRewardSelection";
+    if (!repl::set_rpc_param(*rpc, call.params, "InData.ActivatedItemGuid.A", repl::Value::i64(static_cast<int32_t>(box.a))) ||
+        !repl::set_rpc_param(*rpc, call.params, "InData.ActivatedItemGuid.B", repl::Value::i64(static_cast<int32_t>(box.b))) ||
+        !repl::set_rpc_param(*rpc, call.params, "InData.ActivatedItemGuid.C", repl::Value::i64(static_cast<int32_t>(box.c))) ||
+        !repl::set_rpc_param(*rpc, call.params, "InData.ActivatedItemGuid.D", repl::Value::i64(static_cast<int32_t>(box.d))) ||
+        !repl::set_rpc_param(*rpc, call.params, "InData.RewardInstance", repl::Value(reward))) {
+        return std::nullopt;
+    }
+    return rpcs(Role::PlayerController, "ClientOpenRewardSelection", std::span<const repl::RpcRequest>(&call, 1));
 }
 
 std::optional<Send> PlayerBootstrap::craft_interrupted() {
@@ -1445,6 +1554,20 @@ bool PlayerBootstrap::set_known_recipes(const std::vector<int64_t>& recipes) {
         list.elements.push_back(std::move(e));
     }
     return owner->obj.state.set(*owner->obj.schema, "PlayerKnownRecipeIds", Value(std::move(list)));
+}
+
+bool PlayerBootstrap::set_ignored_names(const std::vector<std::string>& names) {
+    if (!ok_ || names.size() > 200) return false;
+    repl::Subobject* owner = component(setup_.guids.owner_info);
+    if (!owner) return false;
+    repl::ArrayValue list;
+    list.elements.reserve(names.size());
+    for (const std::string& n : names) {
+        repl::ElementState e;
+        e.values[1] = Value::str(n);   // IgnoredCharacterNames
+        list.elements.push_back(std::move(e));
+    }
+    return owner->obj.state.set(*owner->obj.schema, "IgnoredCharacterNames", Value(std::move(list)));
 }
 
 bool PlayerBootstrap::set_active_stations(const std::vector<std::array<int32_t, 4>>& stations) {
@@ -2814,6 +2937,8 @@ std::optional<Send> PlayerBootstrap::correction(float time_stamp, const repl::Ve
 }
 
 #include "respawn/bootstrap_embersprings.inc"
+#include "bootstrap/bootstrap_group.inc"
+#include "bootstrap/bootstrap_guild.inc"
 #include "quest/bootstrap_objects.inc"
 
 }  // namespace aoc::worldd::bootstrap

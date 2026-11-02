@@ -109,14 +109,33 @@ bool is_person(const OpenTemplate& t, bool talks) {
 }
 
 /// The hostile humanoids whose fights are built, by the Blueprint's class name: the bandit raiders (a two-handed sword: strikes, a cleave, a heavy slash, a whirlwind, a leap), the bandit
-/// captains (a sword and shield) and the bandit arsonists (fire bolts from afar; their spray, stream and ring of fire are left out until the world can play them).  The camps they stand in are
-/// mixed with archers and healers whose arrows and heals are not built yet: those stay out of the world.
+/// captains (a sword and shield), the bandit arsonists (fire bolts from afar; their spray, stream and ring of fire are left out until the world can play them), the archers (arrows from afar)
+/// and the healers (a holy bolt, and heals on the friend who needs one: CombatWorld::land_on_friends).
 constexpr const char* kFightingHumanoids[] = {
     "Bandit_Raider", "Bandit_Raider1", "Bandit_Raider2", "Bandit_Raider3", "CSB_Bandit_Raider_StateTree",
     "Bandit_Raider_RareSpawn_BigBrother", "Bandit_Raider_RareSpawn_RiverRunnerRiggs", "BanditRaider_RareSpawn_VanguardRowan",
     "Bandit_Captain", "Bandit_Captain1", "Bandit_Captain2", "CSB_Forsaken_Blades_Sergeant",
     "Bandit_Captain_Clang", "Bandit_Captain_Capn_Knuckles", "Bandit_Captain_RareSpawn_TheShotcaller", "Bandit_Captain_RareSpawn_ChiefArmorerJannus",
-    "Bandit_Arsonist", "Bandit_Arsonist1", "CSB_Arsonist_StateTree", "Bandit_Arsonist_Blister", "Bandit_Arsonist_FlameFanatic", "BanditMage_RareSpawn_ChaplainMarion"};
+    "Bandit_Arsonist", "Bandit_Arsonist1", "CSB_Arsonist_StateTree", "Bandit_Arsonist_Blister", "Bandit_Arsonist_FlameFanatic", "BanditMage_RareSpawn_ChaplainMarion",
+    // the Anvils' bandits and the harbors' pirates: the same three fights with Blueprints of their own (their state trees list the same abilities: npc_abilities.tsv)
+    "Bandit_Raider_Dunir", "Bandit_Raider1_Dunir", "Bandit_Raider2_Dunir", "Bandit_Raider3_Dunir",
+    "Bandit_Captain_Dunir", "Bandit_Captain1_Dunir", "Bandit_Captain2_Dunir", "Bandit_Captain3_Dunir", "Bandit_Captain3_Dunir_Rarespawn",
+    "Bandit_Arsonist_Dunir", "Bandit_Arsonist1_Dunir", "Bandit_Arsonist2_Dunir", "Bandit_Arsonist3_Dunir",
+    "Bandit_Raider_Pirate", "Bandit_Raider1_Pirate", "Bandit_Raider2_Pirate", "Bandit_Raider3_Pirate",
+    "Bandit_Captain_Pirate", "Bandit_Captain1_Pirate", "Bandit_Captain2_Pirate", "Bandit_Captain3_Pirate",
+    "Bandit_Arsonist_Pirate", "Bandit_Arsonist1_Pirate", "Bandit_Arsonist2_Pirate", "Bandit_Arsonist3_Pirate",
+    "Bandit_Archer", "Bandit_Archer1", "Bandit_Archer2", "Bandit_Archer3", "Bandit_Archer_RareSpawn_FynnScoutMaster",
+    "Bandit_Archer_Dunir", "Bandit_Archer1_Dunir", "Bandit_Archer2_Dunir", "Bandit_Archer3_Dunir",
+    "Bandit_Archer_Pirate", "Bandit_Archer1_Pirate", "Bandit_Archer2_Pirate", "Bandit_Archer3_Pirate",
+    "Bandit_Healer", "Bandit_Healer1", "Bandit_Healer2", "Bandit_Healer3", "CSB_Bandit_Healer_StateTree",
+    "Bandit_Healer_Dunir", "Bandit_Healer1_Dunir", "Bandit_Healer2_Dunir", "Bandit_Healer3_Dunir",
+    "Bandit_Healer_Pirate", "Bandit_Healer1_Pirate", "Bandit_Healer2_Pirate", "Bandit_Healer3_Pirate",
+    "Bandit_Rogue", "Bandit_Rogue1", "Bandit_Rogue2", "Bandit_Rogue3", "Bandit_Rogue10_CloakCutpurse", "Bandit_Rogue10_Smuggler", "Bandit_Rogue_GuillaumeTaskmaster",
+    "Bandit_Rogue_Dunir", "Bandit_Rogue1_Dunir", "Bandit_Rogue2_Dunir", "Bandit_Rogue3_Dunir",
+    "Bandit_Rogue_Pirate", "Bandit_Rogue1_Pirate", "Bandit_Rogue2_Pirate", "Bandit_Rogue3_Pirate",
+    "Bandit_Musician", "Bandit_Musician1", "Bandit_Musician2", "Bandit_Musician3",
+    "Bandit_Musician_Dunir", "Bandit_Musician1_Dunir", "Bandit_Musician2_Dunir", "Bandit_Musician3_Dunir",
+    "Bandit_Musician_Pirate", "Bandit_Musician1_Pirate", "Bandit_Musician2_Pirate", "Bandit_Musician3_Pirate"};
 
 /// Gives the template the ability component of the recorded guard `guard` (a component with a list of records, which a villager's lacks) and puts `kit` into it as the records it loads
 /// (ReplicatedRecordsToLoad), each element made like the first of the guard's own list.  Everything else of the template stays: only this component comes from the guard.  False when
@@ -367,11 +386,17 @@ const OpenTemplate* GenericNpcs::prop_template(const content::NpcAssetRow& asset
     if (!config_.enabled) return fail(Verdict::Disabled);
     if (!excluded_.empty() && (excluded_.count(lower(blueprint_leaf(path))) || excluded_.count(lower(path)))) return fail(Verdict::Excluded);
     // only the game's folders of quest objects, whose classes derive from the state-machine actor the recorded template is (a door or a banner of another folder is a plain actor of another class)
-    static const char* const kFolders[] = {"/Game/DesignAssets/Interactables/Quest/", "/Game/DesignAssets/Quests/", "/Game/DesignAssets/Node/ServiceBuildings/ServiceBuilding_Scaffolding."};
+    static const char* const kFolders[] = {"/Game/DesignAssets/Interactables/Quest/", "/Game/DesignAssets/Quests/", "/Game/DesignAssets/Node/ServiceBuildings/ServiceBuilding_Scaffolding.",
+        // (the Anvils' Vyrium sites and Harbinger stones, and the Dunir statue of a vignette: each Blueprint has the interactable and state tree components of the recorded quest objects; modelled, no recording opens one)
+        "/Game/DesignAssets/Interactables/SimpleInteractables/BASE_Despawning_Interactable_Sparkly.", "/Game/Effects/FX_Environment/POI/Dun_Stoic_Shield/Blueprints/BP_VFX_Dun_Statue_Stoic_Shield.",
+        // (the crate on the ground, items/ground_crates.h: Prop_Despawning_Crate_C's parent is InteractableStateMachineBase itself, read from its BlueprintGeneratedClass)
+        "/Game/DesignAssets/World/Props/Interactables/Prop_Despawning_Crate."};
     bool allowed = false;
     for (const char* folder : kFolders) allowed = allowed || path.rfind(folder, 0) == 0;
     if (!allowed) return fail(Verdict::NotPawn);
-    if (const auto it = made_.find(path); it != made_.end()) return &it->second;
+    // (kept under a key of its own: template_for looks a pawn up by the plain path, so a Blueprint that is a quest object in one place and a pawn in another must not hand the prop's open to the pawn)
+    const std::string key = path + "#prop";
+    if (const auto it = made_.find(key); it != made_.end()) return &it->second;
     // the donor: a recorded quest object with its two blocks (the Sword of Judication's piece when the captures hold it, else the first)
     const OpenTemplate* donor = nullptr;
     for (const OpenTemplate& t : captured_->opens()) {
@@ -386,7 +411,7 @@ const OpenTemplate* GenericNpcs::prop_template(const content::NpcAssetRow& asset
     if (!exported) return fail(Verdict::NoPath);
     t.archetype = *exported;
     ++props_made_;
-    return &made_.emplace(path, std::move(t)).first->second;
+    return &made_.emplace(key, std::move(t)).first->second;
 }
 
 const OpenTemplate* GenericNpcs::make_plain(const content::NpcAssetRow& asset, Verdict* why, bool talks) const {

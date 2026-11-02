@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Ashes Reborn · GM tools</title>
+<link rel="stylesheet" href="style.css">
+<script src="commands.js" defer></script>
+<script src="app.js" defer></script>
+<script src="tools.js" defer></script>
+</head>
+<body>
+
+<main id="signin" class="signin" hidden>
+  <form id="signin-form" class="card signin-card">
+    <h1>Ashes Reborn</h1>
+    <p class="muted">GM tools</p>
+    <label for="username">Username</label>
+    <input id="username" autocomplete="username" required maxlength="64">
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" required maxlength="256">
+    <p id="signin-error" class="bad" role="alert" hidden></p>
+    <button class="primary" type="submit">Sign in</button>
+  </form>
+</main>
+
+<div id="app" class="app" hidden>
+  <header class="topbar">
+    <strong class="brand">Ashes Reborn <span class="muted">· GM</span></strong>
+    <span id="server" class="pill" role="status">Checking…</span>
+    <span id="session" class="session" role="status"></span>
+    <span class="spacer"></span>
+    <button id="gm-toggle" hidden></button>
+    <button id="signout">Sign out</button>
+  </header>
+
+  <nav class="nav" aria-label="Sections">
+    <button data-view="overview">Overview</button>
+    <button data-view="players">Players</button>
+    <button data-view="give-items">Give items</button>
+    <button data-view="give-money">Give money</button>
+    <button data-view="find">Find</button>
+    <button data-view="places">Places</button>
+    <button data-view="commands">Commands</button>
+  </nav>
+
+  <main class="content">
+    <section id="view-overview" class="view" hidden>
+      <h2>Overview</h2>
+      <p id="session-help" class="notice" hidden></p>
+      <div id="stats" class="stats"></div>
+    </section>
+
+    <section id="view-players" class="view" hidden>
+      <h2>Players <span id="player-count" class="muted"></span></h2>
+      <input id="player-filter" class="filter" type="search" placeholder="Search online players" aria-label="Search online players">
+      <div class="scroll"><table>
+        <thead><tr><th>Name</th><th>Position (cm)</th><th>State</th><th>Speed</th><th></th></tr></thead>
+        <tbody id="players"></tbody>
+      </table></div>
+      <p id="players-empty" class="muted" hidden>Nobody is in the world.</p>
+    </section>
+
+    <section id="view-give-items" class="view" hidden>
+      <h2>Give items</h2>
+      <div class="split give">
+        <div>
+          <form id="give-search" class="row">
+            <input id="give-query" type="search" placeholder="Search items, for example sword tide or iron ore" aria-label="Search items" maxlength="128" autocomplete="off">
+          </form>
+          <div id="give-filters" class="presets filters" role="group" aria-label="Item type"></div>
+          <p id="give-note" class="muted" hidden></p>
+          <div class="scroll"><table>
+            <thead><tr><th>Item</th><th>Level</th><th>Stack</th></tr></thead>
+            <tbody id="give-results"></tbody>
+          </table></div>
+        </div>
+        <form id="give-form" class="card sticky" novalidate>
+          <label for="give-player">Player</label>
+          <input id="give-player" value="self">
+          <label>Item</label>
+          <p id="give-selected" class="muted">Choose one from the list.</p>
+          <label for="give-count">Count</label>
+          <input id="give-count" type="number" min="1" max="100000" step="1" value="1">
+          <div id="give-count-presets" class="presets"></div>
+          <label for="give-rarity">Rarity</label>
+          <select id="give-rarity">
+            <option value="">The item's own</option>
+            <option>Common</option><option>Uncommon</option><option>Rare</option><option>Heroic</option><option>Epic</option><option>Legendary</option><option>Artifact</option>
+          </select>
+          <button id="give-submit" class="primary wide" type="submit" disabled>Give</button>
+          <p id="give-problem" class="muted small"></p>
+          <p id="give-result" class="small" role="status"></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="view-give-money" class="view" hidden>
+      <h2>Give money</h2>
+      <form id="money-form" class="card narrow" novalidate>
+        <label for="money-player">Player</label>
+        <input id="money-player" value="self">
+        <div class="coins">
+          <div><label for="money-gold">Gold</label><input id="money-gold" type="number" min="0" max="1000" step="1"></div>
+          <div><label for="money-silver">Silver</label><input id="money-silver" type="number" min="0" step="1"></div>
+          <div><label for="money-copper">Copper</label><input id="money-copper" type="number" min="0" step="1"></div>
+        </div>
+        <div id="money-presets" class="presets"></div>
+        <p id="money-total" class="muted small"></p>
+        <button id="money-submit" class="primary wide" type="submit" disabled>Give</button>
+        <p id="money-problem" class="muted small"></p>
+        <p id="money-result" class="small" role="status"></p>
+        <p class="muted small">A purse holds 1,000 gold at most. Anything past that is not added.</p>
+      </form>
+    </section>
+
+    <section id="view-find" class="view" hidden>
+      <h2>Find</h2>
+      <form id="find-form" class="row">
+        <input id="find-query" type="search" placeholder="Player, creature or resource node" aria-label="Name to find" minlength="2" maxlength="128" required>
+        <button class="primary" type="submit">Search</button>
+      </form>
+      <p id="find-note" class="muted" hidden></p>
+      <div class="split">
+        <div class="scroll"><table>
+          <thead><tr><th>Name</th><th>Kind</th><th>Lvl</th><th>Health</th><th>State</th></tr></thead>
+          <tbody id="find-results"></tbody>
+        </table></div>
+        <aside id="inspect" class="card" hidden></aside>
+      </div>
+    </section>
+
+    <section id="view-places" class="view" hidden>
+      <h2>Places</h2>
+      <input id="place-filter" type="search" placeholder="Filter places" aria-label="Filter places">
+      <div class="scroll"><table>
+        <thead><tr><th>Name</th><th>Record</th><th>Position (cm)</th><th></th></tr></thead>
+        <tbody id="places"></tbody>
+      </table></div>
+    </section>
+
+    <section id="view-commands" class="view" hidden>
+      <h2>Commands</h2>
+      <p id="commands-help" class="notice" hidden></p>
+      <div class="commands">
+        <div id="catalog" class="catalog"></div>
+        <form id="command-form" class="card" novalidate>
+          <h3 id="command-title">Choose a command</h3>
+          <p id="command-help" class="muted"></p>
+          <div id="command-fields"></div>
+          <label for="command-line">Command line</label>
+          <input id="command-line" spellcheck="false" autocomplete="off" maxlength="1024" placeholder=".GM help">
+          <p id="command-problem" class="bad small" role="alert" hidden></p>
+          <button class="primary" type="submit">Run</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <section class="activity" aria-label="Activity">
+    <h2>Activity</h2>
+    <div id="log" class="log" role="log"></div>
+  </section>
+</div>
+
+<dialog id="confirm">
+  <form method="dialog">
+    <h3>Run this?</h3>
+    <p id="confirm-text"></p>
+    <code id="confirm-command"></code>
+    <div class="row end">
+      <button value="no" autofocus>Cancel</button>
+      <button value="yes" class="danger">Run it</button>
+    </div>
+  </form>
+</dialog>
+
+</body>
+</html>

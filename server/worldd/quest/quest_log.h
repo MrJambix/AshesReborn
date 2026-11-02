@@ -63,6 +63,8 @@ const char* create_name(Create c);
 
 /// The most quests one log holds (the game's own limit).
 inline constexpr size_t kMaxQuests = 500;
+/// Set on a character whose Destiny quests carry the links that keep them out of the client's tracker (QuestLog::load).
+inline constexpr const char* kDestinyLinksVariable = "Destiny.TrackerLinks";
 
 enum class Status : int32_t { Active = 0, Completed = 1, Failed = 2, Paused = 3 };
 
@@ -85,6 +87,11 @@ struct QuestInstance {
     double  end_time = 0;           // quests, slice 2: when it was completed or failed (not saved: a quest found done at the login is taken out of the log at once)
     int64_t source = 0;             // the NPC (population instance) that gave it, 0: none
     std::vector<ObjectiveState> objectives;
+    /// A finished Destiny step whose rewards wait for the client's claim: it stays in the log, Active and Completed at once, which is what the client's claim button asks of it.  (Not saved: a saved
+    /// Completed quest that pays is waiting by definition, QuestLog::load.)
+    bool    awaiting_claim = false;
+    /// What the client is told links a quest of the Destiny board to the rest of the chain (quest_wire.cpp).  An ordinary quest has neither.
+    Guid128 destiny_parent, destiny_objective;
     // what the client was told: the replication ids of its two items (kIndexNone while it was not sent), and whether it has to be sent again
     int32_t cache_id = -1, vars_id = -1;
     bool    wire_dirty = true;
@@ -175,6 +182,11 @@ private:
     bool changed_ = false;
     std::mt19937_64 rng_;
 };
+
+/// What finishing `q` pays: the quest's reward tables, then those of its completed objectives.
+std::vector<int64_t> quest_reward_tables(const content::QuestRow& def, const QuestInstance& q);
+/// Whether a finished `def` waits for the client's claim instead of paying at once: a Destiny quest with anything to pay.
+bool pays_on_claim(const content::QuestRow& def);
 
 /// The variables the client keeps for one instance, in the order the game lists them: the quest's four, then each objective's seven.  (key, value).
 std::vector<std::pair<uint64_t, int32_t>> instance_variables(const QuestInstance& q);

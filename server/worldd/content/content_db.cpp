@@ -104,8 +104,9 @@ constexpr const char* kSetBonusSql =
 constexpr const char* kEquipSlotSql = "SELECT slot, name FROM equip_slot";
 // plan D1 (contentc version 5): schema.go's item_use, item_action, action_response, action_reward, reward_table, reward_item, reward_xp,
 // leveling_type, leveling_curve, skill_auto_grant and skill_rank_stat_mod
-constexpr const char* kItemUseSql = "SELECT item_guid, activation, consume_on_use, cooldown, disabled_in_combat FROM item_use WHERE item_guid = ?1";
+constexpr const char* kItemUseSql = "SELECT item_guid, activation, consume_on_use, cooldown, disabled_in_combat, cast_ability_guid FROM item_use WHERE item_guid = ?1";
 constexpr const char* kItemActionSql = "SELECT action_guid FROM item_action WHERE item_guid = ?1 ORDER BY ord";
+constexpr const char* kItemHasTagSql = "SELECT 1 FROM item_tag WHERE item_guid = ?1 AND (tag = ?2 OR tag LIKE ?2 || '.%') LIMIT 1";
 constexpr const char* kActionSql = "SELECT guid, name, response_type, class_guid, class_name, remove_up_to_quantity FROM action_response WHERE guid = ?1";
 constexpr const char* kActionRewardSql = "SELECT reward_table_guid FROM action_reward WHERE action_guid = ?1 ORDER BY ord";
 constexpr const char* kRewardTableSql = "SELECT guid, name, predicate, level_below, modelled FROM reward_table WHERE guid = ?1";
@@ -556,6 +557,15 @@ std::optional<AbilityRules> ContentDb::ability_rules(std::string& error) const {
     return out;
 }
 
+bool ContentDb::goes_to_quest_bag(int64_t guid) const {
+    Stmt q(db_, "SELECT 1 FROM quest_item q WHERE q.item_guid = ?1 "
+                "AND NOT EXISTS (SELECT 1 FROM item_equip_slot e WHERE e.item_guid = q.item_guid) "
+                "AND NOT EXISTS (SELECT 1 FROM item_use u WHERE u.item_guid = q.item_guid AND u.activation NOT IN ('Equip', 'Noop'))");
+    if (!q.ok()) return false;   // (a file with no such table: the Backpack, as before)
+    sqlite3_bind_int64(q.get(), 1, guid);
+    return sqlite3_step(q.get()) == SQLITE_ROW;
+}
+
 std::optional<ItemRecord> ContentDb::item(int64_t guid, std::string& error) const {
     error.clear();
     ItemRecord rec;
@@ -935,6 +945,32 @@ bool guid_list(sqlite3* db, const char* sql, int64_t parent, std::vector<int64_t
 
 }  // namespace
 
+bool ContentDb::item_has_tag(int64_t item_guid, const std::string& tag, std::string& error) const {
+    error.clear();
+    Stmt q(db_, kItemHasTagSql);
+    if (!q.ok()) {
+        error = "content.db item tag query failed: " + db_message(db_);
+        return false;
+    }
+    sqlite3_bind_int64(q.get(), 1, item_guid);
+    sqlite3_bind_text(q.get(), 2, tag.c_str(), -1, SQLITE_TRANSIENT);
+    const int step = sqlite3_step(q.get());
+    if (step == SQLITE_ROW) return true;
+    if (step != SQLITE_DONE) error = "content.db item tag query failed: " + db_message(db_);
+    return false;
+}
+
+int64_t ContentDb::consumable_ability(int64_t item_guid, std::string& error) const {
+    const auto use = item_use(item_guid, error);
+    if (!use || use->activation != "CastAbility" || !use->consume_on_use || use->cast_ability == 0) return 0;
+    // the kinds the server runs: a scroll or an elixir
+    for (const char* tag : {"Item.Consumable.Scroll", "Item.Consumable.Elixir"}) {
+        if (item_has_tag(item_guid, tag, error)) return use->cast_ability;
+        if (!error.empty()) return 0;
+    }
+    return 0;
+}
+
 std::optional<ItemUse> ContentDb::item_use(int64_t item_guid, std::string& error) const {
     error.clear();
     ItemUse u;
@@ -952,7 +988,7 @@ std::optional<ItemUse> ContentDb::item_use(int64_t item_guid, std::string& error
             return std::nullopt;
         }
         sqlite3_stmt* s = q.get();
-        if (!column_is_text(s, 1) || !column_is_int(s, 2) || !column_is_real(s, 3) || !column_is_int(s, 4)) {
+        if (!column_is_text(s, 1) || !column_is_int(s, 2) || !column_is_real(s, 3) || !column_is_int(s, 4) || !column_is_int(s, 5)) {
             error = "content.db item_use " + std::to_string(item_guid) + " has a column of the wrong storage class";
             return std::nullopt;
         }
@@ -961,6 +997,7 @@ std::optional<ItemUse> ContentDb::item_use(int64_t item_guid, std::string& error
         u.consume_on_use = sqlite3_column_int64(s, 2) != 0;
         u.cooldown = sqlite3_column_double(s, 3);
         u.disabled_in_combat = sqlite3_column_int64(s, 4) != 0;
+        u.cast_ability = sqlite3_column_int64(s, 5);
     }
     if (!guid_list(db_, kItemActionSql, item_guid, u.actions, error, "item action")) return std::nullopt;
     return u;
@@ -3580,6 +3617,17 @@ std::optional<ObjectData> ContentDb::object_data(std::string& error) const {
         while ((step = sqlite3_step(q.get())) == SQLITE_ROW) out.item_boxes[sqlite3_column_int64(q.get(), 0)] = sqlite3_column_int64(q.get(), 1);
         if (step != SQLITE_DONE) return failed("item_box");
     }
+    {   // (a file older than contentc version 39 has no such table: its objects give what they name themselves)
+        Stmt q(db_, "SELECT owner_guid, table_guid, items FROM object_reward ORDER BY owner_guid, ord");
+        if (q.ok()) {
+            int step;
+            while ((step = sqlite3_step(q.get())) == SQLITE_ROW) {
+                sqlite3_stmt* s = q.get();
+                out.rewards[sqlite3_column_int64(s, 0)].push_back({sqlite3_column_int64(s, 1), json_ids(column_text(s, 2))});
+            }
+            if (step != SQLITE_DONE) return failed("object_reward");
+        }
+    }
     return out;
 }
 
@@ -3849,7 +3897,7 @@ std::optional<CraftRecipeData> ContentDb::craft_recipe_data(std::string& error) 
         return std::nullopt;
     };
     {
-        Stmt q(db_, "SELECT guid, name, profession_guid, tier, base_duration, std_cost, cost_guid, reward_guid, learnable, destination, fuel, blacklisted, category_tag FROM craft_recipe");
+        Stmt q(db_, "SELECT guid, name, profession_guid, tier, base_duration, std_cost, cost_guid, reward_guid, learnable, destination, fuel, blacklisted, category_tag, duration_formula, quantity_formula, quality_formula FROM craft_recipe");
         if (!q.ok()) return failed("craft_recipe");
         int step;
         while ((step = sqlite3_step(q.get())) == SQLITE_ROW) {
@@ -3872,6 +3920,9 @@ std::optional<CraftRecipeData> ContentDb::craft_recipe_data(std::string& error) 
             r.fuel = static_cast<int>(sqlite3_column_int64(s, 10));
             r.blacklisted = sqlite3_column_int64(s, 11) != 0;
             r.category_tag = column_text(s, 12);
+            r.has_duration_formula = !column_text(s, 13).empty();
+            r.has_quantity_formula = !column_text(s, 14).empty();
+            r.has_quality_formula = !column_text(s, 15).empty();
             out.recipes[r.guid] = std::move(r);
         }
         if (step != SQLITE_DONE) return failed("craft_recipe");
@@ -4006,6 +4057,75 @@ std::optional<CraftRecipeData> ContentDb::craft_recipe_data(std::string& error) 
         out.xp_curves.tier[0] = stat_curve_points(db_, kCurveTierModNovice);
         out.xp_curves.tier[1] = stat_curve_points(db_, kCurveTierModApprentice);
         out.xp_curves.tier[2] = stat_curve_points(db_, kCurveTierModJourneyman);
+    }
+    {   // crafting quality: the curves of the artisan equations and the rating stats of the crafting and processing professions (the names are matched without case: LumberMilling / Lumbermilling)
+        ArtisanData& a = out.artisan;
+        const auto curve_named = [&](const std::string& name) {
+            ArtisanData::Curve points;
+            Stmt q(db_, "SELECT level, value FROM stat_curve WHERE name = ?1 ORDER BY ord");
+            if (!q.ok()) return points;
+            sqlite3_bind_text(q.get(), 1, name.c_str(), static_cast<int>(name.size()), SQLITE_TRANSIENT);
+            while (sqlite3_step(q.get()) == SQLITE_ROW) points.emplace_back(sqlite3_column_double(q.get(), 0), sqlite3_column_double(q.get(), 1));
+            return points;
+        };
+        a.crafting_quality = curve_named("CraftingQuality");
+        a.crafting_xp = curve_named("CraftingXP");
+        a.processing_time = curve_named("ProcessingTime");
+        a.processing_xp = curve_named("ProcessingXP");
+        static const char* const kRarities[] = {"Common", "Uncommon", "Rare", "Heroic", "Epic", "Legendary"};
+        for (int i = 0; i < 5; ++i) a.rarity_step[i] = curve_named(std::string("ProcessingRarityIncrease_") + kRarities[i]);
+        for (int i = 0; i < 6; ++i) a.quantity_chance[i] = curve_named(std::string("ProcessingQuantityChance_") + kRarities[i]);
+        const auto lower_of = [](std::string s) {
+            for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return s;
+        };
+        std::map<std::string, int64_t> rating;   // the lower case name of a rating stat -> its guid
+        {
+            Stmt q(db_, "SELECT guid, name FROM stat_def WHERE name LIKE 'Artisan%Rating'");
+            if (q.ok()) {
+                while (sqlite3_step(q.get()) == SQLITE_ROW) {
+                    if (column_is_int(q.get(), 0)) rating[lower_of(column_text(q.get(), 1))] = sqlite3_column_int64(q.get(), 0);
+                }
+            }
+        }
+        const auto stat_of = [&](const std::string& name) -> int64_t {
+            const auto it = rating.find(lower_of(name));
+            return it == rating.end() ? 0 : it->second;
+        };
+        a.general_crafting.quality = stat_of("Artisan_Crafting_Quality_Rating");
+        a.general_crafting.xp = stat_of("Artisan_Crafting_XP_Rating");
+        a.general_processing.processing = true;
+        a.general_processing.time = stat_of("Artisan_Processing_Time_Rating");
+        a.general_processing.quantity = stat_of("Artisan_Processing_Quantity_Rating");
+        a.general_processing.rarity = stat_of("Artisan_Processing_Rarity_Rating");
+        a.general_processing.xp = stat_of("Artisan_Processing_XP_Rating");
+        Stmt q(db_, "SELECT guid, name, category FROM profession");
+        if (q.ok()) {
+            while (sqlite3_step(q.get()) == SQLITE_ROW) {
+                if (!column_is_int(q.get(), 0)) continue;
+                const int64_t guid = sqlite3_column_int64(q.get(), 0);
+                const std::string name = column_text(q.get(), 1), category = column_text(q.get(), 2);
+                ArtisanProfession p;
+                if (category == "Crafting") {
+                    p.quality = stat_of("Artisan_Crafting_" + name + "_Quality_Rating");
+                    p.xp = stat_of("Artisan_Crafting_" + name + "_XP_Rating");
+                    if (p.quality != 0 || p.xp != 0) {
+                        a.by_profession[guid] = p;
+                        ++a.crafting_professions;
+                    }
+                } else if (category == "Processing") {
+                    p.processing = true;
+                    p.time = stat_of("Artisan_Processing_" + name + "_Time_Rating");
+                    p.quantity = stat_of("Artisan_Processing_" + name + "_Quantity_Rating");
+                    p.rarity = stat_of("Artisan_Processing_" + name + "_Rarity_Rating");
+                    p.xp = stat_of("Artisan_Processing_" + name + "_XP_Rating");
+                    if (p.time != 0 || p.quantity != 0 || p.rarity != 0 || p.xp != 0) {
+                        a.by_profession[guid] = p;
+                        ++a.processing_professions;
+                    }
+                }
+            }
+        }
     }
     return out;
 }

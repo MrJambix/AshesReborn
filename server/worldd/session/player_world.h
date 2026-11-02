@@ -37,6 +37,8 @@
 
 #include "session/reward_rates.h"
 #include "session/chat.h"
+#include "session/group.h"
+#include "session/guild.h"
 
 #include "bootstrap/bootstrap.h"
 #include "bootstrap/character_setup.h"
@@ -47,6 +49,7 @@
 #include "foliage/foliage.h"
 #include "gather/gathering.h"
 #include "items/currency.h"
+#include "items/ground_crates.h"
 #include "items/inventory.h"
 #include "items/rarity.h"
 #include "nav/area_nav.h"
@@ -110,6 +113,30 @@ struct MovementConfig {
 class PlayerWorld {
 public:
     std::shared_ptr<chat::Room> chat_room() const { return chat_room_; }
+    std::shared_ptr<group::Book> group_book() const { return group_book_; }
+    std::shared_ptr<guild::Book> guild_book() const { return guild_book_; }
+    bool guilds_enabled() const { return guilds_enabled_; }
+    void set_guilds_enabled(bool on) { guilds_enabled_ = on; }
+    /// Crates on the ground (items/ground_crates.h).  Off (--no-ground-crates): Drop Crate puts the crate in the item bag, as before.
+    bool ground_crates_enabled() const { return ground_crates_enabled_; }
+    void set_ground_crates_enabled(bool on) { ground_crates_enabled_ = on; }
+    /// Where the crates on the ground are kept between runs (empty: nowhere, a restart loses them).  The world writes it after every crate laid down or taken, and lays the crates it
+    /// holds out again at its first tick (each with the time it had left before going back).
+    void set_ground_crates_file(std::string path) { ground_crates_file_ = std::move(path); }
+    /// Lays `item` (a crate the cargo slot held) on the ground at (x, y, z), its foot: an actor of `registry` (the world's: a session holds the world as const) others can pick it up
+    /// from, which goes back to `character` after items::kGroundCrateBackSeconds of the world clock.  The actor's id, or nullopt with `error` when the crates are off or the actor
+    /// cannot be made (the caller keeps the crate).
+    std::optional<uint64_t> lay_crate(world::ActorRegistry& registry, const svc::InventoryItem& item, const std::string& character, const std::string& name, double x, double y,
+                                      double z, double yaw_degrees, double world_time, std::string& error) const;
+    /// The crate the actor `actor` shows (null: it is no crate on the ground).
+    const items::GroundCrate* ground_crate(uint64_t actor) const { return ground_crates_.find(actor); }
+    /// The crate is picked up: it leaves the book and its actor `registry`.  nullopt when it is gone already (someone else was first).
+    std::optional<items::GroundCrate> take_crate(world::ActorRegistry& registry, uint64_t actor) const;
+    /// The actors of `character`'s crates whose time on the ground is over (they go back to their owner at the owner's next chance).
+    std::vector<uint64_t> crates_back_for(const std::string& character) const { return ground_crates_.due_for(character, world_clock_); }
+    size_t ground_crates() const { return ground_crates_.size(); }
+    /// A test's template of the crate's actor (the world makes its own from the area's recorded quest objects).  Must outlive the world.
+    void set_ground_crate_template(const spawns::OpenTemplate* open) { crate_template_ = open; }
     /// `content` is null when content.db did not open (`content_problem` then says why). `guids` must outlive
     /// this object and mint under `server_id`, the id mesh gave worldd.
     PlayerWorld(const content::ContentDb* content, std::string content_problem, bootstrap::GameStateMode mode,
@@ -230,6 +257,8 @@ public:
     void                          set_quests(quest::QuestBook book) { quests_ = std::move(book); }
     /// Quests part 3, slice 1: the definitions of the quest objects (content::ObjectData), read with the area; null for a content.db older than contentc version 36 (no quest object is made).
     const content::ObjectData*    objects() const { return objects_ ? &*objects_ : nullptr; }
+    /// A test's quest object definitions (load_area reads the real ones).
+    void                          set_objects(content::ObjectData data) { objects_ = std::move(data); }
     /// A quest object was used and leaves the world: notes that it is made again after its instance's own respawn time (`now_seconds` is the world clock; the caller removes the actor from the
     /// registry).  False when the actor is no quest object of this world.
     bool                          prop_gone(uint64_t actor_id, double now_seconds) const;
@@ -490,10 +519,26 @@ public:
     /// How each session's ActorView runs (the rings, the tick, the opens cap): the defaults are retail's; a test changes them before a session joins.
     void                          set_view_config(const ActorView::Config& config) { view_config_ = config; }
     const ActorView::Config&      view_config() const { return view_config_; }
+    /// The pace of the answers to the players' good moves (session/members/move_ack.inc): the latest good move of a tick is answered when more than this has gone by since the last
+    /// answer (the original server's 100 ms; worldd's default); zero answers every move at once (the default here, and --move-ack-gap-ms 0).
+    void                          set_move_ack_gap(std::chrono::milliseconds gap) { move_ack_gap_ = std::chrono::duration_cast<Clock::duration>(gap); }
+    Clock::duration               move_ack_gap() const { return move_ack_gap_; }
 // built by Cyb with C | O | A
 
 private:
     std::shared_ptr<chat::Room> chat_room_ = std::make_shared<chat::Room>();
+    std::shared_ptr<group::Book> group_book_ = std::make_shared<group::Book>(group::mint_guid);
+    std::shared_ptr<guild::Book> guild_book_ = std::make_shared<guild::Book>();
+    bool guilds_enabled_ = true;
+    bool ground_crates_enabled_ = true;
+    mutable items::GroundCrates ground_crates_;   // (the sessions lay and take crates through their const world, as they use quest objects)
+    std::string ground_crates_file_;
+    bool        ground_crates_restored_ = false;
+    mutable bool ground_crates_restoring_ = false;
+    mutable std::vector<items::GroundCrate> ground_crates_unplaced_;   // crates the file held that could not be laid out again: kept in the file for the next start
+    void save_ground_crates() const;
+    void restore_ground_crates();
+    const spawns::OpenTemplate* crate_template_ = nullptr;
     void log_npc_types() const;
     void log_huntables() const;
     void log_hunting_kinds();
@@ -539,7 +584,7 @@ public:
 private:
     WindowCost window_cost_;
     static constexpr double kWindowBudgetMs = 3.0;
-    /// The window is driven at the world's 20 Hz, not once per network datagram (review A I2): ticks closer than this are skipped.
+    /// The window is driven at most this often, whatever the tick's rate (review A I2: the old loop ticked the world after every datagram): ticks closer than this are skipped.
     static constexpr double kWindowPeriodSeconds = 0.045;
     /// The window's state goes to the log at info this often (world seconds): the next in-game test can be read from it.
     static constexpr double kWindowLogSeconds = 30.0;
@@ -584,6 +629,7 @@ private:
     bool                                 gm_garden_ = false;
     std::optional<spawns::GardenReport>  garden_report_;
     ActorView::Config                    view_config_;
+    Clock::duration                      move_ack_gap_{};
     std::unique_ptr<nav::AreaNav>        nav_;
     npc::MotionTable                     motion_;
     bool                                 motion_loaded_ = false;

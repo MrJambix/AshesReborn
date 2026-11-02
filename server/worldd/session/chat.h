@@ -5,7 +5,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <algorithm>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -79,6 +82,30 @@ public:
         return peer;
     }
 
+    /// Whom a character ignores, for as long as worldd runs: chat from them does not reach them.  Saved nowhere yet.  A name is kept as the character online spells it (else as typed).
+    std::string ignore(const Peer& who, const std::string& name) {
+        if (!valid_text(name) || same_name(who.name, name)) return "You cannot ignore that name.";
+        auto& list = ignored_[lowered(who.name)];
+        if (list.size() >= kMaxIgnored && !list.count(lowered(name))) return "Your ignore list is full.";
+        std::string shown = name;
+        for (const auto& peer : live_peers()) {
+            if (same_name(peer->name, name)) shown = peer->name;
+        }
+        list[lowered(name)] = shown;
+        return {};
+    }
+    bool unignore(const Peer& who, const std::string& name) { return ignored_[lowered(who.name)].erase(lowered(name)) > 0; }
+    /// The names `who` ignores, as shown (in the order of their lower-case spelling).
+    std::vector<std::string> ignored_by(const Peer& who) {
+        std::vector<std::string> out;
+        for (const auto& [key, shown] : ignored_[lowered(who.name)]) out.push_back(shown);
+        return out;
+    }
+    bool ignores(const std::string& who, const std::string& name) const {
+        const auto it = ignored_.find(lowered(who));
+        return it != ignored_.end() && it->second.count(lowered(name)) > 0;
+    }
+
     // Empty means accepted. A refusal is shown only to the sender.
     std::string send(Peer& sender, const std::string& text, uint8_t category, std::string target) {
         if (!valid_text(text)) return "Chat messages must contain 1 to 256 characters on one line.";
@@ -90,6 +117,7 @@ public:
             std::shared_ptr<Peer> recipient;
             for (const auto& peer : peers) if (same_name(peer->name, target)) { recipient = peer; break; }
             if (!recipient) return "That player is not online.";
+            if (ignores(recipient->name, sender.name)) return recipient->name + " is not accepting your messages.";
             if (recipient->inbox.size() >= kMaxInbox || sender.inbox.size() >= kMaxInbox) return "Chat is busy. Please try again.";
             recipient->inbox.push_back({text, sender.name, kTell});
             if (recipient.get() != &sender) sender.inbox.push_back({text, recipient->name, kTell});
@@ -106,12 +134,19 @@ public:
         }
         for (const auto& peer : peers) {
             if (range > 0 && std::hypot(std::hypot(peer->x - sender.x, peer->y - sender.y), peer->z - sender.z) > range) continue;
+            if (ignores(peer->name, sender.name)) continue;
             if (peer->inbox.size() < kMaxInbox) peer->inbox.push_back({text, sender.name, category});
         }
         return {};
     }
 
 private:
+    static constexpr size_t kMaxIgnored = 200;
+    static std::string lowered(std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + ('a' - 'A')) : static_cast<char>(c); });
+        return s;
+    }
+    std::map<std::string, std::map<std::string, std::string>> ignored_;   // who (lower case) -> name (lower case) -> name as shown
     std::vector<std::shared_ptr<Peer>> live_peers() {
         std::vector<std::shared_ptr<Peer>> live;
         for (auto it = peers_.begin(); it != peers_.end();) {

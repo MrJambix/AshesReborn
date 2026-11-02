@@ -675,6 +675,36 @@ static void check_limits(const std::vector<Send>& seq, const char* what) {
     CHECK(window_ok, msg);
 }
 
+/// The ignore list window: OwnerInfo.IgnoredCharacterNames goes out in the pawn's OwnerInfo update, which reads back to its last bit with the names in order.
+static void test_ignored_names() {
+    std::printf("OwnerInfo.IgnoredCharacterNames: the ignore list window\n");
+    PlayerBootstrap pb = captured_bootstrap();
+    CHECK(pb.pawn_second_state().has_value(), "the pawn's second state goes out first");
+    CHECK(pb.set_ignored_names({"Bob", "Somebody"}), "the names are set");
+    const auto up = pb.currencies_update();
+    CHECK(up.has_value(), "the OwnerInfo update is built");
+    if (!up) return;
+    const Decoded d = decode(pb, *up);
+    CHECK(all_read(d), "every block of the update reads to its last bit");
+    const Subobject* owner = pb.pawn().find(pb.setup().guids.owner_info);
+    bool named = false;
+    for (const Block& b : d.blocks) {
+        if (b.is_actor || !owner || b.object.ObjectId != owner->guid.ObjectId) continue;
+        const Value* v = value_of(b, *owner->obj.schema, "IgnoredCharacterNames");
+        const auto* arr = v ? v->get_if<aoc::protocol::repl::ArrayValue>() : nullptr;
+        if (!arr || arr->elements.size() != 2) continue;
+        const auto name_at = [&](size_t i) -> std::string {
+            const auto it = arr->elements[i].values.find(1);
+            const std::string* s = it == arr->elements[i].values.end() ? nullptr : it->second.get_if<std::string>();
+            return s ? *s : std::string();
+        };
+        named = name_at(0) == "Bob" && name_at(1) == "Somebody";
+    }
+    CHECK(named, "the OwnerInfo block carries the two names, in order");
+    std::vector<std::string> many(201, "x");
+    CHECK(!pb.set_ignored_names(many), "more than 200 names are refused");
+}
+
 // ---- the whole sequence ------------------------------------------------------------------------------------------------
 
 static void test_sequence(bs::GameStateMode mode, const char* name) {
@@ -1081,6 +1111,7 @@ int main() {
     test_sequence(bs::GameStateMode::Captured, "Captured");
     test_native_character();
     test_guids_and_parts();
+    test_ignored_names();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

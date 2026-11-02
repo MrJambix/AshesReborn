@@ -146,6 +146,10 @@ func (f *fakeStore) ActionBar(_ context.Context, id string) ([]character.Actionb
 
 // (CoA | C-Y-B)
 
+func (s *fakeStore) ListGuilds(ctx context.Context) ([]character.Guild, error) { return nil, nil }
+func (s *fakeStore) SaveGuild(ctx context.Context, g character.Guild) error     { return nil }
+func (s *fakeStore) DeleteGuild(ctx context.Context, guid string) error         { return nil }
+
 func (f *fakeStore) SaveProgress(_ context.Context, id string, p character.Progress) (character.Character, error) {
 	c, ok := f.byID[id]
 	if !ok {

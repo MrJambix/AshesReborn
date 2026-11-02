@@ -16,7 +16,10 @@
 //    - a limit on how often a reaction may fire (GlobalProcLimit, InstigatorProcLimit) is counted per reaction here (one holder), and a carrier that is a
 //      pipeline effect is taken off when its reaction reached it.
 //
-//  What this file serves: the events Hit (OwnerHits) and Ability (Consume), the instigator Owner, and the targets Owner (the holder) and Targets (the hit's).
+//  What this file serves: the events Hit (OwnerHits) and Ability (Consume), the instigators Owner and Instigator (who put the effect on: the holder itself, unless a
+//  creature's hit left it), and the targets Owner and Instigator (the holder), Targets (the hit's) and HitInstigator (who hit the holder).
+//  The hit taken (Hit, OwnerIsHit) is raised for the Cleric's reactions only (Defiant Light): the other classes' react with Guard, Dodge, Camouflage, Stealth and Thorns, none of them
+//  checked yet, and Guard's and Dodge's stamina rules are A7's.
 //  The rest of the bindings, instigators and targets of the 335 records are left alone and said once in the log when a reaction would need them.
 // ============================================================================
 #include "session/ability_pipeline.h"
@@ -40,10 +43,14 @@ namespace {
 // The EReactionTarget bits of a reaction's TargetsBitmask.
 constexpr int kTargetOwner = 1;
 constexpr int kTargetTargets = 8;
+constexpr int kTargetInstigator = 2;
+constexpr int kTargetHitInstigator = 16;
+constexpr int kTargetInstigatorsPet = 8192;
 
 // The event kinds (the byte of the binding the reaction listens with) and the bits this file serves.
 constexpr int kKindHit = 0;
 constexpr int kKindAbility = 2;
+constexpr int kBitOwnerIsHit = 2;
 constexpr int kBitOwnerHits = 4;
 constexpr int kBitConsume = 4;
 
@@ -61,7 +68,50 @@ void AbilityPipeline::set_reaction_carriers(std::vector<int64_t> effect_guids) {
     reaction_carriers_ = std::move(effect_guids);
 }
 
+void AbilityPipeline::fire_carried_reactions(AbilityChange& c, const HitEvent& ev, double t) {
+    if (!reactions_enabled_ || carried_depth_ >= 2 || !catalog_ || !ev.hit || ev.hit->reactions.empty() || (ev.targets.empty() && !ev.on_self)) return;
+    ReactionContext rc;
+    rc.hit = &ev;
+    for (const int64_t guid : ev.hit->reactions) {
+        const ReactionDef* r = catalog_->reaction(guid);
+        if (!r) continue;
+        const content::ReactionRow& row = r->row;
+        if (row.trigger_expr != 0) {
+            double v = 0;
+            std::string why;
+            if (!eval_in_event(row.trigger_expr, rc, v, why)) {
+                if (reaction_noted_.insert(guid).second) spdlog::info("[abilities] the reaction {} stays inert: {}", row.name, why);
+                continue;
+            }
+            if (v == 0) continue;
+        }
+        HitSource src;
+        src.type = content::kSourceTypeReaction;
+        src.guid = guid;
+        src.actor = false;
+        src.confirm = true;
+        ++carried_depth_;
+        const ReactionContext* const outer = active_reaction_;
+        active_reaction_ = &rc;
+        for (const int64_t hit_guid : row.hits) {
+            const HitDef* hit = catalog_->hit(hit_guid);
+            if (!hit) continue;
+            if ((row.targets_mask & (kTargetOwner | kTargetInstigator)) != 0) apply_hit_here(c, *hit, t, true, src);   // (the caster's: its own mask speaks of whoever casts it)
+            if ((row.targets_mask & kTargetTargets) != 0 && !ev.targets.empty()) apply_hit_on_targets(c, *hit, ev.targets, t, src, nullptr);
+            if ((row.targets_mask & kTargetInstigatorsPet) != 0 && combat_) {
+                if (const uint64_t pet = combat_->own_pet()) apply_hit_on_targets(c, *hit, {pet}, t, src, nullptr);
+            }
+        }
+        active_reaction_ = outer;
+        drop_evaluation();
+        --carried_depth_;
+        ++reactions_fired_;
+        spdlog::log(reactions_fired_ <= 40 ? spdlog::level::info : spdlog::level::debug, "[abilities] the reaction {} of the hit {} fired", row.name, ev.hit->row.name);
+    }
+}
+
 void AbilityPipeline::raise_hit_event(AbilityChange& c, const HitEvent& ev, double t) {
+    fire_carried_reactions(c, ev, t);
     if (!reactions_enabled_ || reaction_depth_ > 0 || !catalog_ || catalog_->reactions() == 0 || !ev.hit) return;
     // a hit with no event tags and no stat mods raises no event [the game's code: the hit's record is tested for tags, mods and the force flag]
     if (ev.hit->tags.empty() && ev.hit->mods.empty()) return;
@@ -70,6 +120,13 @@ void AbilityPipeline::raise_hit_event(AbilityChange& c, const HitEvent& ev, doub
     ReactionContext rc;
     rc.hit = &ev;
     run_reactions(c, kKindHit, kBitOwnerHits, rc, t);
+}
+
+void AbilityPipeline::raise_hit_taken(AbilityChange& c, const HitEvent& ev, double t) {
+    if (!reactions_enabled_ || reaction_depth_ > 0 || !catalog_ || catalog_->reactions() == 0) return;
+    ReactionContext rc;
+    rc.hit = &ev;
+    run_reactions(c, kKindHit, kBitOwnerIsHit, rc, t);
 }
 
 void AbilityPipeline::raise_ability_event(AbilityChange& c, const AbilityDef& ability, double t) {
@@ -93,6 +150,7 @@ void AbilityPipeline::run_reactions(AbilityChange& c, int kind, int bit, const R
         for (const int64_t reaction_guid : carrier->reactions) {
             const ReactionDef* r = catalog_->reaction(reaction_guid);
             if (!r || (binding_of(r->row, kind) & bit) == 0) continue;
+            if (kind == kKindHit && bit == kBitOwnerIsHit && r->row.name.rfind("Cleric_", 0) != 0) continue;   // (see the file's head)
             const int limit = r->row.global_limit > 0 ? r->row.global_limit : r->row.instigator_limit;
             if (limit > 0 && reaction_procs_[reaction_guid] >= limit) continue;
             if (r->row.trigger_expr != 0) {
@@ -104,7 +162,7 @@ void AbilityPipeline::run_reactions(AbilityChange& c, int kind, int bit, const R
                 }
                 if (v == 0) continue;
             }
-            fire_reaction(c, *r, rc, t);
+            fire_reaction(c, *r, effect_guid, rc, t);
             if (limit > 0 && reaction_procs_[reaction_guid] >= limit) {
                 // a reaction that reached its limit takes its carrier off [the game's code: the effect goes with all its stacks]
                 for (const EffectInst& e : effects_) {
@@ -118,14 +176,104 @@ void AbilityPipeline::run_reactions(AbilityChange& c, int kind, int bit, const R
     }
 }
 
-void AbilityPipeline::fire_reaction(AbilityChange& c, const ReactionDef& r, const ReactionContext& rc, double t) {
+namespace {
+// The melodies that help at a finisher: the reaction's hit fires, through a targeting record of 30 m, an AoE hit that fires a projectile whose hit does the work. The records rank the ones
+// short of the stat (a heal: Health, Pensive: Mana) first and then the nearest; the Epic melody ranks those under crowd control, and takes up to the Resonance held [modelled: all of its
+// candidates by distance, as the server does not read another player's effects here]. The projectile's flight is not waited for [modelled].
+struct AllyFinisher {
+    const char* hit;
+    int64_t     stat, max;   // 0: no stat to rank by
+};
+constexpr AllyFinisher kAllyFinishers[] = {
+    {"Bard_ResonantWeapon_End_Cheerful_RecurseAoE", content::kGuidHealth, content::kGuidMaxHealth},
+    {"Bard_ResonantWeapon_End_Pensive_RecurseAoE", 109183576135288ll, 109183578756729ll},
+    {"Bard_ResonantWeapon_End_Epic_RecurseAoE", 0, 0},
+};
+constexpr double kAllyFinisherRadius = 3000.0;
+}  // namespace
+
+bool AbilityPipeline::land_ally_finisher(AbilityChange& c, const HitDef& hit, const HitSource& src, double t) {
+    const AllyFinisher* rule = nullptr;
+    for (const AllyFinisher& f : kAllyFinishers) {
+        if (hit.row.name == f.hit) rule = &f;
+    }
+    if (!rule) return false;
+    for (const content::RecursiveHitRow& r : hit.recursive) {
+        const HitDef* child = catalog_->hit(r.child_hit);
+        if (!child) continue;
+        struct Candidate {
+            uint64_t actor;   // 0: the caster
+            double   share, distance;
+        };
+        std::vector<Candidate> pool;
+        const auto share_of = [&](double value, double max) { return max > 0 ? std::clamp(value / max, 0.0, 1.0) : 1.0; };
+        if (hits_caster(child->row)) pool.push_back({0, rule->stat != 0 ? share_of(stat_now(rule->stat), stat_now(rule->max)) : 1.0, 0.0});
+        if (combat_) {
+            for (const combat::GatheredTarget& e : combat_->allies_around(combat_->self().position(), kAllyFinisherRadius, kMaxGathered)) {
+                const combat::TargetInfo ti = combat_->inspect(e.actor);
+                if (!ti.exists || !ti.alive || !combat::mask_reaches(child->row.applicable_targets, ti)) continue;
+                double share = 1.0;
+                if (combat::Fighter* f = combat_->fighter(e.actor); f && rule->stat != 0) {
+                    std::string err;
+                    if (auto run = f->stats().evaluation(f->worn(), err, true)) share = share_of(run->stat(rule->stat), run->stat(rule->max));
+                }
+                pool.push_back({e.actor, share, e.distance_cm});
+            }
+        }
+        std::stable_sort(pool.begin(), pool.end(), [](const Candidate& a, const Candidate& b) {
+            const bool short_a = a.share < 1.0, short_b = b.share < 1.0;
+            if (short_a != short_b) return short_a;
+            if (short_a && a.share != b.share) return a.share < b.share;
+            return a.distance < b.distance;
+        });
+        double most = 1;
+        std::string why;
+        if (child->row.max_targets_expr != 0 && !eval(child->row.max_targets_expr, most, why)) most = 1;
+        const size_t picks = std::min(pool.size(), static_cast<size_t>(std::clamp(most, 1.0, 40.0)));
+        spdlog::info("[abilities] {}: {} of {} near it", hit.row.name, picks, pool.size());
+        const auto land = [&](const HitDef& h, uint64_t actor, const HitSource& from) {
+            if (actor == 0) apply_hit(c, h, t, true, from);
+            else apply_hit_on_targets(c, h, {actor}, t, from, nullptr);
+        };
+        for (size_t i = 0; i < picks; ++i) {
+            land(*child, pool[i].actor, src);   // (its confirmation is what the client spawns the projectile from)
+            for (const int64_t guid : child->fires) {
+                const content::ProjectileRow* p = catalog_->projectile(guid);
+                if (!p) continue;
+                HitSource flown = src;
+                flown.type = content::kSourceTypeProjectile;
+                flown.guid = guid;
+                for (const int64_t landed : p->hits) {
+                    if (const HitDef* h = catalog_->hit(landed)) land(*h, pool[i].actor, flown);
+                }
+            }
+        }
+    }
+    return true;
+}
+
+void AbilityPipeline::fire_reaction_for_test(int64_t reaction, double t) {
+    advance(t);
+    const ReactionDef* r = catalog_ ? catalog_->reaction(reaction) : nullptr;
+    if (!r) return;
+    AbilityChange c;
+    const ReactionContext rc;
+    fire_reaction(c, *r, 0, rc, t);
+    recompute(c);
+    emit({std::move(c), std::nullopt, t, "a reaction fires (a test)"});
+}
+
+void AbilityPipeline::fire_reaction(AbilityChange& c, const ReactionDef& r, int64_t carrier, const ReactionContext& rc, double t) {
     const content::ReactionRow& row = r.row;
-    // who casts the hits: only the holder (Owner) is served; a reaction cast by the hit's instigator or its source needs actors the world does not hold yet
-    if (row.instigator != "Owner") {
+    // who casts the hits: the holder, or whoever put the carrier on, which is the holder for a rank's passive and for what its own hits applied [R: Divine Power rises with the heals
+    // and hits of the character that holds Cleric_DivinePower_Gen, by the hit's formula]; a creature that left it, the hit's instigator or its source need actors the world does not hold yet
+    bool left_by_creature = false;
+    for (const EffectInst& e : effects_) left_by_creature = left_by_creature || (e.def->row.guid == carrier && e.from_npc != 0);
+    if (row.instigator != "Owner" && (row.instigator != "Instigator" || left_by_creature)) {
         if (reaction_noted_.insert(row.guid).second) spdlog::info("[abilities] the reaction {} is cast by {}, which is not served yet: it does not fire", row.name, row.instigator);
         return;
     }
-    const int served = kTargetOwner | kTargetTargets;
+    const int served = kTargetOwner | kTargetInstigator | kTargetTargets | kTargetHitInstigator;
     if ((row.targets_mask & ~served) != 0 && reaction_noted_.insert(-row.guid).second) {
         spdlog::info("[abilities] the reaction {} lands on targets (mask {}) that are not all served yet: the holder and the hit's targets get its hits", row.name, row.targets_mask);
     }
@@ -142,12 +290,35 @@ void AbilityPipeline::fire_reaction(AbilityChange& c, const ReactionDef& r, cons
     src.autonomous = false;
     src.simulated = false;
     ++reaction_depth_;
+    const ReactionContext* const outer = active_reaction_;
+    active_reaction_ = &rc;
     size_t applied = 0;
     for (const int64_t hit_guid : row.hits) {
         const HitDef* hit = catalog_->hit(hit_guid);
         if (!hit) continue;
-        // a hit that fires further hits through a targeting record (the melodies that heal or cleanse the allies around) lands as itself only: the hits it fires
-        // are not followed yet
+        if (land_ally_finisher(c, *hit, src, t)) {
+            ++applied;
+            continue;
+        }
+        // what the reaction's hit fires on enemies: around each enemy it reached by the record's radius (a shuriken's explosion), else at that enemy again (a bounce's chance to bleed)
+        if (combat_ && (row.targets_mask & kTargetTargets) != 0 && rc.hit && !rc.hit->targets.empty()) {
+            for (const content::RecursiveHitRow& fired : hit->recursive) {
+                const HitDef* child = catalog_->hit(fired.child_hit);
+                if (!child || (child->row.applicable_targets & 2) == 0) continue;
+                for (const uint64_t target : rc.hit->targets) {
+                    std::vector<uint64_t> around;
+                    if (fired.radius > 0) {
+                        const combat::TargetInfo at = combat_->inspect(target);
+                        if (!at.exists) continue;
+                        for (const combat::GatheredTarget& e : combat_->enemies_around(at.position, fired.radius, kMaxGathered)) around.push_back(e.actor);
+                    } else {
+                        around.push_back(target);
+                    }
+                    if (!around.empty()) apply_hit_on_targets(c, *child, around, t, src, nullptr);
+                }
+            }
+        }
+        // the other hits it fires through a targeting record are not followed yet
         if (!hit->recursive.empty() && reaction_recursive_noted_.insert(row.guid).second) {
             spdlog::info("[abilities] the reaction {}: its hit {} fires {} further hit(s) through a targeting record, which are not followed yet: they do not land", row.name,
                          hit->row.name, hit->recursive.size());
@@ -156,11 +327,17 @@ void AbilityPipeline::fire_reaction(AbilityChange& c, const ReactionDef& r, cons
             apply_hit_on_targets(c, *hit, rc.hit->targets, t, src, nullptr);
             ++applied;
         }
-        if ((row.targets_mask & kTargetOwner) != 0) {
+        if ((row.targets_mask & kTargetHitInstigator) != 0 && rc.hit && rc.hit->attacker != 0) {
+            apply_hit_on_targets(c, *hit, {rc.hit->attacker}, t, src, nullptr);
+            ++applied;
+        }
+        if ((row.targets_mask & (kTargetOwner | kTargetInstigator)) != 0) {
             apply_hit(c, *hit, t, true, src);
             ++applied;
         }
     }
+    active_reaction_ = outer;
+    drop_evaluation();
     --reaction_depth_;
     spdlog::log(reactions_fired_ <= 40 ? spdlog::level::info : spdlog::level::debug, "[abilities] the reaction {} fired ({} of its {} hit(s) applied; event: {})", row.name, applied, row.hits.size(),
                 rc.hit && rc.hit->hit ? "a hit, " + rc.hit->hit->row.name : rc.consumed ? "the cost of " + rc.consumed->row.name + " paid" : std::string("?"));

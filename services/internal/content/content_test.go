@@ -41,6 +41,10 @@ func exec(t *testing.T, db *sql.DB, query string, args ...any) {
 	}
 }
 
+// extraDocumentedTables is filled by the init functions of the <feature>_tables_test.go files: each content feature lists the tables it adds in a file of its own, so that
+// this test is not edited for every feature.
+var extraDocumentedTables []string
+
 func TestCreateMakesTheDocumentedTables(t *testing.T) {
 	path := newDB(t, "1")
 	db, err := Open(path)
@@ -61,7 +65,7 @@ func TestCreateMakesTheDocumentedTables(t *testing.T) {
 		}
 		got = append(got, n)
 	}
-	want := []string{"ab_ability", "ab_ability_effect", "ab_ability_hit", "ab_cost", "ab_effect", "ab_effect_cost", "ab_effect_hit", "ab_expr", "ab_hit",
+	want := []string{"ab_ability", "ab_ability_effect", "ab_ability_hit", "ab_cost", "ab_effect", "ab_effect_cost", "ab_effect_group", "ab_effect_hit", "ab_expr", "ab_hit",
 		"ab_hit_effect", "ab_hit_projectile", "ab_hit_zone", "ab_mod", "ab_montage", "ab_projectile", "ab_projectile_hit", "ab_targeting", "ab_zone",
 		"ab_zone_hit",
 		// reactions (contentc version 35): the reactions, the hits they apply, the recursive hits and their targeting, the cooldown modifiers
@@ -80,18 +84,7 @@ func TestCreateMakesTheDocumentedTables(t *testing.T) {
 		"loot_table", "xp_rule",
 		// the mounts (contentc version 11)
 		"mount", "mount_stat", "mount_ability", "mount_effect"}
-	want = append(want, NodeTables...)       // Nodes 1 (contentc version 12): the city node tables
-	want = append(want, GatherTables...)     // Gathering stage 2 (contentc version 13): the gathering tables
-	want = append(want, ResourceTables...)   // Gathering stage 3, "Resource storage" (contentc version 14): the resource bags' grids
-	want = append(want, FoliageTables...)    // Gathering stage 3, "Foliage gathering" (contentc version 15): the foliage defs and states, the gathering interactions
-	want = append(want, PopulationTables...) // plan E1 (contentc version 7): the NPC population chain and the vendors
-	want = append(want, DialogueTables...)   // quests, slice 0 (contentc version 17): the NPC conversations
-	want = append(want, VendorTables...)     // vendors, step 0 (contentc version 18): the shops' links and prices
-	want = append(want, CraftingTables...)   // crafting, step 0 (contentc version 20): the stations, recipes and rewards
-	want = append(want, QuestTables...)      // quests, slice 1 (contentc version 21): the quests, their objectives, the NPCs' offers and the accept nodes
-	want = append(want, CurrencyTables...)   // Glint tiers (contentc version 24): the currencies and the bags' stack-size stats
-	want = append(want, WarehouseTables...)  // storage, step 0 (contentc version 25): the warehouse defs, tabs and item chunks
-	want = append(want, RespawnTables...)    // Embersprings (contentc version 26): the places, the respawn definitions and the instances that name one
+	want = append(want, extraDocumentedTables...) // the tables of the features that list their own, in <feature>_tables_test.go
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("tables = %v\nwant     %v", got, want)

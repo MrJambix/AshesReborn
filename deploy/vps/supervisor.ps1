@@ -12,8 +12,8 @@ $root = 'C:\SandalCore'; $run = "$root\run"; $logs = "$root\dist\services\logs"
 $stopFlag = "$run\stop.flag"; $tripFlag = "$run\watchdog.tripped"; $svLog = "$logs\supervisor.log"
 # Limits: commit charge (this PC's page file can grow to about 16 GB in all) and memory left, for a minute.
 $MaxCommitMB = 13000; $MinAvailableMB = 60; $LowChecksToTrip = 12
-# Players at once: this PC has 4 GB and shares it. Raise it only after watching how much a player costs.
-$MaxPlayers = 10
+# Players at once. The owner's choice on 1 November 2026; what a player costs in memory has not been measured, so watch it as the count grows.
+$MaxPlayers = 100
 New-Item -ItemType Directory -Force $logs, $run | Out-Null
 
 function Log($m) { Add-Content $svLog ('{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), $m) }
@@ -28,6 +28,8 @@ if (Test-Path -LiteralPath "$root\config\rates.json") {
     $rates = Get-Content -LiteralPath "$root\config\rates.json" -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
     if ($null -ne $rates.exp_rate) { $expRate = [double]$rates.exp_rate }
     if ($null -ne $rates.drop_rate) { $dropRate = [double]$rates.drop_rate }
+    # "guilds": false keeps every guild component from reaching a client: the way out if a guild's data drops its members.  It takes a restart.
+    if ($rates.guilds -eq $false) { $env:AOC_NO_GUILDS = '1' } else { Remove-Item Env:AOC_NO_GUILDS -ErrorAction SilentlyContinue }
 }
 foreach ($rate in @($expRate, $dropRate)) {
     if ([double]::IsNaN($rate) -or [double]::IsInfinity($rate) -or $rate -lt 0 -or $rate -gt 1000) {
@@ -50,6 +52,8 @@ $env:AOC_GATEWAY_ICS_ADDR = '0.0.0.0:8443'
 $env:AOC_GATEWAY_TLS_CERT = "$root\certs\server.pem"
 $env:AOC_GATEWAY_TLS_KEY = "$root\certs\server.key"
 $env:AOC_MESH_STATIC_WORLD = ''
+$env:AOC_WORLD_STARTED_FILE = "$run\worldd.started"
+$env:AOC_PATCH_NOTES_FILE = "$root\dist\services\PATCH_NOTES.md"
 
 $order = 'auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'worldd'
 $state = @{}
@@ -64,6 +68,8 @@ function Start-Svc($n) {
         'character' { " --content-db `"$content`"" }
         default { '' }
     }
+    # The launcher shows the time since this. A failure here only loses that line.
+    if ($n -eq 'worldd') { Set-Content "$run\worldd.started" (Get-Date).ToUniversalTime().ToString('o') -Encoding ascii }
     foreach ($f in "$logs\$n.log", "$logs\$n.out.log") { if (Test-Path $f) { Move-Item -Force $f ($f -replace '\.log$', '.prev.log') } }
     Start-Process -FilePath $env:ComSpec -WorkingDirectory $root -WindowStyle Hidden `
         -ArgumentList "/d /s /c `"`"$(Exe $n)`"$a 1>`"$logs\$n.out.log`" 2>`"$logs\$n.log`"`"" | Out-Null

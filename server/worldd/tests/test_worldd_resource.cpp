@@ -480,6 +480,17 @@ static void test_consume() {
     CHECK(o.ok && o.events.size() == 1 && !inv->at(R0, 0), "taking the rest empties the slot");
 }
 
+/// A catalog that counts how often each record is asked for.
+struct CountingCatalog : items::ItemCatalog {
+    const items::ItemCatalog& inner;
+    mutable std::map<int64_t, int> asked;
+    explicit CountingCatalog(const items::ItemCatalog& c) : inner(c) {}
+    std::optional<items::ItemInfo> info(int64_t record) const override {
+        ++asked[record];
+        return inner.info(record);
+    }
+};
+
 static void test_repair() {
     std::printf("the login's repair: resource items found in the Backpack\n");
     std::vector<svc::InventoryItem> v = worn_kit();
@@ -499,6 +510,11 @@ static void test_repair() {
     CHECK(second.moved.empty() && second.stayed.size() == 2, "a second repair moves nothing");
     auto empty = build(worn_kit());
     CHECK(empty->repair_resources(*g_catalog).moved.empty(), "an inventory with no resource item in the Backpack changes nothing");
+    // a record is looked up once: the daffodil finds no room, so it is asked about once, not again when it is placed (a second answer could be empty)
+    CountingCatalog counting(*g_catalog);
+    auto counted = build(v);
+    counted->repair_resources(counting);
+    CHECK(counting.asked[fr::kDaffodil] == 1, "the daffodil's record is looked up once by the repair");
 }
 
 static void test_round_trip() {
@@ -588,6 +604,7 @@ static void test_real() {
 
     // one grant of every item into a character with the Sanctus bag and nothing else: the item goes where its kind says, exactly one storage each
     size_t resource = 0, backpack = 0, other = 0, tag_mismatch = 0, too_big = 0;
+    size_t quest_bag = 0;
     for (const int64_t g : guids) {
         const auto info = catalog.info(g);
         if (!info) {
@@ -607,10 +624,10 @@ static void test_real() {
             ++other;
             continue;
         }
-        (o.events[0].container == R0 ? resource : o.events[0].container == Bag ? backpack : other)++;
+        (o.events[0].container == R0 ? resource : o.events[0].container == Bag ? backpack : o.events[0].container == svc::ItemContainer::Quest ? quest_bag : other)++;
         if ((o.events[0].container == R0) != info->resource) ++tag_mismatch;
     }
-    CHECK(resource == 1824 && backpack == 10568 - 1824 && other == 0, "every one of the 10,568 items is granted to exactly one storage: 1,824 to Resource0, the rest to the Backpack");
+    CHECK(resource == 1824 && quest_bag == 406 && backpack == 10568 - 1824 - 406 && other == 0, "every one of the 10,568 items is granted to exactly one storage: 1,824 to Resource0, 406 quest items to the Quest bag, the rest to the Backpack");
     CHECK(tag_mismatch == 0, "the catalog's flag is the item_tag rule for every item, and the routing follows the flag");
     CHECK(too_big == 0, "no item takes more than the Sanctus bag's 6 x 4, or less than a cell");
 // -- CoA x C-Y-B --

@@ -56,6 +56,9 @@ public:
         return other_fn(fn, name, args, n);
     }
 
+    /// A term the hit in progress keeps beyond its scope (HitDef::kept_terms): only a caster's pipeline has anything to read it.
+    virtual void keep_term(int64_t /*term*/, double /*value*/) {}
+
 protected:
     virtual double other_fn(int /*fn*/, const std::string& /*name*/, const double* /*args*/, int /*n*/) { return 0; }
 
@@ -73,6 +76,7 @@ struct HitMeta {
     bool                     target_is_active = false;    // this target is the caster's selected enemy
     bool                     active_in_hit = false;       // the caster's selected enemy is among the targets the hit reaches
     bool                     target_is_closest = false;   // this target is the one the hit reaches nearest the caster
+    const TargetEffects*     target_effects = nullptr;    // the effects the target holds, for the reads of them (null: it holds none that the expressions can see)
 };
 // (C-O-A ~ C.Y.B)
 
@@ -100,6 +104,16 @@ inline uint64_t session_dice_seed(uint64_t world_seed, uint64_t player_id) {
     return seed != 0 ? seed : 1;
 }
 
+/// What a hit leaves on an actor that is not its caster: an effect with its numbers worked out as the caster is now.
+struct LandedEffect {
+    const abilities::EffectDef*   def = nullptr;
+    int                           stacks = 1;
+    int                           stack_limit = 1;
+    double                        seconds = -1;   // < 0: it has no end
+    std::vector<stats::EffectMod> mods;           // for one stack
+    double                        shield = 0;     // a TempHealth mod's amount
+};
+
 class HitResolver {
 public:
     HitResolver(const abilities::Catalog& catalog, const CombatData& data, uint64_t seed = 1) : catalog_(catalog), data_(data) { rng_.state = seed; }
@@ -112,6 +126,21 @@ public:
     /// `target` may be the attacker's own evaluation (a hit on the caster itself); `host` must derive from ContextHost.
     bool resolve_with(stats::CharacterStats::Evaluation& attacker, ContextHost& host, const stats::CharacterStats::Evaluation* target, double distance_cm, bool enemy,
                       bool neutral, const abilities::HitDef& hit, const HitMeta& meta, Resolved& out, std::string& why);
+
+    /// The effects `hit` puts on `target` (each one's requirement holds): `host` and `attacker` as in resolve_with, or each fighter's stats run fresh.  An effect whose numbers do not run is left out.
+    void effects_of(stats::CharacterStats::Evaluation& attacker, ContextHost& host, stats::CharacterStats::Evaluation* target, const abilities::HitDef& hit,
+                    std::vector<LandedEffect>& out);
+    void effects_of(Fighter& attacker, Fighter& target, const abilities::HitDef& hit, std::vector<LandedEffect>& out);
+    /// The same with the hit's context, for the expressions that read the hit or what the target holds (GetEffectRemainingDuration(GetTarget(), effect): the burn's aura goes on again only when it has run down).
+    void effects_of(Fighter& attacker, Fighter& target, const abilities::HitDef& hit, const HitMeta& meta, std::vector<LandedEffect>& out);
+    void effects_with(stats::CharacterStats::Evaluation& attacker, ContextHost& host, stats::CharacterStats::Evaluation* target, double distance_cm, bool enemy, bool neutral,
+                      const abilities::HitDef& hit, const HitMeta& meta, std::vector<LandedEffect>& out);
+    /// Whether the hit's own requirement holds for the two, read with the hit's context.
+    bool requirement_holds(Fighter& attacker, Fighter& target, const abilities::HitDef& hit, const HitMeta& meta);
+    /// Whether an expression (a montage's choice) holds for the fighter as it is now; `none` for no expression, and for one that does not run.
+    bool holds(Fighter& fighter, int64_t expr, bool none);
+    /// The same with `target` in the role of GetTarget() (a hit's requirement).
+    bool holds(Fighter& fighter, Fighter& target, int64_t expr, bool none);
 
     /// The chances of the three rolls for a hit of the aspect between two stat views (the stats' own, before a hit's overrides).
     struct Rates {

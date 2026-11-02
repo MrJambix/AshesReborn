@@ -5,7 +5,7 @@
 """server/worldd/tests/node_pop_golden.h: the towns' people as an independent Python port counts them (Nodes 1, stage 3b).
 
 worldd selects a node's NPCs with spawns/node_population.cpp (select_node_spawns) over the population chain and the node tables of content.db.  tools/capture/node_pop_oracle.py does the
-same from content.db in Python (pop_oracle.py's data and filter).  This script runs it for every city node inside the Riverlands (the 10 nodes of the Verra world map whose location
+same from content.db in Python (pop_oracle.py's data and filter).  This script runs it for every city node inside the region (the 21 nodes of the Verra world map whose location
 the region's footprint holds and that have a layout) at each of the seven node levels, with the spawn context the tests use (Kaelar, Summer, clear, hour 11, the node's own id, type,
 level, biome and zone; the Layout and BuildingLevelSpawn sources running; the siege tags any-of; the humanoids a retail capture opened shown, and the ones the data dresses), and
 writes what it counted: the sets and points of the layout and of the buildings, the NPCs spawned from each, the points dropped by reason and without a template, the NPCs by
@@ -110,7 +110,7 @@ def main():
     region = P.Region()
     results = cases(d, nd, region, looks)
     nodes = sorted({r[0] for r in results})
-    print('%d nodes inside the Riverlands, %d cases' % (len(nodes), len(results)))
+    print('%d nodes inside the region, %d cases' % (len(nodes), len(results)))
     for name, level, st, filt, by, spawned in results:
         if level in (0, 3, 4):
             print('  %-42s L%d: %4d NPCs (%d layout + %d building)' % (name, level, st['spawned'], st['spawned_layout'], st['spawned_building']))

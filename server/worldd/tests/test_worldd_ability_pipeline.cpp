@@ -21,6 +21,7 @@
 //  Without a content.db the test says so and is skipped.
 // ============================================================================
 #include "ability_rig.h"
+#include "bootstrap/constants.h"
 #include "session/summoner_pets.h"
 
 #include <cmath>
@@ -571,7 +572,7 @@ void test_refusals() {
     Rig r(2, 25, kTalents);
     CHECKF(r.ok(), "the rig: %s", r.problem.c_str());
     if (!r.ok()) return;
-    r.know({"Bard_Misc_Flourish", "Bard_Misc_QuickWit_Jest", "Bard_Misc_QuickWit_Mock", "Bard_Misc_Fortissimo", "Ranger_Dash"});
+    r.know({"Bard_Misc_Flourish", "Bard_Misc_QuickWit_Jest", "Bard_Misc_QuickWit_Mock", "Bard_Misc_Fortissimo", "Vehicle_TurnIn"});
     const Pawn before = r.pawn;
     auto unchanged = [&](const char* what) {
         CHECKF(r.pawn.stats == before.stats && r.pawn.effects.size() == before.effects.size() && r.pawn.abilities.size() == before.abilities.size() &&
@@ -585,8 +586,8 @@ void test_refusals() {
     CHECK(r.pipe->trigger(r.ability("Bard_Misc_Flourish"), 42, 1.2, info) == Refusal::Unsupported, "an ability named with an item is not run here");
     info = {};
     CHECK(r.pipe->trigger(r.ability("Bard_Misc_QuickWit_Jest"), 43, 1.3, info) == Refusal::NeedsTarget, "an ability that needs a target and can be aimed at a friend is refused when the call names none");
-    const Refusal dart = r.pipe->trigger(r.ability("Ranger_Dash"), 44, 1.4, info);
-    CHECKF(dart == Refusal::NoFormula, "an ability whose activation requirement does not compile (Ranger Dash: GetLastProjectileFireTime) is refused (logged), never run half-way (%s)", refusal_name(dart));
+    const Refusal dart = r.pipe->trigger(r.ability("Vehicle_TurnIn"), 44, 1.4, info);
+    CHECKF(dart == Refusal::NoFormula, "an ability whose activation requirement does not compile (Vehicle_TurnIn: VehicleMayTurnIn) is refused (logged), never run half-way (%s)", refusal_name(dart));
     r.take();
     CHECK(r.pawn.ends == (std::vector<int32_t>{40, 41, 42, 43, 44}), "each of them is answered with ClientEndAbility(its ClientInstanceId), in order");
     unchanged("the refusals");
@@ -885,6 +886,232 @@ void test_mend_chain() {
 }
 // [C-O-A ~ Cyb]
 
+void test_cleric_divine_power() {
+    std::printf("the Cleric's Divine Power: what the heals and the hits raise, and what spends it\n");
+    constexpr int64_t kPower = 6064629623747772676ll, kGen = 6064629623761404733ll, kHealingPower = 109343399171822ll;
+    Rig r(3, 25, {"Cleric_EssenceInfusion"});
+    CHECKF(r.ok(), "the rig: %s", r.problem.c_str());
+    if (!r.ok()) return;
+    r.know({"Cleric_Mend", "Cleric_EssenceInfusion"});
+    CHECK(r.cs->find(kGen) != nullptr && r.pawn.stat(kGen) == 0.0f, "Gen starts at 0");
+    // a heal on a wounded Cleric: Gen rises by what the heal took effect for over HealingPower [R: capture 70, 103 Health gives Gen +1.02 with HealingPower about 101]
+    const double wounded = r.max_health() * 0.25;
+    r.set_current(content::kGuidHealth, wounded);
+    const double healing_power = r.cs->find(kHealingPower)->value;
+    CHECK(healing_power > 0, "(HealingPower has a value)");
+    CHECK(r.trigger("Cleric_Mend", 2.0, true) == Refusal::None, "Mend is accepted");
+    r.run_to(4.0);
+    float heal_effective = 0;
+    for (const auto& h : r.pawn.confirmations) {
+        for (const auto& m : h.mods) heal_effective = std::max(heal_effective, m.effective);
+    }
+    CHECK(heal_effective > 0, "(the heal took effect)");
+    const double gen = r.pawn.stat(kGen);
+    const double raised = heal_effective / healing_power;
+    CHECKF(gen >= raised * 0.5 && gen <= raised, "Gen is the heal over HealingPower, less 15%% a second of its decay (%.3f of %.3f; heal %.1f, HealingPower %.1f)", gen, raised, heal_effective, healing_power);
+    // the same heal at full Health gives nothing
+    Rig full(3, 25);
+    CHECKF(full.ok(), "the rig: %s", full.problem.c_str());
+    if (!full.ok()) return;
+    full.know({"Cleric_Mend"});
+    CHECK(full.trigger("Cleric_Mend", 2.0, true) == Refusal::None, "(Mend at full Health)");
+    full.run_to(4.0);
+    CHECK(full.pawn.stat(kGen) == 0.0f, "a heal that took no effect raises nothing");
+    // Gen of 1 or more fills Divine Power at 15% of Gen a second
+    r.set_current(kGen, 20.0);
+    const double power_before = r.pawn.stat(kPower);
+    r.run_to(7.0);
+    CHECK(r.pawn.stat(kPower) > power_before, "with Gen above 1 Divine Power rises");
+    // Essence Infusion on: the abilities cost Divine Power and no Mana
+    r.set_current(kPower, 0.0);
+    r.set_current(kGen, 0.0);
+    r.run_to(7.0);
+    r.asks = false;   // (the two hits of Essence Infusion are the two presses': the client asks for one)
+    CHECK(r.trigger("Cleric_EssenceInfusion", 7.5) == Refusal::None, "Essence Infusion is accepted");
+    r.hit_request("Cleric_EssenceInfusion", "Cleric_EssenceInfusion", 7.55);
+    r.asks = true;
+    r.run_to(8.5);
+    CHECK(r.pipe->stacks_of(r.effect("Cleric_EssenceInfusion")) == 1, "its effect is on, and stays while the talent is held");
+    // its tooltip: "Uses normal resource cost if insufficient Divine Power to cast"
+    CHECK(r.trigger("Cleric_Mend", 12.0, true) == Refusal::None, "with no Divine Power Mend is paid with Mana instead");
+    r.run_to(12.4);
+    r.set_current(kPower, 50.0);
+    const double mana_before = r.mana();
+    CHECK(r.trigger("Cleric_Mend", 12.5, true) == Refusal::None, "with Divine Power it can");
+    r.run_to(13.2);
+    CHECKF(r.pawn.stat(kPower) < 50.0, "Mend took Divine Power (%.1f left)", r.pawn.stat(kPower));
+    CHECK(r.mana() >= mana_before, "and no Mana");
+    // a second press takes it off, and Mana pays again
+    r.asks = false;
+    CHECK(r.trigger("Cleric_EssenceInfusion", 14.0, false, 1) == Refusal::None, "a second press of Essence Infusion is accepted");
+    r.hit_request("Cleric_EssenceInfusion", "Cleric_EssenceInfusion_Cancel", 14.05);
+    r.run_to(14.5);
+    CHECK(r.pipe->stacks_of(r.effect("Cleric_EssenceInfusion")) == 0, "...and takes the effect off");
+    CHECK(r.pawn.broken.empty(), "(the pawn took every change)");
+}
+
+void test_cleric_defiant_light() {
+    std::printf("Defiant Light: the blow that would kill heals instead, once in 180 s\n");
+    Rig r(3, 25);
+    CHECKF(r.ok(), "the rig: %s", r.problem.c_str());
+    if (!r.ok()) return;
+    r.know({"Cleric_DefiantLight"});
+    const int64_t save = r.effect("Cleric_DefiantLight_Unkillable"), lockout = r.effect("Cleric_DefiantLight_ICD");
+    combat::IncomingHit blow;
+    blow.instigator = 0;
+    blow.hit_guid = 1;
+    blow.mods.push_back({1, content::kGuidHealth, -1.0e9});
+    const auto cast = [](Rig& rig, double t) {
+        rig.asks = false;   // (the client asks for the cast's own hit: the record's Expire is the reaction's, and takes the save off)
+        const Refusal why = rig.trigger("Cleric_DefiantLight", t, true);
+        if (why == Refusal::None) rig.hit_request("Cleric_DefiantLight", "Cleric_DefiantLight", t + 0.04);
+        rig.run_to(t + 1.5);
+        return why;
+    };
+    CHECK(cast(r, 2.0) == Refusal::None, "Defiant Light is accepted");
+    CHECK(r.pipe->stacks_of(save) == 1, "its save is on");
+    r.pipe->receive_hit(blow, 4.0);
+    r.take();
+    CHECKF(r.health() > 0, "the killing blow leaves the Cleric alive (Health %.1f of %.1f)", r.health(), r.max_health());
+    CHECK(r.pipe->stacks_of(save) == 0, "the save is spent");
+    CHECK(r.pipe->stacks_of(lockout) == 1, "the lockout starts");
+    r.pipe->receive_hit(blow, 5.0);
+    r.take();
+    CHECK(r.health() <= 0, "a second killing blow kills");
+    CHECK(r.pawn.broken.empty(), "(the pawn took every change)");
+    // no save during the lockout
+    Rig again(3, 25);
+    CHECKF(again.ok(), "the rig: %s", again.problem.c_str());
+    if (!again.ok()) return;
+    again.know({"Cleric_DefiantLight"});
+    CHECK(cast(again, 2.0) == Refusal::None, "(cast)");
+    again.pipe->receive_hit(blow, 4.0);
+    again.take();
+    CHECK(cast(again, 40.0) == Refusal::None, "(cast again, off its cooldown, during the lockout)");
+    CHECK(again.pipe->stacks_of(save) == 0, "no save is put on during the lockout");
+    // an ordinary blow leaves the save on
+    Rig light(3, 25);
+    CHECKF(light.ok(), "the rig: %s", light.problem.c_str());
+    if (!light.ok()) return;
+    light.know({"Cleric_DefiantLight"});
+    CHECK(cast(light, 2.0) == Refusal::None, "(cast)");
+    combat::IncomingHit scratch = blow;
+    scratch.mods[0].value = -1.0;
+    light.pipe->receive_hit(scratch, 4.0);
+    light.take();
+    CHECK(light.pipe->stacks_of(save) == 1, "a blow that does not kill leaves the save on");
+}
+
+void test_cleric_purify() {
+    std::printf("Purify: up to three debuffs, what can be dispelled\n");
+    Rig r(3, 25);
+    CHECKF(r.ok(), "the rig: %s", r.problem.c_str());
+    if (!r.ok()) return;
+    const abilities::HitDef* hit = r.catalog->hit(6064630996420855404ll);
+    CHECK(hit != nullptr, "(Purify's hit is in the tables)");
+    if (!hit) return;
+    if (hit->removal == abilities::HitDef::Removal::Unknown) {
+        std::printf("  [info] this content.db does not say the hits' removal filters: run contentc again; Purify is not checked\n");
+        return;
+    }
+    CHECK(hit->removal == abilities::HitDef::Removal::Debuff && hit->remove_as_dispel && hit->max_remove == 3, "its filter is read");
+    const int64_t debuffs[] = {r.effect("Status_Stunned"), r.effect("Status_Conflagrating")};
+    for (const int64_t e : debuffs) CHECK(r.pipe->grant_effect(e, 1.0), "(a debuff is on the Cleric)");
+    const int64_t buff = r.effect("Cleric_Barrier");
+    CHECK(r.pipe->grant_effect(buff, 1.0), "(a buff is on the Cleric)");
+    r.take();
+    r.pipe->land_pet_hit(hit->row.guid, r.ability("Cleric_Purify"), 2.0);   // (its hit lands; the cast's own path is the replay's, test_worldd_ability_all)
+    r.take();
+    for (const int64_t e : debuffs) CHECK(r.pipe->stacks_of(e) == 0, "the debuff is gone");
+    CHECK(r.pipe->stacks_of(buff) == 1, "the buff stays");
+    CHECK(r.pawn.broken.empty(), "(the pawn took every change)");
+}
+
+void test_cleric_divine_casts() {
+    std::printf("the Cleric's divine spells leave the other spells free to cast\n");
+    constexpr int64_t kPower = 6064629623747772676ll;
+    Rig r(3, 25, {"Cleric_EssenceInfusion"});
+    CHECKF(r.ok(), "the rig: %s", r.problem.c_str());
+    if (!r.ok()) return;
+    r.know({"Cleric_Mend", "Cleric_DivineInfusion", "Cleric_DivineFlare", "Cleric_EssenceInfusion", "Cleric_FlashCure"});
+    r.set_current(kPower, 100.0);
+    r.set_current(content::kGuidHealth, r.max_health() * 0.5);
+    const auto press = [&](const char* name, double t, bool target, int32_t anim = 0) {
+        const Refusal why = r.trigger(name, t, target, anim);
+        std::printf("  [info] %s at %.1f s: %s; casting %d\n", name, t, refusal_name(why), r.pipe->casting() ? 1 : 0);
+        return why;
+    };
+    // Divine Infusion is pressed during another cast (its requirement: GetAbilityProgressRatio("DefaultGroup") > 0)
+    CHECK(press("Cleric_Mend", 2.0, true) == Refusal::None, "(Mend)");
+    press("Cleric_DivineInfusion", 2.2, false);
+    r.run_to(8.0);
+    CHECK(!r.pipe->casting(), "after Divine Infusion nothing is left casting");
+    const Refusal after_infusion = press("Cleric_FlashCure", 8.5, true);
+    CHECK(after_infusion != Refusal::Busy, "after Divine Infusion another spell is not refused as busy");
+    r.run_to(20.0);
+    press("Cleric_DivineFlare", 20.0, false);
+    r.run_to(30.0);
+    CHECK(!r.pipe->casting(), "after Divine Flare nothing is left casting");
+    const Refusal after_flare = press("Cleric_Mend", 30.0, true);
+    CHECK(after_flare != Refusal::Busy, "after Divine Flare another spell is not refused as busy");
+    r.run_to(40.0);
+    // Essence Infusion on with no Divine Power left: what the other spells say
+    r.asks = false;
+    press("Cleric_EssenceInfusion", 40.0, false);
+    r.hit_request("Cleric_EssenceInfusion", "Cleric_EssenceInfusion", 40.05);
+    r.asks = true;
+    r.run_to(41.0);
+    CHECK(r.pipe->stacks_of(r.effect("Cleric_EssenceInfusion")) == 1, "(Essence Infusion is on)");
+    r.set_current(kPower, 0.0);
+    r.run_to(42.0);
+    // its tooltip: "Uses normal resource cost if insufficient Divine Power to cast"
+    r.set_current(content::kGuidMana, r.mana() * 0.5);   // (room for the Mana to rise, so what a second's regeneration adds can be measured)
+    r.run_to(49.0);
+    const double idle_start = r.mana();
+    r.run_to(50.0);
+    const double idle_rise = r.mana() - idle_start, mana_before = r.mana();
+    CHECK(press("Cleric_Mend", 50.0, true) == Refusal::None, "with Essence Infusion on and no Divine Power, Mend is still cast");
+    r.run_to(51.0);
+    CHECKF(r.mana() - mana_before < idle_rise - 10.0, "...and paid with Mana (it rose %.1f in the second of the cast, %.1f in a quiet second)", r.mana() - mana_before, idle_rise);
+    r.set_current(kPower, 50.0);
+    const double mana_then = r.mana();
+    CHECK(press("Cleric_FlashCure", 55.0, true) == Refusal::None, "with Divine Power again, Flash Cure is cast");
+    r.run_to(56.0);
+    CHECKF(r.pawn.stat(kPower) < 50.0 && r.mana() >= mana_then, "...and paid with Divine Power, not Mana (%.1f Divine Power left)", r.pawn.stat(kPower));
+    // Divine Infusion completes the remaining cast of a spell being cast: Deliverance's charge-up
+    r.asks = false;
+    press("Cleric_EssenceInfusion", 60.0, false, 1);   // (Essence Infusion off again)
+    r.hit_request("Cleric_EssenceInfusion", "Cleric_EssenceInfusion_Cancel", 60.05);
+    r.asks = true;
+    r.run_to(61.0);
+    r.know({"Cleric_Mend", "Cleric_DivineInfusion", "Cleric_DivineFlare", "Cleric_EssenceInfusion", "Cleric_FlashCure", "Cleric_Deliverance"});
+    r.set_current(kPower, 100.0);
+    CHECK(press("Cleric_Deliverance", 62.0, true) == Refusal::None, "(Deliverance charges up)");
+    r.run_to(62.6);
+    CHECK(press("Cleric_DivineInfusion", 62.6, false) == Refusal::None, "during it, Divine Infusion is taken");
+    r.run_to(70.0);
+    CHECK(!r.pipe->casting(), "and nothing is left casting after it");
+    CHECK(press("Cleric_Mend", 70.5, true) == Refusal::None, "...so the next spell is cast");
+    CHECK(r.pawn.broken.empty(), "(the pawn took every change)");
+}
+
+void test_stun_lock() {
+    std::printf("a stun locks the player while it lasts, on the client's clock\n");
+    Rig r(3, 25);
+    CHECKF(r.ok(), "the rig: %s", r.problem.c_str());
+    if (!r.ok()) return;
+    CHECK(r.pipe->crowd_state() == crowd::State{}, "no effect, no lock");
+    CHECK(r.pipe->grant_effect(r.effect("Status_Stunned"), 2.0), "(a stun is on the player)");
+    const crowd::State held = r.pipe->crowd_state();
+    CHECKF((held.status & 1) != 0 && held.record != 0, "it stops the player moving and names the stun (status %d, record %lld)", held.status, static_cast<long long>(held.record));
+    // the session sends these times as they are: an effect's start and end are on the synchronized clock already, as a creature's (combat_world.cpp)
+    CHECKF(std::abs(held.start - bootstrap::effect_clock(Rig::kWorldTime + 2.0)) < 1e-6, "its start is on the client's clock (%.3f)", held.start);
+    CHECK(held.end > held.start, "it ends");
+    r.pipe->tick(held.end - bootstrap::effect_clock(Rig::kWorldTime) + 0.5);
+    r.take();
+    CHECK(r.pipe->crowd_state() == crowd::State{}, "after it ends: no lock left");
+}
+
 void test_end_request() {
     std::printf("the client's ServerEndAbility\n");
     Rig r(2, 25, kTalents);
@@ -955,7 +1182,7 @@ void test_held_ranks() {
     Rig bard(2, 25, kTalents);
     CHECKF(bard.ok(), "the rig: %s", bard.problem.c_str());
     if (!bard.ok()) return;
-    const std::vector<stats::SkillRank> held = bard.book->held_ranks();
+    const std::vector<stats::SkillRank> held = bard.book->held_ranks(0);
     const int64_t tree = bard.book->class_tree()->guid;
     // a formula names a held skill (160 of the 171 that ask GetSkillPurchased) or one rank of it (11, a talent's upgrade): both are held, for every listed rank
     size_t skills = 0, ranks = 0;
@@ -1004,7 +1231,7 @@ void test_held_ranks() {
         CHECKF(mage.ok(), "the Mage rig with the upgrade: %s", mage.problem.c_str());
         if (mage.ok()) {
             CHECK(eval_expr(mage, expr_by_text(mage.path, "GetSkillPurchased(GetInstigator(), $#297887639323616934:107281647359609$, $#4847957796014348780:6064631986549818361$)")) == 1.0, "...and true once the rank is bought (it could never be true: the join held skills only)");
-            CHECK(holds(mage.book->held_ranks(), stats::kRefTypeSkillTree, 107281647359609ll, stats::kRefTypeSkillRank, 6064631986549818361ll), "held_ranks() lists the rank-typed reference of the bought rank");
+            CHECK(holds(mage.book->held_ranks(0), stats::kRefTypeSkillTree, 107281647359609ll, stats::kRefTypeSkillRank, 6064631986549818361ll), "held_ranks() lists the rank-typed reference of the bought rank");
         }
     }
 }
@@ -1193,6 +1420,48 @@ void test_dance_zones() {
     CHECK(m.pawn.broken.empty() && m.pawn.effect(shielding_aura) == nullptr, "(the pawn took every change; no Aura is left)");
 }
 
+// a melody's finisher that helps: the heal or the mana lands on the one short of it (here the Bard alone), and it spends its Resonance
+static void test_ally_finishers() {
+    std::printf("the melodies that help at a finisher\n");
+    Rig r(2, 25, kTalents);
+    CHECKF(r.ok(), "the rig: %s", r.problem.c_str());
+    if (!r.ok()) return;
+    constexpr int64_t kMana = 109183576135288ll;
+    const int64_t resonance = r.effect("Bard_Resonance");
+    CHECK(r.pipe->grant_effect(resonance, 5, 1.0), "(the Bard is given five stacks of Resonance)");
+    r.run_to(1.5);
+    const double whole = r.pipe->stat_of(content::kGuidHealth);
+    r.pipe->take_damage(whole * 0.5, 2.0);
+    const double wounded = r.pipe->stat_of(content::kGuidHealth);
+    r.pipe->fire_reaction_for_test(6064631091496884132ll, 3.0);
+    std::printf("  (Cheerful: Health %.1f -> %.1f, Resonance %d)\n", wounded, r.pipe->stat_of(content::kGuidHealth), r.pipe->stacks_of(resonance));
+    CHECK(r.pipe->stat_of(content::kGuidHealth) > wounded, "Cheerful heals the wounded Bard");
+    CHECK(r.pipe->stacks_of(resonance) == 2, "Cheerful spends three stacks of Resonance");
+    CHECK(r.pipe->stacks_of(r.effect("Bard_Glee")) > 0, "with three stacks it leaves Glee");
+    const double mana_before = r.pipe->stat_of(kMana);
+    r.pipe->fire_reaction_for_test(6064631159634202679ll, 4.0);
+    std::printf("  (Pensive: Mana %.1f -> %.1f, Resonance %d)\n", mana_before, r.pipe->stat_of(kMana), r.pipe->stacks_of(resonance));
+    CHECK(r.pipe->stacks_of(resonance) == 0, "Pensive spends what is left of the Resonance");
+    CHECK(r.pipe->grant_effect(resonance, 2, 5.0), "(two more stacks)");
+    r.pipe->fire_reaction_for_test(6064631194143725961ll, 6.0);
+    std::printf("  (Epic: Pep %d, Resonance %d)\n", r.pipe->stacks_of(r.effect("Bard_Pep")), r.pipe->stacks_of(resonance));
+    CHECK(r.pipe->stacks_of(r.effect("Bard_Pep")) > 0, "Epic leaves Pep on the Bard");
+    CHECK(r.pipe->stacks_of(resonance) == 1, "Epic spends one stack for each one it reaches");
+}
+
+// what the client alone can judge (the Ranger's Dash: the time of its last arrow) is the client's word: the dash goes, and the moves it makes are allowed
+static void test_client_judged() {
+    std::printf("an ability whose requirement only the client can judge\n");
+    Rig r(1, 25);
+    CHECKF(r.ok(), "the rig: %s", r.problem.c_str());
+    if (!r.ok()) return;
+    r.know({"Ranger_Dash"});
+    const Refusal dash = r.trigger("Ranger_Dash", 2.0);
+    CHECKF(dash == Refusal::None, "the Ranger's Dash is taken (%s)", refusal_name(dash));
+    r.run_to(2.3);
+    CHECK(r.pipe->movement_allowance(2.3) >= 2500.0, "its dash may cover the ground");
+}
+
 static void test_summoner_completion() {
     std::printf("Summoner: completion, cancellation, and one server-owned summon hit\n");
     const char* names[] = {"Summoner_Summon_SpiritGuardian", "Summoner_Summon_SpiritHunter", "Summoner_Summon_SpiritMystic"};
@@ -1250,6 +1519,8 @@ int main() {
     test_cast_timeline();
     test_mana_costs();
     test_resonance_and_fortissimo();
+    test_ally_finishers();
+    test_client_judged();
     test_glee();
     test_stat_forms();
     test_songs_and_the_air();
@@ -1266,6 +1537,11 @@ int main() {
     test_guard_stamina_recovery();
     test_class_resources();
     test_mend_chain();
+    test_cleric_divine_power();
+    test_cleric_defiant_light();
+    test_cleric_purify();
+    test_stun_lock();
+    test_cleric_divine_casts();
     test_end_request();
     test_summoner_completion();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);

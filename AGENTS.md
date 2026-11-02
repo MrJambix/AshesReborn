@@ -1,3 +1,7 @@
+# Open work
+
+Read `HANDOFF.md` before building, testing or deploying: it lists what is live, what is still open, and the rules for sharing this tree with other sessions.
+
 # Server and deployment operations
 
 Use the configured Discord webhook for notifications when changing the live server or deployment. Announce maintenance before changes, then report completion or failure, including rollback when applicable. `sandalctl.ps1` sends these notices automatically for its maintenance commands; do not duplicate them.

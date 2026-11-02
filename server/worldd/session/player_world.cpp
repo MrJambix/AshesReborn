@@ -5,6 +5,7 @@
 //  session/player_world.cpp
 // ============================================================================
 #include "session/player_world.h"
+#include "net/tick_profile.h"
 
 #include "combat/npc_replicator.h"
 #include "world/interaction_state.h"
@@ -17,11 +18,14 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <set>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace aoc { namespace worldd {
 
@@ -319,6 +323,31 @@ bool PlayerWorld::load_area(const spawns::AreaConfig& area, std::string& error) 
                     if (asked.count(item) != 0) props.insert(icd);
                 }
             }
+            // ... or through the action responses of its interaction or its actor definition
+            const auto gives_asked = [&](int64_t owner) {
+                const auto it = objects_->rewards.find(owner);
+                if (it == objects_->rewards.end()) return false;
+                for (const content::ObjectData::Reward& r : it->second) {
+                    for (const int64_t item : r.items) {
+                        if (asked.count(item) != 0) return true;
+                    }
+                }
+                return false;
+            };
+            for (const auto& [icd, row] : objects_->interactables) {
+                if (gives_asked(icd)) props.insert(icd);
+            }
+            generic_config_.prop_instances.clear();
+            for (const auto& [instance, iad] : objects_->instance_iad) {
+                if (gives_asked(iad)) generic_config_.prop_instances.insert(instance);
+            }
+            // ... and the objects that start a quest: a book, a gravestone, a rune whose population instance offers one (its use opens the instance's conversation, which offers the
+            // quest).  Only a Blueprint that is no pawn and stands in the quest objects' folders is made so (TemplateSource::find); a person who offers one stays a person.
+            if (quests_) {
+                for (const auto& [instance, offers] : quests_->data().instance_offers) {
+                    if (!offers.empty()) generic_config_.prop_instances.insert(instance);
+                }
+            }
             for (auto it = props.begin(); it != props.end();) {
                 it = objects_->interactables.count(*it) != 0 ? std::next(it) : props.erase(it);
             }
@@ -388,6 +417,11 @@ bool PlayerWorld::load_area(const spawns::AreaConfig& area, std::string& error) 
     sources.generic = &*generic_;
     sources.looks = looks_.get();
     sources.objects = objects_ ? &*objects_ : nullptr;
+    if (city_nodes_) {   // who owns each zone, for the filters of the open world that name a node
+        for (const world::CityNodeInfo& node : city_nodes_->nodes()) {
+            if (node.zoi_guid != 0) spawn_context_.zone_nodes[node.zoi_guid] = {node.guid, city_nodes_->level_of(node.guid)};
+        }
+    }
     spawn_filter_.emplace(spawn_context_, motion_loaded_ ? &motion_ : nullptr);
     sources.filter = &*spawn_filter_;
     area_ = area;
@@ -505,11 +539,11 @@ void PlayerWorld::log_huntables() const {
     // Gathering stage 3, "Hunting": the creatures of the area whose corpse is hunted with a Bow, by kind
     const std::set<int64_t>& defs = generic_config_.hunting_defs;
     if (!generic_config_.hunting) {
-        spdlog::info("[hunt] --no-gathering: no creature is huntable");
+        spdlog::info("[hunt] --no-gathering: no mob is huntable");
         return;
     }
     if (defs.empty()) {
-        spdlog::info("[hunt] no huntable creatures: content.db has no hunting interactions (rebuild it with contentc 15 or later)");
+        spdlog::info("[hunt] no huntable mobs: content.db has no hunting interactions (rebuild it with contentc 15 or later)");
         return;
     }
     std::map<int64_t, size_t> by_def;
@@ -530,7 +564,7 @@ void PlayerWorld::log_huntables() const {
     }
     std::vector<std::pair<std::string, size_t>> counts;
     for (const auto& [def, n] : by_def) counts.emplace_back(names.count(def) ? names[def] : std::to_string(def), n);
-    spdlog::info("[hunt] huntable creatures in the area: {} of {} NPCs ({} kinds, eight blocks with the hunting interactable{}); a Bow in Equipment slot 38 hunts a corpse for a carcass or a trainable and Hunter XP",
+    spdlog::info("[hunt] huntable mobs in the area: {} of {} NPCs ({} kinds, eight blocks with the hunting interactable{}); a Bow in Equipment slot 38 hunts a corpse for a carcass or a trainable and Hunter XP",
                  total, registry_.count(world::ActorKind::Npc), by_def.size(), generic_ && !generic_->has_hunting_block() ? "; NOT: the Raven's captured open is missing, so they are plain creatures" : "");
     log_counts("[hunt] by kind: ", counts);
 }
@@ -591,7 +625,7 @@ bool PlayerWorld::load_npc_abilities(const std::string& abilities_path, const st
     combat::NpcAbilityData data;
     if (!data.load(abilities_path, montages_path, targeting_path, error)) return false;
     npc_abilities_ = std::move(data);
-    spdlog::info("[combat] creature attack animations: {} Blueprints, {} montages", npc_abilities_.kinds(), npc_abilities_.montages());
+    spdlog::info("[combat] mob attack animations: {} Blueprints, {} montages", npc_abilities_.kinds(), npc_abilities_.montages());
     // what the tables let each Blueprint's fight use, and what they leave out and why
     for (const std::string& line : npc_abilities_.coverage_lines()) spdlog::info("[combat]   {}", line);
     return true;
@@ -605,7 +639,7 @@ bool PlayerWorld::load_npc_senses(const std::string& senses_path, const std::str
     npc::SensesTable table;
     if (!table.load(senses_path, curves_path, error)) return false;
     npc_senses_ = std::move(table);
-    spdlog::info("[combat] creature senses: {} Blueprints (what each notices, how far it follows)", npc_senses_.size());
+    spdlog::info("[combat] mob senses: {} Blueprints (what each notices, how far it follows)", npc_senses_.size());
     return true;
 }
 
@@ -814,8 +848,9 @@ void PlayerWorld::load_crafting_data() {
             unread += reward.unread != 0 ? 1 : 0;
             unknown_xp += reward.unknown_formula.empty() ? 0 : 1;
         }
-        spdlog::info("[world] recipes: {} recipes, {} cost records, {} recipe sets, {} reward tables ({} with a part left out, {} with an experience formula not worked out), experience curves {}", recipes_->recipes.size(),
-                     recipes_->costs.size(), recipes_->set_lists.size(), recipes_->rewards.size(), unread, unknown_xp, recipes_->xp_curves.ok() ? "read" : "MISSING: no Adventuring experience for a job");
+        spdlog::info("[world] recipes: {} recipes, {} cost records, {} recipe sets, {} reward tables ({} with a part left out, {} with an experience formula not worked out), experience curves {}, artisan ratings of {} crafting and {} processing professions{}",
+                     recipes_->recipes.size(), recipes_->costs.size(), recipes_->set_lists.size(), recipes_->rewards.size(), unread, unknown_xp, recipes_->xp_curves.ok() ? "read" : "MISSING: no Adventuring experience for a job",
+                     recipes_->artisan.crafting_professions, recipes_->artisan.processing_professions, recipes_->artisan.ok() ? "" : " (MISSING: crafts and jobs ignore the crafter's ratings)");
     } else {
         spdlog::warn("[world] the recipes do not load, so no job can be started at a station: {}", re);
     }
@@ -1079,6 +1114,7 @@ void PlayerWorld::start_combat() {
     combat_->set_ability_data(&npc_abilities_);
     if (!npc_senses_.empty()) combat_->set_senses_data(&npc_senses_);
     if (!npc_abilities_.empty()) spdlog::info("[combat] {}", combat_->gate_census().text());
+    combat_->set_group_query([this](const std::array<uint32_t, 4>& x, const std::array<uint32_t, 4>& y) { return group_book_->same_squad(x, y) ? 2 : group_book_->same_group(x, y) ? 1 : 0; });
     start_aftermath();
     spdlog::info("[combat] on: {} abilities in the tables, damage profile of {} elements, in combat for {} s, NPCs fight within their aggro radius (default {} cm) and leash at {} cm, and their hits do {} x the data's damage to a player",
                  ability_catalog()->abilities(), combat_data_->profile().elements.size(), combat_data_->in_combat_timer(), combat_config_.default_aggro_cm,
@@ -1097,6 +1133,176 @@ bool PlayerWorld::prop_gone(uint64_t actor_id, double now_seconds) const {
     prop_slots_[i].due = now_seconds + std::max(1.0, r.respawn) + jitter;
     ++props_gone_;
     return true;
+}
+
+std::optional<uint64_t> PlayerWorld::lay_crate(world::ActorRegistry& registry, const svc::InventoryItem& item, const std::string& character, const std::string& name, double x,
+                                               double y, double z, double yaw_degrees, double world_time, std::string& error) const {
+    if (!ground_crates_enabled_) {
+        error = "the crates on the ground are off (--no-ground-crates)";
+        return std::nullopt;
+    }
+    // the game's crate prop, made like a quest object from the recorded one (items/ground_crates.h says why not the game's own cargo actor)
+    const spawns::OpenTemplate* open = crate_template_;
+    if (!open) {
+        if (!generic_) {
+            error = "the area's templates are not loaded";
+            return std::nullopt;
+        }
+        content::NpcAssetRow asset;
+        asset.archetype_path = items::kGroundCrateArchetype;
+        spawns::Verdict why{};
+        open = generic_->prop_template(asset, &why);
+        if (!open) {
+            error = std::string("no actor for the crate: ") + spawns::verdict_name(why);
+            return std::nullopt;
+        }
+    }
+    spawns::InstanceParams p;
+    p.x = x;
+    p.y = y;
+    p.z = z;
+    p.yaw_degrees = yaw_degrees;
+    p.world_time = world_time;
+    p.server_id = server_id_;
+    p.component_def = items::kIcdCargoActor;
+    p.interact_def = items::kPidCargoActor;
+    auto w = spawns::instantiate(*open, [this] { return guids_.next(); }, p, error);
+    if (!w) return std::nullopt;
+    w->npc.name = "crate";
+    w->npc.source = world::Source::Runtime;
+    const uint64_t id = w->id;
+    if (!registry.add(std::move(*w))) {
+        error = "the registry refuses the crate's actor";
+        return std::nullopt;
+    }
+    items::GroundCrate c;
+    c.actor = id;
+    c.item = item;
+    c.character = character;
+    c.name = name;
+    c.x = x;
+    c.y = y;
+    c.z = z;
+    c.yaw = yaw_degrees;
+    c.back_at = world_clock_ + items::kGroundCrateBackSeconds;
+    if (!ground_crates_.add(std::move(c))) {
+        registry.remove(id);
+        error = "that crate lies on the ground already";
+        return std::nullopt;
+    }
+    if (!ground_crates_restoring_) save_ground_crates();
+    return id;
+}
+
+std::optional<items::GroundCrate> PlayerWorld::take_crate(world::ActorRegistry& registry, uint64_t actor) const {
+    auto c = ground_crates_.take(actor);
+    if (c) {
+        registry.remove(actor);
+        save_ground_crates();
+    }
+    return c;
+}
+
+namespace {
+nlohmann::json crate_json(const items::GroundCrate& c, double now) {
+    const svc::InventoryItem& i = c.item;
+    nlohmann::json item = {{"container", static_cast<int>(i.container)}, {"slot", i.slot}, {"record", i.item_record_id}, {"instance", i.instance_guid}, {"quantity", i.quantity},
+                           {"quality", i.quality}, {"durability", i.durability}, {"created_at_ms", i.created_at_ms}, {"lock_expiration", i.lock_expiration}};
+    if (i.persisted_health) item["persisted_health"] = *i.persisted_health;
+    if (i.persisted_mana) item["persisted_mana"] = *i.persisted_mana;
+    return {{"item", item}, {"character", c.character}, {"name", c.name}, {"x", c.x}, {"y", c.y}, {"z", c.z}, {"yaw", c.yaw}, {"back_in", std::max(0.0, c.back_at - now)}};
+}
+
+bool crate_from_json(const nlohmann::json& j, items::GroundCrate& c, double now) {
+    if (!j.is_object() || !j.contains("item") || !j["item"].is_object()) return false;
+    const nlohmann::json& i = j["item"];
+    svc::InventoryItem& it = c.item;
+    it.container = static_cast<svc::ItemContainer>(i.value("container", 0));
+    it.slot = i.value("slot", 0);
+    it.item_record_id = i.value("record", int64_t{0});
+    it.instance_guid = i.value("instance", std::string());
+    it.quantity = i.value("quantity", 1);
+    it.quality = i.value("quality", 1);
+    it.durability = i.value("durability", 0.0f);
+    it.created_at_ms = i.value("created_at_ms", int64_t{0});
+    it.lock_expiration = i.value("lock_expiration", int64_t{0});
+    if (i.contains("persisted_health")) it.persisted_health = i["persisted_health"].get<float>();
+    if (i.contains("persisted_mana")) it.persisted_mana = i["persisted_mana"].get<float>();
+    c.character = j.value("character", std::string());
+    c.name = j.value("name", std::string());
+    c.x = j.value("x", 0.0);
+    c.y = j.value("y", 0.0);
+    c.z = j.value("z", 0.0);
+    c.yaw = j.value("yaw", 0.0);
+    c.back_at = now + std::max(0.0, j.value("back_in", items::kGroundCrateBackSeconds));
+    return it.item_record_id != 0 && !it.instance_guid.empty() && !c.character.empty();
+}
+}  // namespace
+
+void PlayerWorld::save_ground_crates() const {
+    if (ground_crates_file_.empty()) return;
+    nlohmann::json list = nlohmann::json::array();
+    for (const auto& [id, c] : ground_crates_.all()) list.push_back(crate_json(c, world_clock_));
+    for (const items::GroundCrate& c : ground_crates_unplaced_) list.push_back(crate_json(c, world_clock_));
+    const nlohmann::json doc = {{"version", 1}, {"crates", list}};
+    // written whole and then moved over the old file, so a crash leaves the old book or the new one, never half of one
+    const std::filesystem::path path(ground_crates_file_), tmp(ground_crates_file_ + ".tmp");
+    std::error_code ec;
+    if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), ec);
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << doc.dump(1);
+        if (!out) {
+            spdlog::error("[crates] the crates on the ground could not be written to {}: a restart now would lose the {} on the ground", tmp.string(), list.size());
+            return;
+        }
+    }
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) spdlog::error("[crates] the crates on the ground could not be moved into {} ({}): a restart now would lose the {} on the ground", path.string(), ec.message(), list.size());
+}
+
+void PlayerWorld::restore_ground_crates() {
+    ground_crates_restored_ = true;
+    if (ground_crates_file_.empty()) return;
+    std::error_code ec;
+    if (!std::filesystem::exists(ground_crates_file_, ec)) {
+        spdlog::info("[crates] no crates on the ground kept in {}", ground_crates_file_);
+        return;
+    }
+    nlohmann::json doc;
+    try {
+        std::ifstream in(ground_crates_file_, std::ios::binary);
+        doc = nlohmann::json::parse(in);
+    } catch (const std::exception& e) {
+        // kept aside, not overwritten: the crates in it are someone's
+        const std::string aside = ground_crates_file_ + ".unread";
+        std::filesystem::copy_file(ground_crates_file_, aside, std::filesystem::copy_options::overwrite_existing, ec);
+        spdlog::error("[crates] {} does not read ({}): copied to {}, and the crates in it are not laid out", ground_crates_file_, e.what(), aside);
+        return;
+    }
+    const nlohmann::json list = doc.value("crates", nlohmann::json::array());
+    size_t laid = 0;
+    ground_crates_restoring_ = true;
+    for (const nlohmann::json& j : list) {
+        items::GroundCrate c;
+        if (!crate_from_json(j, c, world_clock_)) {
+            spdlog::error("[crates] a crate in {} does not read: {}", ground_crates_file_, j.dump());
+            continue;
+        }
+        std::string why;
+        const auto id = ground_crates_enabled_ ? lay_crate(registry_, c.item, c.character, c.name, c.x, c.y, c.z, c.yaw, world_clock_, why) : std::nullopt;
+        if (!id) {
+            spdlog::error("[crates] {}'s crate (item {}) cannot be laid out again ({}): it stays in the file for the next start", c.name, c.item.item_record_id,
+                          ground_crates_enabled_ ? why : "the crates on the ground are off");
+            ground_crates_unplaced_.push_back(std::move(c));
+            continue;
+        }
+        ground_crates_.set_back_at(*id, c.back_at);
+        ++laid;
+    }
+    ground_crates_restoring_ = false;
+    spdlog::info("[crates] {} crate(s) on the ground laid out again from {} ({} kept for later)", laid, ground_crates_file_, ground_crates_unplaced_.size());
+    save_ground_crates();
 }
 
 void PlayerWorld::tick_props(double now_seconds) {
@@ -1127,11 +1333,16 @@ void PlayerWorld::tick_props(double now_seconds) {
 
 void PlayerWorld::tick_world(double now_seconds) {
     world_clock_ = now_seconds;
+    if (!ground_crates_restored_) restore_ground_crates();
+    if (view_config_.phases) view_config_.phases->begin_tick();   // (the endpoint's tick count: the tick each player's view passes on, view_phases.h)
     tick_props(now_seconds);
-    // (review A I2) the Endpoint ticks the world after every datagram it reads: the window is driven at the world's 20 Hz, not at that rate (the NPC world gates itself at 15 Hz)
+    // (review A I2) the window is driven at most every 45 ms, whatever the tick's rate (the old loop ticked the world after every datagram it read; the NPC world gates itself at 15 Hz)
+    TickProfile& profile = tick_profile();   // (--loop-stats: where the tick's time goes)
     if (nav_ && nav_->windowed() && npcs_ && now_seconds - last_window_drive_ >= kWindowPeriodSeconds) {
         last_window_drive_ = now_seconds;
+        const auto w = std::chrono::steady_clock::now();
         drive_window(now_seconds);
+        if (profile.on) profile.window_us += tick_profile_us_since(w);
     }
     const auto ms = [](std::chrono::steady_clock::time_point a) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count(); };
     auto t = std::chrono::steady_clock::now();
@@ -1141,17 +1352,27 @@ void PlayerWorld::tick_world(double now_seconds) {
     if (node_pops_) node_pops_->tick(now_seconds);
     if (!placed_stations_.empty() && city_nodes_ && placed_seen_version_ != city_nodes_->version()) reap_placed_stations();
     if (city_nodes_ && roads_.level_roads() != 0 && roads_seen_version_ != city_nodes_->version()) apply_road_levels();
-    window_cost_.max_people_ms = std::max(window_cost_.max_people_ms, ms(t));
+    const double people_ms = ms(t);
+    window_cost_.max_people_ms = std::max(window_cost_.max_people_ms, people_ms);
     t = std::chrono::steady_clock::now();
     if (npcs_) npcs_->tick(now_seconds);
     check_towns(now_seconds);
-    window_cost_.max_npcs_ms = std::max(window_cost_.max_npcs_ms, ms(t));
+    const double npcs_ms = ms(t);
+    window_cost_.max_npcs_ms = std::max(window_cost_.max_npcs_ms, npcs_ms);
     t = std::chrono::steady_clock::now();
     if (combat_) combat_->tick(now_seconds);
-    window_cost_.max_combat_ms = std::max(window_cost_.max_combat_ms, ms(t));
+    const double combat_ms = ms(t);
+    window_cost_.max_combat_ms = std::max(window_cost_.max_combat_ms, combat_ms);
     t = std::chrono::steady_clock::now();
     if (aftermath_) aftermath_->tick(now_seconds);
-    window_cost_.max_aftermath_ms = std::max(window_cost_.max_aftermath_ms, ms(t));
+    const double aftermath_ms = ms(t);
+    window_cost_.max_aftermath_ms = std::max(window_cost_.max_aftermath_ms, aftermath_ms);
+    if (profile.on) {
+        profile.people_us += people_ms * 1000.0;
+        profile.npcs_us += npcs_ms * 1000.0;
+        profile.combat_us += combat_ms * 1000.0;
+        profile.aftermath_us += aftermath_ms * 1000.0;
+    }
     if (scenery_) scenery_->tick();   // a town whose level changed gets a new full payload (every connection that holds its replicator is sent the update)
 }
 
@@ -1333,13 +1554,14 @@ void PlayerWorld::start_aftermath() {
         } else if (!variation_error.empty()) {
             spdlog::warn("[loot] no item variations: {} (the kills' items keep their record's quality)", variation_error);
         }
-        spdlog::info("[loot] {} reward tables of the {} the area's creatures and the quests name ({} of them only the quests'), the experience decay {}, {} item variation formulas for the quality of the drops", n,
+        spdlog::info("[loot] {} reward tables of the {} the area's mobs and the quests name ({} of them only the quests'), the experience decay {}, {} item variation formulas for the quality of the drops", n,
                      roots.size(), quest_tables, decay != 0 ? "of the Adventuring leveling type" : "(none)", formulas);
     }
     aftermath_ = std::make_unique<combat::Aftermath>(registry_, *combat_, rewards_ ? &*rewards_ : nullptr, [this] { return guids_.next(); }, aftermath_config_);
     aftermath_->set_quality_of([this](int64_t item) { return item_quality(item); });
     aftermath_->set_rarity_of([this](int64_t item, int quality) { return item_rarity(item, quality); });
     aftermath_->set_name_of([this](int64_t item) { return item_name(item); });
+    aftermath_->set_party_of([this](combat::PlayerPort& a, combat::PlayerPort& b) { return group_book_->same_group(a.character_guid(), b.character_guid()); });
     aftermath_->set_currencies(currencies());   // a kill's Glint is paid in kinds, the biggest first
     aftermath_->set_respawner([this](uint32_t ref, double now) { return respawn_npc(ref, now); });
     aftermath_->set_city_nodes(city_nodes_);

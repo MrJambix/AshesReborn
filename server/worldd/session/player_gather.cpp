@@ -218,7 +218,8 @@ void PlayerSession::send_channeling(Connection& conn, const repl::ChannelingData
     }, conn, /*must_build=*/true);
 }
 
-void PlayerSession::on_interrupt_channel(Connection& conn, Clock::time_point) {
+void PlayerSession::on_interrupt_channel(Connection& conn, Clock::time_point now) {
+    if (!within_budget(cancel_budget_, "ServerInterruptChannel", now)) return;   // (the cancels of the abilities share it: a client ends a channel no faster than this)
     if (foliage_.row != kNoInstance) {   // Gathering stage 3: the client ends the cutting of a tree or plant the same way [modelled: no capture shows the client's cancel of a foliage channel]
         cancel_foliage(&conn, "the client interrupted the channel (ServerInterruptChannel)");
         return;
@@ -262,20 +263,7 @@ void PlayerSession::run_gather(Connection& conn, Clock::time_point now) {
     while (!gather_piles_.empty() && now >= gather_piles_.front().due) {
         GatherPile pile = std::move(gather_piles_.front());
         gather_piles_.pop_front();
-        std::string error;
-        uint64_t actor = 0;
-        if (npc_world_) {
-            const auto& cg = pb_.setup().character_guid;
-            actor = npc_world_->drop_harvest_pile(pile.x, pile.y, pile.z, repl::GuidValue{cg[0], cg[1], cg[2], cg[3]}, pb_.setup().name, pile.stacks, error);
-        } else {
-            error = "the session has no world";
-        }
-        if (actor != 0) {
-            ++harvest_piles_;
-            spdlog::log(level_for(gather_done_logged_, 20), "[gather] {}: the bag was full: {} stack(s) of the harvest of {} are in a pile where it stands", name(), pile.stacks.size(), pile.node_name);
-        } else {
-            spdlog::warn("[gather] {}: the pile for {} stack(s) of the harvest of {} is not made ({}): they are lost", name(), pile.stacks.size(), pile.node_name, error);
-        }
+        make_gather_pile(pile);
     }
     while (!gather_callouts_.empty() && now >= gather_callouts_.front().due) {
         if (!room_for(1)) break;
@@ -313,6 +301,33 @@ void PlayerSession::run_gather(Connection& conn, Clock::time_point now) {
     if (now >= ch->completes) complete_gather(conn, now);
 }
 
+void PlayerSession::make_gather_pile(GatherPile& pile) {
+    std::string error;
+    uint64_t actor = 0;
+    if (npc_world_) {
+        const auto& cg = pb_.setup().character_guid;
+        actor = npc_world_->drop_harvest_pile(pile.x, pile.y, pile.z, repl::GuidValue{cg[0], cg[1], cg[2], cg[3]}, pb_.setup().name, pile.stacks, error);
+    } else {
+        error = "the session has no world";
+    }
+    if (actor != 0) {
+        ++harvest_piles_;
+        spdlog::log(level_for(gather_done_logged_, 20), "[gather] {}: the bag was full: {} stack(s) of the harvest of {} are in a pile where it stands", name(), pile.stacks.size(), pile.node_name);
+    } else {
+        spdlog::warn("[gather] {}: the pile for {} stack(s) of the harvest of {} is not made ({}): they are lost", name(), pile.stacks.size(), pile.node_name, error);
+    }
+}
+
+void PlayerSession::end_gathering(const char* why) {
+    cancel_gather(nullptr, why);   // Gathering stage 2: a node this player channels is available again
+    // a pile that still waits for its time is made now: the stacks a full bag could not take are not lost with the session
+    while (!gather_piles_.empty()) {
+        GatherPile pile = std::move(gather_piles_.front());
+        gather_piles_.pop_front();
+        make_gather_pile(pile);
+    }
+}
+
 bool PlayerSession::complete_gather(Connection& conn, Clock::time_point now) {
     gather::Gathering* g = npc_world_ ? npc_world_->gathering() : nullptr;
     const content::ContentDb* db = world_ ? world_->content() : nullptr;
@@ -340,6 +355,12 @@ bool PlayerSession::complete_gather(Connection& conn, Clock::time_point now) {
         return true;
     }
     const bool hunt = gather_.hunt;
+    note_quest_event([](quest::Engine& eng) { eng.notified("Gather", 0); });
+    // what a Gather objective counts: every item of the harvest, at the rarity the interaction rolled
+    for (const combat::RolledItem& rolled : harvest->items) {
+        const int rarity = harvest->primary_rarity;
+        note_quest_event([rolled, rarity](quest::Engine& eng) { eng.gathered(rolled.item, rarity, rolled.quantity); });
+    }
     if (hunt && gather_.gives_nothing) harvest->items.clear();   // a kind whose items are RETIRED_ or whose table is empty: the experience only (logged at the start)
     // the node is gathered in the step the result is made (a second completion of the same channel is not possible); a hunted corpse is never "returned": it is removed from the world a few
     // seconds after the hunt, and the board forgets it with it
@@ -576,6 +597,11 @@ void PlayerSession::deliver_harvest(Connection& conn, Clock::time_point now, con
     spdlog::log(level_for(gather_done_logged_, 40), "[{}] {}: {}", frame.tag, name(), line);
     if (!changes.empty() || xp.changed()) hand_over_progress(leveled ? "a level-up" : "a harvest");
     if (inventory_dirty_) hand_over_inventory("a harvest", /*periodic=*/false);
+}
+
+/// The client calls of gathering from resource nodes (session/rpc_table.h).
+void PlayerSession::register_gather_rpcs(RpcTable& t) {
+    t.add(RpcScope::Pawn, "ServerInterruptChannel", [](PlayerSession& s, const RpcContext& c) { s.on_interrupt_channel(c.conn, c.now); });
 }
 
 }}  // namespace aoc::worldd

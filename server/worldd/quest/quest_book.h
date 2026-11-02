@@ -11,6 +11,8 @@
 
 #include "content/content_db.h"
 
+#include <cerrno>
+#include <cstdlib>
 #include <cctype>
 #include <cstdint>
 #include <set>
@@ -37,7 +39,13 @@ public:
         if (ref.empty()) return nullptr;
         bool digits = true;
         for (const char c : ref) digits = digits && std::isdigit(static_cast<unsigned char>(c));
-        if (digits && ref.size() < 19) return quest(std::stoll(ref));
+        if (digits && ref.size() <= 19) {   // (a quest's record id has 19 digits, and a name may be all digits too)
+            errno = 0;
+            const long long id = std::strtoll(ref.c_str(), nullptr, 10);
+            if (errno == 0) {
+                if (const content::QuestRow* q = quest(id)) return q;
+            }
+        }
         return by_name(ref);
     }
 

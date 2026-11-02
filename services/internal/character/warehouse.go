@@ -164,10 +164,67 @@ func replaceWarehouseItems(ctx context.Context, tx pgx.Tx, characterID string, i
 	return res.Close()
 }
 
-// SaveInventoryEverything is SaveInventoryAll plus, when replaceWarehouse, the character's warehouse made exactly warehouse, in the same transaction. The warehouse is checked against the bag's
-// items (no instance on both) before anything is written.
+// WarehouseContainer is a container of the warehouse a character bought (a row of character_warehouse_containers).
+type WarehouseContainer struct {
+	Area          string
+	NodeGUID      int64
+	ContainerGUID int64
+}
+
+// MaxWarehouseContainers bounds one save: every town's tabs and the chunks, with room to spare.
+const MaxWarehouseContainers = 2000
+
+// Validate checks the rules the table holds: the same as a WarehouseItem's place.
+func (c WarehouseContainer) Validate() error {
+	switch {
+	case c.Area != WarehouseItems && c.Area != WarehouseMaterials && c.Area != WarehouseCargo:
+		return fmt.Errorf("%w: warehouse area %q is not Items, Materials or Cargo", ErrInvalid, c.Area)
+	case c.Area == WarehouseItems && c.NodeGUID != 0:
+		return fmt.Errorf("%w: a warehouse item chunk belongs to no town (node %d)", ErrInvalid, c.NodeGUID)
+	case c.Area != WarehouseItems && c.NodeGUID <= 0:
+		return fmt.Errorf("%w: a warehouse tab belongs to a town (node %d)", ErrInvalid, c.NodeGUID)
+	case c.ContainerGUID <= 0:
+		return fmt.Errorf("%w: warehouse container %d is not a record", ErrInvalid, c.ContainerGUID)
+	}
+	return nil
+}
+
+// WarehouseContainers returns the containers a character bought, by area, town and record.
+func (s *Store) WarehouseContainers(ctx context.Context, characterID string) ([]WarehouseContainer, error) {
+	if !idPattern.MatchString(characterID) {
+		return nil, ErrNotFound
+	}
+	rows, err := s.pool.Query(ctx, `SELECT area, node_guid, container_guid FROM character_warehouse_containers WHERE character_id = $1 ORDER BY area, node_guid, container_guid`, characterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WarehouseContainer
+	for rows.Next() {
+		var c WarehouseContainer
+		if err := rows.Scan(&c.Area, &c.NodeGUID, &c.ContainerGUID); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// addWarehouseContainers adds what the character bought in tx. A row it holds already stays, and none is ever removed: a save that names fewer takes nothing away.
+func addWarehouseContainers(ctx context.Context, tx pgx.Tx, characterID string, containers []WarehouseContainer) error {
+	for _, c := range containers {
+		if _, err := tx.Exec(ctx, `INSERT INTO character_warehouse_containers (character_id, area, node_guid, container_guid) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+			characterID, c.Area, c.NodeGUID, c.ContainerGUID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SaveInventoryEverything is SaveInventoryAll plus, when replaceWarehouse, the character's warehouse made exactly warehouse and containers added to what it owns, in the same transaction. The
+// warehouse is checked against the bag's items (no instance on both) before anything is written.
 func (s *Store) SaveInventoryEverything(ctx context.Context, characterID string, items []Item, wallet []WalletEntry, replaceWallet bool, jobs []ProcessingJob, replaceJobs bool, known []int64,
-	replaceKnown bool, warehouse []WarehouseItem, replaceWarehouse bool) error {
+	replaceKnown bool, warehouse []WarehouseItem, replaceWarehouse bool, containers []WarehouseContainer) error {
 	if !idPattern.MatchString(characterID) {
 		return ErrNotFound
 	}
@@ -194,6 +251,15 @@ func (s *Store) SaveInventoryEverything(ctx context.Context, characterID string,
 		}
 	} else {
 		warehouse = nil
+		containers = nil
 	}
-	return s.saveInventory(ctx, characterID, items, wallet, jobs, replaceJobs, known, replaceKnown, warehouse, replaceWarehouse)
+	if len(containers) > MaxWarehouseContainers {
+		return fmt.Errorf("%w: %d warehouse containers (at most %d)", ErrInvalid, len(containers), MaxWarehouseContainers)
+	}
+	for i, c := range containers {
+		if err := c.Validate(); err != nil {
+			return fmt.Errorf("warehouse container %d: %w", i, err)
+		}
+	}
+	return s.saveInventory(ctx, characterID, items, wallet, jobs, replaceJobs, known, replaceKnown, warehouse, replaceWarehouse, containers)
 }

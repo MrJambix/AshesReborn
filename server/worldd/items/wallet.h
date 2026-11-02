@@ -76,6 +76,14 @@ public:
         return added;
     }
 
+    /// Adds up to `amount` of `currency` (a base def's Guid), never past `cap`; returns what was added.
+    int64_t give_currency(int64_t currency, int64_t amount, int64_t cap) {
+        if (amount <= 0) return 0;
+        const int64_t added = std::min(amount, std::max<int64_t>(0, cap - balance(currency)));
+        if (added > 0) amounts_[currency] = balance(currency) + added;
+        return added;
+    }
+
     /// Every balance in the order the client's list and the save use (see the top of the file).
     std::vector<svc::WalletEntry> entries() const {
         std::vector<svc::WalletEntry> out;

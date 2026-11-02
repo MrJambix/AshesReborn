@@ -21,6 +21,7 @@
 #pragma once
 
 #include "combat/combat_data.h"
+#include "combat/crowd_control_table.h"
 #include "combat/fighter.h"
 #include "combat/hit_resolver.h"
 #include "combat/npc_ability_data.h"
@@ -36,6 +37,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -58,6 +60,9 @@ struct IncomingHit {
     int64_t                  source_guid = 0;
     uint8_t                  flags = 0;           // Miss, Block, Crit (Lethal is the player's session's: its Health decides)
     std::vector<ResolvedMod> mods;
+    std::vector<LandedEffect> effects;    // what the hit puts on the player (its "apply" rows that hold, read as the attacker)
+    bool                     from_player = false;   // another player's hit (a heal, a buff, a cleanse): it lands on the rider and not on his mount
+    const abilities::HitDef* removes = nullptr;     // the hit takes effects off the player (Purify on an ally)
     double                   at = 0;
 };
 // built with C-Y-B and CoA
@@ -68,11 +73,32 @@ struct KillReward {
     std::string name;             // the creature's nameplate
     std::string blueprint;        // its Blueprint's leaf ("Wolf")
     int         level = 0;
+    int         elite = 0;        // its elite rank (what a Kill objective's rank filter reads)
     int64_t     instance = 0;     // quests, slice 2: its population instance (0: none), what a Kill objective names
     int64_t     adventuring_xp = 0;
     int64_t     weapon_xp = 0;    // every equipped weapon line gets this (the data's Weapon experience; not modelled by the session yet)
     int64_t     node_xp = 0;      // the node's share (not modelled)
     bool        loot = false;     // there is a corpse the player may loot
+};
+
+/// Which hit is being delivered, and from what: what it breaks, what it changes and what reacts to it read this.
+struct HitOrigin {
+    const abilities::HitDef* hit = nullptr;
+    int64_t                  source_type = 0, source_guid = 0;
+    std::vector<std::string> ability_tags;
+    bool                     landed_here = false;   // the world made it (a pet's, an effect's), not the session's pipeline
+};
+
+/// A hit the player's pet or an effect it left dealt, for its confirmation.
+struct DealtHit {
+    int64_t                  hit_guid = 0;
+    int64_t                  source_type = 0, source_guid = 0;
+    uint64_t                 instigator = 0;   // the pet's actor (0: the player)
+    uint64_t                 target = 0;
+    uint8_t                  flags = 0;
+    std::vector<ResolvedMod> mods;
+    std::vector<double>      effective;
+    bool                     predicted = false;   // the client predicts it (an effect's Tick hit)
 };
 
 /// What the world asks of a player's session.
@@ -95,6 +121,12 @@ public:
     virtual protocol::emit::FIntrepidNetworkGUID cylinder_guid() const { return {}; }
     /// The player killed a creature or helped to: the experience it is worth (the session applies it to its progress).
     virtual void receive_kill(const KillReward& /*kill*/, double /*now*/) {}
+    /// A hit of the player's that the session did not make itself (a pet's, an effect's tick): the client draws its floating number from the confirmation.
+    virtual void hit_dealt(const DealtHit& /*hit*/, double /*now*/) {}
+    /// A hit of the player's pet lands on the player (a heal, a cleanse).
+    virtual void hit_from_pet(int64_t /*hit_guid*/, int64_t /*ability*/, double /*now*/) {}
+    /// Another player's Resurrect landed on this dead player: the session asks him (the CharacterGuid is who the client's alert names).
+    virtual void prompt_resurrect(const std::array<uint32_t, 4>& /*by*/, double /*now*/) {}
 };
 
 /// What a player asks about a target before it acts on it.
@@ -107,7 +139,16 @@ struct TargetInfo {
     Vec3     position;
     double   radius_cm = 50.0;
     bool     is_player = false;
+    bool     other_player = false;   // another player: Ally, Raid and Party in a mask differ for him
+    int      group = 0;              // ... who shares the player's raid or party (1) or squad (2); 0: neither
 };
+
+/// Whether a mask of EAffectedTarget reaches a target: an enemy by Enemy; another player by Ally, by Raid in one group, or by Party in one squad; anything else friendly by any of them.
+inline bool mask_reaches(int mask, const TargetInfo& ti) {
+    if (ti.relation == Relation::Hostile) return (mask & 2) != 0;
+    if (!ti.other_player) return (mask & (1 | 4 | 8 | 16)) != 0;
+    return (mask & 4) != 0 || ((mask & 16) != 0 && ti.group >= 1) || ((mask & 8) != 0 && ti.group >= 2);
+}
 
 /// An enemy an area ahead of a player holds (a cone, a line), and how far its centre is from the player.
 struct GatheredTarget {
@@ -129,6 +170,7 @@ struct DeathEvent {
     uint64_t               killer = 0;        // the player whose hit killed it (0: none)
     double                 at = 0;
     int                    level = 0;
+    int                    elite = 0;
     Vec3                   position;
     std::string            blueprint;         // the Blueprint's leaf without "_C": "Wolf"
     const world::NpcInfo*  info = nullptr;    // valid during the call
@@ -179,11 +221,15 @@ public:
     HitResolver& resolver() { return resolver_; }
 
     void set_death_hook(DeathHook hook) { death_hook_ = std::move(hook); }
+    /// How two players are grouped: 0 not, 1 in one group, 2 in one squad (a party is one squad).
+    void set_group_query(std::function<int(const std::array<uint32_t, 4>&, const std::array<uint32_t, 4>&)> fn) { group_query_ = std::move(fn); }
 
     /// The creatures that attack with their own animation (combat/npc_ability_data.h): a creature whose Blueprint the tables list starts each attack with the ability's montage, lands
     /// each hit when the montage's notify says and starts its next attack when the montage is over; every other creature swings as it always did.  Null (the default) for none.
     /// The tables outlive the world.
     void set_ability_data(const NpcAbilityData* data) { anim_ = data; }
+    /// Whether the ability launches projectiles: a montage of it has a notify that launches one, and the ability carries a projectile row of that notify's key (what a creature that shoots stands off for).
+    bool launches_projectiles(const abilities::AbilityDef& def) const;
     /// What each creature notices and how far it follows (npc/motion_table.h, the senses table): a creature whose Blueprint the table lists notices by its Blueprint's aggro radius (scaled by its
     /// level), hearing and sight, and leashes at its Blueprint's distance from the place its fight began; every other creature keeps the flat radius and leash of the config.  Null (the default) for
     /// none.  The table outlives the world, and is set before the creatures are made.
@@ -210,6 +256,18 @@ public:
     void remove_player(PlayerPort* port);
     /// The port of the player whose pawn is `actor_id` (null: none joined).
     PlayerPort* find_player(uint64_t actor_id) { return player(actor_id); }
+    /// The player whose pawn this actor is (null for anything else: a pet stands in the players' list too).
+    PlayerPort* player_pawn(uint64_t actor_id);
+    /// The other living players whose bodies touch a sphere around a point, nearest first.
+    std::vector<GatheredTarget> allies_around(const Fighter& from, const Vec3& centre, double radius_cm, size_t max);
+    /// A hit of another player on this player: it goes to his session's inbox; `effective` is what it should take effect for as he is now.
+    Delivery apply_hit_to_player(uint64_t target, uint64_t attacker, const Resolved& hit, double now, const HitOrigin* origin);
+    /// What such a hit leaves on him.
+    void apply_effect_to_player(uint64_t target, uint64_t attacker, const LandedEffect& e, double now);
+    /// A Resurrect of `caster` landed on a dead player.
+    void resurrect_player(uint64_t target, uint64_t caster, double now);
+    /// A hit of an effect the creature `npc` left on a player (a burn's tick).  A creature that is gone or dead hits no more.  [modelled: no recording shows it]
+    void npc_effect_hit(uint64_t npc, uint64_t player_actor, int64_t hit_guid, int64_t effect_guid, double now);
     const std::vector<PlayerPort*>& players() const { return players_; }
 
     // ---- NPCs
@@ -236,11 +294,76 @@ public:
     /// "CollisionCylinder" (NpcInfo::collision_cylinder, the actor's + 4 as retail mints it); 0 for an actor that has none.
     uint64_t hit_component_of(uint64_t actor_id) const;
 
-    /// Applies a player's resolved hit to an NPC: Health (and Mana) move, the threat, the combat flags, the death. Returns what happened.
-    Delivery apply_hit_to_npc(uint64_t npc_actor, uint64_t attacker, const Resolved& resolved, double now);
+    /// Applies a player's resolved hit to an NPC: Health (and Mana) move, and so do the status stats it holds (the burn's pool and its seconds), the threat, the combat flags, the death. Returns what happened.
+    /// `threat_to`: who the creature turns on, when that is not the attacker (a pet's hit: the kill and the loot are its owner's, the creature's anger is the pet's, and a sliver the owner's, whom it goes
+    /// for when the pet is gone).
+    Delivery apply_hit_to_npc(uint64_t npc_actor, uint64_t attacker, const Resolved& resolved, double now, uint64_t threat_to = 0, const HitOrigin* origin = nullptr);
+
+    /// Seconds left of an effect record on an NPC (0: it is not on).
+    double effect_remaining(uint64_t npc_actor, int64_t effect_guid, double now) const;
+    /// How many stacks of an effect record an NPC holds, and how many instances of effects it holds in all (for the tests and the log).
+    int    effect_stacks(uint64_t npc_actor, int64_t effect_guid) const;
+    size_t effect_count(uint64_t npc_actor) const;
 
     /// Advances the world to `now`: the AI of every combatant near a player, the attacks, the flags, the NPCs' regeneration.
     void tick(double now);
+
+    // ---- what a player's hits leave on a creature (a stun, a root, a slow, a debuff's stat mods, a damage over time).  It shows on the creature's CurrentEffects and CrowdControlState; it ends with its
+    // time, with the creature's death or reset, and when damage breaks it (combat/crowd_control_table.h).
+    void apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& effect, uint64_t by, double now);
+    /// A creature's hit that helps its side (no Enemy in its mask: a rally, a fire shield): its effects on the creature and the friends around it.
+    void land_on_friends(uint64_t npc, const abilities::HitDef& hit, double now);
+    /// What a creature's hit leaves on the ground, at `at`.
+    void spawn_hit_zones(uint64_t npc, const abilities::HitDef& hit, const Vec3& at, double now);
+    void remove_effects_from_npc(uint64_t npc_actor, const abilities::HitDef& hit, double now);
+    /// Takes every instance of the effect off the creature (Dimensional Bolt's mark, spent by its second press).
+    void remove_npc_effect(uint64_t npc_actor, int64_t effect_guid, double now);
+    /// The instances of the effect on the creature, for the tests and a pet's stance.
+    int  npc_effect_count(uint64_t npc_actor, int64_t effect_guid) const;
+    /// What the creature's crowd controls stop now (kCrowdStopsMoving ...); what its walking speed is multiplied by.
+    uint8_t crowd_status(uint64_t npc_actor) const;
+    double  crowd_pace(uint64_t npc_actor) const;
+
+    // ---- a player's pet: it chases `target` and plays `ability` at it until the target dies or it is told otherwise.  Its hits resolve from its owner's stats and the kill and the loot are its owner's;
+    // the creature it hurts fights it back (from then on it is on the creature's table, as a player is), and a pet whose Health runs out is dead(pet) for its session to take away.
+    // False when the pet or the target cannot fight or the target is no enemy of the owner.
+    bool pet_attack(uint64_t pet, uint64_t owner, int64_t ability, uint64_t target);
+    void pet_stop(uint64_t pet);
+    uint64_t pet_of(uint64_t owner) const { return pet_of_owner(owner); }
+    /// The nearest living creature within `radius_cm` of the player whose target is the player itself (what a Defensive pet goes for); 0 for none.
+    uint64_t owner_attacker(uint64_t player_actor, uint64_t pet, double radius_cm) const { return attacker_of_owner(player_actor, pet, radius_cm); }
+    /// Whether the pet can start an ability now: it is there, alive, and no crowd control stops it.
+    bool pet_can_act(uint64_t pet) const;
+    /// What the pet just incapacitated and should let go of (Test_Pet_FollowEvent, on the Hunter's melee hit), once; 0: none.
+    uint64_t take_pet_stand_down(uint64_t pet) {
+        const auto it = pet_stand_downs_.find(pet);
+        if (it == pet_stand_downs_.end()) return 0;
+        const uint64_t target = it->second;
+        pet_stand_downs_.erase(it);
+        return target;
+    }
+    bool pet_fighting(uint64_t pet) const { return pet_fights_.count(pet) != 0; }
+    bool is_pet(uint64_t actor_id) const { return pet_ports_.count(actor_id) != 0; }
+    /// The pet plays one of its abilities (its owner has paid for it): it goes within `reach_cm` of a hostile target when the ability is aimed at one, plays the montage and lands the ability's hits
+    /// at its notifies, on the creatures, on itself and on its owner as each hit's mask says.  False when it cannot (a pet that is stopped by a crowd control, an ability it cannot play).
+    bool pet_use(uint64_t pet, uint64_t owner, int64_t ability, uint64_t target, double reach_cm);
+    bool pet_casting(uint64_t pet) const { return pet_casts_.count(pet) != 0; }
+    /// What the pet is fighting (0: nothing), and whom a creature is after (0: nobody).
+    uint64_t pet_target(uint64_t pet) const {
+        const auto it = pet_fights_.find(pet);
+        return it == pet_fights_.end() ? 0 : it->second.target;
+    }
+    uint64_t creature_target(uint64_t npc_actor) const;
+    /// Whether the actor holds an effect that can be dispelled; a debuff the owner's Cleanse could take.
+    bool holds_dispellable(uint64_t npc_actor) const;
+    /// The pet joins its owner's side as it comes into the world: its owner's abilities reach it as an ally's would.
+    bool pet_summoned(uint64_t pet, uint64_t owner) { return pet_join(pet, owner); }
+    /// The pet leaves the world: its fight ends and its combatant is forgotten.
+    void pet_gone(uint64_t pet);
+    /// The nearest living creature within `radius_cm` of the player that is fighting `pet` or, with `owner_too`, the player; 0 for none.
+    uint64_t attacker_of(uint64_t player_actor, uint64_t pet, double radius_cm, bool owner_too = true) const;
+    /// Whether the player has hit this creature in its present fight.
+    bool fought_by(uint64_t npc_actor, uint64_t player_actor) const;
 
     // ---- state, for the tests and the log
     bool is_combatant(uint64_t actor_id) const { return npcs_.count(actor_id) != 0; }
@@ -385,15 +508,77 @@ private:
     bool  plan_cast(Npc& n, const abilities::AbilityDef& def, CastPlan& out);
     /// `projectile`: the record of the projectile that carried the hit (0: the ability itself made it), which the confirmation names as its source.
     void  deliver_hit(Npc& n, PlayerPort& port, const abilities::AbilityDef& ability, int64_t hit_guid, double now, int64_t projectile = 0);
-    /// Whether the ability launches projectiles at all: it lists projectile records and a montage of it has a notify that launches one.
-    bool  launches_projectiles(const abilities::AbilityDef& def) const;
+    void  deliver_hit_with(Npc& n, PlayerPort& port, const abilities::HitDef& hit, const HitMeta& meta, double now);
     /// For a creature whose attacks launch projectiles: the arrival distance of its tree's approach (it closes in to it between two casts) and the farthest its tree lets it cast from; both -1 for a
     /// creature that does not shoot.
     void  stand_off_of(const Npc& n, double& arrival, double& reach) const;
     /// A projectile leaves the creature at the notify of its montage; `advance_flights` moves every projectile in the air and lands the ones that arrive.
     void  launch(Npc& n, uint64_t target, const abilities::AbilityDef& ability, const PlannedFire& fire, double now);
     void  advance_flights(double now);
+    void  step_zones(double now);
     void  kill(Npc& n, uint64_t killer, double now, bool gm = false);
+    class PetPort;
+    /// One fight of a pet.
+    struct PetFight {
+        uint64_t owner = 0, target = 0;
+        const abilities::AbilityDef* ability = nullptr;
+        double   reach_cm = 250;
+        double   next_at = 0, end_at = 0;
+        bool     swinging = false;   // a swing is under way
+        bool     pursuing = false;   // the NPC world is walking it after its target (it re-plans by itself)
+        std::vector<std::pair<double, int64_t>> due;   // (when, hit record) of the swing under way
+    };
+    /// One ability a pet is playing.
+    struct PetCast {
+        uint64_t owner = 0, target = 0;
+        const abilities::AbilityDef* ability = nullptr;
+        double   reach_cm = 250;
+        bool     started = false, pursuing = false;
+        double   end_at = 0;
+        std::vector<std::pair<double, int64_t>> due;   // (when, hit record)
+    };
+    bool  pet_join(uint64_t pet, uint64_t owner);
+    void  tick_pet_casts(double now);
+    void  pet_start_cast(Npc& pet, PetCast& cast, double now);
+    /// A hit of a pet's ability lands, on whom its mask says, then the hits it fires.
+    void  pet_land(Npc& pet, const PetCast& cast, const abilities::HitDef& hit, double now, int depth = 0);
+    struct LandSource;
+    struct HolderEvent;
+    class EventHost;
+    /// A hit of the player's that the session did not make (a pet's, an effect's, a reaction's) lands on `target`: its requirement, its numbers, the delivery, the confirmation and what it leaves.
+    void  land_for_player(uint64_t by, uint64_t target, const abilities::HitDef& hit, const LandSource& src, double now, int depth = 0);
+    /// The hits a hit fires through its targeting records, around `target`.
+    void  land_children(uint64_t by, uint64_t target, const abilities::HitDef& hit, const LandSource& src, double now, int depth);
+    /// What reacts on the actor to an event of the hit (its effects' reactions: HitEvents bit 2, the hit landed on the holder; StatEvents bit 2, it died).
+    void  holder_reacts(uint64_t holder, const HolderEvent& event, double now, int hit_bit = 2, const std::vector<int64_t>* carried = nullptr);
+    /// A hit of the pet's landed: what the pet holds reacts (HitEvents bit 4, its own hit: Amplify's Parasitism), and so does what the hit carries (Eviscerate's Savagery).
+    void  pet_hit_reacts(uint64_t pet, const HolderEvent& event, double now);
+    std::map<uint64_t, uint64_t> pet_stand_downs_;
+    double pet_regen_at_ = 0;
+    /// The effect's hits of the phases, on its holder.
+    void  run_phases(uint64_t holder, const abilities::EffectDef& def, uint64_t by, std::initializer_list<const char*> phases, double now);
+    /// A creature's hit landed on a pet: its effects react (Brace) and what damage breaks, breaks.
+    void  pet_was_hit(Npc& pet, const IncomingHit& hit, double taken, double now);
+    double incoming_mult(const Npc& n, const HitOrigin* origin, uint64_t attacker) const;
+    void  modify_effects(Npc& n, const abilities::HitDef& hit, uint64_t attacker, double now);
+    uint64_t pet_of_owner(uint64_t owner) const;
+    uint64_t attacker_of_owner(uint64_t player_actor, uint64_t pet, double radius_cm) const;
+    uint64_t owner_of_pet(uint64_t pet) const;
+    void  rewrite_effect_item(Npc& n, size_t index);
+    double flight_seconds(const content::AbilityHitRow& row, const Vec3& from, const Vec3& to) const;
+    void  pet_land_on_self(Npc& pet, uint64_t owner, const abilities::HitDef& hit, double now);
+    void  tick_pets(double now);
+    /// The stat engine, CurrentEffects' neighbours and the crowd control state follow the creature's effects.
+    void  effects_changed(Npc& n, double now);
+    void  remove_effect_at(Npc& n, size_t index);
+    /// The effect ends, with the hits of the phases.
+    void  end_effect_at(Npc& n, size_t index, std::initializer_list<const char*> phases, double now);
+    void  clear_effects(Npc& n, double now);
+    void  break_fragile(Npc& n, double loss, const HitOrigin* origin, double now);
+    void  step_effects(double now);
+    /// Everything the player applied goes (he left the area or died).
+    void  drop_effects_of(uint64_t instigator);
+    void  pet_swing(Npc& pet, PetFight& fight, const Npc& target, double now);
     void  begin_reset(Npc& n, double now);
     void  set_flags(Npc& n, bool in_combat, uint64_t target_actor);
     /// Gives an NPC that is no combatant the stat list its open carries in the game, at its level (the stat engine's NPC profile): true when it did (false: it was filled already, or its open has no
@@ -412,11 +597,29 @@ private:
     CombatWorldConfig      cfg_;
     HitResolver            resolver_;
     DeathHook              death_hook_;
+    std::function<int(const std::array<uint32_t, 4>&, const std::array<uint32_t, 4>&)> group_query_;
     std::unordered_map<uint64_t, std::unique_ptr<Npc>> npcs_;
     std::vector<PlayerPort*> players_;
     std::map<uint64_t, double> player_combat_until_;   // actor id -> when its combat flag ends
     std::vector<Pending>   pending_;
     std::vector<Flight>    flights_;
+    /// What a creature's hit leaves on the ground (LingeringZonesIds: a shaman's ooze): it hurts the players in it each tick until it is over.
+    struct GroundZone {
+        uint64_t                npc = 0;
+        const content::ZoneRow* row = nullptr;
+        Vec3                    centre;
+        double                  radius = 0, tick_due = 0, period = 1, end_at = 0;
+        std::set<uint64_t>      overlapped;
+    };
+    std::vector<GroundZone> ground_zones_;
+    void  land_zone_hits(Npc& n, GroundZone& z, const char* role, double now);
+    std::map<uint64_t, PetFight> pet_fights_;   // pet actor -> its fight
+    std::map<uint64_t, PetCast> pet_casts_;     // pet actor -> the ability it is playing
+    std::map<uint64_t, uint64_t> pet_owners_;   // pet actor -> its owner
+    std::set<int64_t>      reaction_noted_;     // the reactions said once in the log
+    std::set<uint64_t>     effected_;           // the creatures that hold an effect
+    int64_t                next_effect_key_ = 1;
+    std::map<uint64_t, std::unique_ptr<PetPort>> pet_ports_;   // pet actor -> what the creatures' code sees of it (it stands in players_)
     const NpcAbilityData*  anim_ = nullptr;
     const npc::SensesTable* senses_ = nullptr;
     std::unordered_map<std::string, bool> hostile_by_archetype_;

@@ -79,6 +79,9 @@ struct WarehouseItem {
     int64_t       node_guid = 0;
     int64_t       container_guid = 0;
     InventoryItem item;
+    /// Buying room: a row that names a container the character bought and holds no item (aoc.character.v1.WarehouseContainer); `item` says nothing.  It travels with the items so that a purchase
+    /// is saved in the call that saves the money paid for it.
+    bool          container_only = false;
     bool operator==(const WarehouseItem&) const = default;
 };
 
@@ -116,6 +119,9 @@ struct ProcessingJob {
     int64_t                  duration_ms = 0;
     std::string              client_txn;      // 32 lowercase hex digits
     std::vector<JobResource> resources;
+    // the crafter's artisan ratings when the job was queued (crafting quality; the sums its formulas add up): the job pays what it was started with, whatever its crafter wears when it is collected.  0 for a
+    // job saved before they were kept.
+    double rating_xp = 0, rating_quantity = 0, rating_rarity = 0;
     int64_t end_ms() const { return started_at_ms + duration_ms; }
     bool operator==(const ProcessingJob&) const = default;
 };
@@ -337,9 +343,29 @@ public:
                                        uint32_t server_id) = 0;
 };
 
+/// A row of the guilds table: `data` is session/guild_saver.h's.
+struct SavedGuild {
+    std::string guid, name, data;
+};
+
 class CharacterApi {
 public:
     virtual ~CharacterApi() = default;
+    /// Guilds: all of them, once at worldd's start; a guild written whole; a guild gone (one that is not there is no error).  An older service answers Failed.
+    virtual CallStatus list_guilds(std::vector<SavedGuild>& out) {
+        out.clear();
+        return CallStatus::Failed;
+    }
+    virtual CallStatus save_guild(const std::string& guid, const std::string& name, const std::string& data) {
+        (void)guid;
+        (void)name;
+        (void)data;
+        return CallStatus::Failed;
+    }
+    virtual CallStatus delete_guild(const std::string& guid) {
+        (void)guid;
+        return CallStatus::Failed;
+    }
     virtual CharacterResult get_character(const std::string& id) = 0;
     /// SaveCharacterState with a position: the character's last good position after play (plan A6). The service
     /// leaves last_region and level unchanged (they are not sent). Refused: a position the store rejects (not

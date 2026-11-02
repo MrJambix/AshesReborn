@@ -178,6 +178,7 @@ public static class Cli
                 case "town-floors": return TownFloorsCommand(o);
                 case "town-layouts": return TownLayoutsCommand(o);
                 case "merge-geometry": return MergeGeometryCommand(o);
+                case "find": { var game = new Game(o.Paks, o.Usmap); Inspect.Find(game, o.Rest); return 0; }
                 case "bp": { var game = new Game(o.Paks, o.Usmap); Inspect.Bp(game, o.Rest[0], o.Rest.Count > 1 ? o.Rest[1] : null); return 0; }
                 case "inspect": { var game = new Game(o.Paks, o.Usmap); Inspect.Run(game, new[] { "inspect" }.Concat(o.Rest).ToArray()); return 0; }
                 default:

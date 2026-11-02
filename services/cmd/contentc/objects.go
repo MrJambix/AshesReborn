@@ -7,6 +7,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"aocrop/services/internal/designdb"
 )
@@ -90,6 +91,50 @@ func buildObjects(w *writer, src *source, meta map[string]string) error {
 		}
 		iads++
 	}
+	// what a use gives through its action responses (version 39): the GiveItem responses a player interaction runs when it completes, and the ones an actor definition runs at its states
+	responses := byGuid(src.rows["ActionResponseRecordBase"])
+	tables := byGuid(src.rows["RewardTableRecordBase"])
+	var objectRewards int
+	writeRewards := func(owner int64, actions []int64) error {
+		ord := 0
+		for _, a := range actions {
+			r, ok := responses[a]
+			if !ok || enumValue(strOf(r.Fields["ResponseType"])) != "GiveItem" {
+				continue
+			}
+			for _, t := range idsOf(r.Fields["RewardsIds"]) {
+				table, ok := tables[t]
+				if !ok {
+					continue
+				}
+				if err := w.exec(`INSERT INTO object_reward (owner_guid, ord, table_guid, items) VALUES (?, ?, ?, ?)`, owner, ord, t, jsonIDs(rewardTableItems(table.Fields))); err != nil {
+					return err
+				}
+				ord++
+				objectRewards++
+			}
+		}
+		return nil
+	}
+	for _, r := range src.rows["InteractableComponentDefRecordBase"] {
+		if pairs, ok := r.Fields["InteractInputPoints"].(designdb.Pairs); ok && len(pairs) > 0 {
+			if err := writeRewards(r.Guid, idsOf(pids[idGuid(structOf(pairs[0].Value)["PlayerInteractDefinition"])]["CompletionResponsesIds"])); err != nil {
+				return err
+			}
+		}
+	}
+	for _, r := range src.rows["InteractableActorDefRecordBase"] {
+		var actions []int64
+		if pairs, ok := r.Fields["StateActionResponses"].(designdb.Pairs); ok {
+			for _, p := range pairs {
+				actions = append(actions, idsOf(structOf(p.Value)["ActionResponseIds"])...)
+			}
+		}
+		if err := writeRewards(r.Guid, actions); err != nil {
+			return err
+		}
+	}
+	meta["objects.rewards"] = fmt.Sprint(objectRewards)
 	var named int
 	for _, r := range src.rows["PopulationInstanceRecordBase"] {
 		if iad := idGuid(r.Fields["InteractableActorDefId"]); iad != 0 {
@@ -119,6 +164,39 @@ func buildObjects(w *writer, src *source, meta map[string]string) error {
 	meta["objects.quest_items"] = fmt.Sprint(questItems)
 	meta["objects.item_boxes"] = fmt.Sprint(boxes)
 	return nil
+}
+
+// rewardTableItems lists the items a reward table can give (its RewardItem anywhere in the record), each once, in the order the record holds them.
+func rewardTableItems(f designdb.Struct) []int64 {
+	var out []int64
+	seen := map[int64]bool{}
+	var walk func(v designdb.Value)
+	walk = func(v designdb.Value) {
+		switch t := v.(type) {
+		case designdb.Struct:
+			for k, e := range t {
+				if k == "ItemId" {
+					if g := idGuid(e); g != 0 && !seen[g] {
+						seen[g] = true
+						out = append(out, g)
+					}
+					continue
+				}
+				walk(e)
+			}
+		case []designdb.Value:
+			for _, e := range t {
+				walk(e)
+			}
+		case designdb.Pairs:
+			for _, p := range t {
+				walk(p.Value)
+			}
+		}
+	}
+	walk(f)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // listOf reads a list value (nil for anything else).

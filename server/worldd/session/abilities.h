@@ -68,6 +68,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -129,6 +130,9 @@ struct TriggerInfo {
     std::map<int64_t, double> item_stats;
     /// plan E1, stage 3: the actors the call's Targets name other than the caster's own components, as the session resolved them (an NPC's ObjectId).
     std::vector<uint64_t> target_actors;
+    /// Where the call aims (the first of its TargetTransforms: the place a Chains of Restraint is clicked at).
+    bool   has_place = false;
+    double place_x = 0, place_y = 0, place_z = 0;
 };
 
 class AbilityRuntime {
@@ -238,6 +242,8 @@ public:
 
     // ---- state, for the log and the tests ------------------------------------------------------------------------
     double stamina() const { return stat(content::kGuidStamina); }
+    /// A level gained: Stamina back at its maximum.
+    void refill_stamina(bootstrap::AbilityChange& c) { set_stat(c, content::kGuidStamina, max_stamina()); }
     double max_stamina() const { return stat(content::kGuidMaxStamina); }
     double stat(int64_t record) const {
         const auto it = stats_.find(record);

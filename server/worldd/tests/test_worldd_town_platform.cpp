@@ -278,7 +278,7 @@ static void test_real_platforms() {
         if (!n) continue;
         CHECKF(set.place(bowl.node, bowl.layout, {n->x, n->y, n->z, n->yaw}), "%s is placed", bowl.name);
     }
-    CHECK(set.nodes() == 5, "five bowls placed");
+    CHECK(set.nodes() == std::size(world::kTownBowls), "every bowl placed");
 
     // the client gets the platform: its asset set is among the replicator's items of every bowl at every node level (so the floor is there at the seed's levels, which are
     // Wilderness for Winstead, New Aela and Miraleth, and after a level change), with an identity transform: the node record's frame, nothing else
@@ -325,7 +325,7 @@ static void test_real_platforms() {
         aoc::protocol::ServerGuidAllocator guids{60, 0x6ee87ee4u};
         PlayerWorld world(&*db, "", bootstrap::GameStateMode::Tier3, 60, guids);
         world.set_city_nodes(nodes.get());
-        CHECK(world.load_town_platforms(TOWN_PLATFORMS_PATH, err) && world.town_platforms() && world.town_platforms()->nodes() == 5, "PlayerWorld::load_town_platforms places the five bowls at the registry's records");
+        CHECK(world.load_town_platforms(TOWN_PLATFORMS_PATH, err) && world.town_platforms() && world.town_platforms()->nodes() == std::size(world::kTownBowls), "PlayerWorld::load_town_platforms places the bowls at the registry's records");
         const world::CityNodeInfo* joeva = nodes->by_guid(world::kTownBowls[1].node);
         const double mx = -1087417.6, my = 503591.5;   // Joeva's market square
         const auto square = world.bowl_floor_at(mx, my);

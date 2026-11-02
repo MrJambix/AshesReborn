@@ -344,6 +344,8 @@ add_library(worldd_core STATIC
     npc/npc_world.cpp
     npc/npc_world.h
 )
+# the player session's feature files have a list of their own
+include("${CMAKE_CURRENT_SOURCE_DIR}/session/session_sources.cmake")
 target_include_directories(worldd_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(worldd_core PUBLIC
     aocnet
@@ -364,7 +366,7 @@ if(MSVC)
         NOMINMAX
         _WIN32_WINNT=0x0A00
     )
-    target_compile_options(worldd_core PRIVATE /bigobj)   # player_session.cpp exceeds the default section limit (C1128)
+    target_compile_options(worldd_core PRIVATE /bigobj)
 endif()
 set_target_properties(worldd_core PROPERTIES FOLDER "Servers/worldd")
 
@@ -384,6 +386,7 @@ function(worldd_add_test name)
         STATS_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/stats/testdata/corpus.txt"
         TALENT_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/talent_fixture.sql")
     set_target_properties(${name} PROPERTIES FOLDER "Tests/worldd")
+    target_compile_options(${name} PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 endfunction()
 
 foreach(t
@@ -455,6 +458,9 @@ target_compile_definitions(test_worldd_gather_session PRIVATE
 
 # Resource storage (Gathering stage 3): the grid against the captured slots, the routing, the top-up, the full container, the moves and the login's repair on a fixture, and the flags of every
 # item of the real content.db of the working tree
+worldd_add_test(test_worldd_warehouse)
+worldd_add_test(test_worldd_group)
+worldd_add_test(test_worldd_guild)
 worldd_add_test(test_worldd_resource)
 target_compile_definitions(test_worldd_resource PRIVATE
     RESOURCE_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")

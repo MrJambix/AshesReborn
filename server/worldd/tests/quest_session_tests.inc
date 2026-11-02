@@ -140,7 +140,11 @@ struct QuestHarness : Harness {
     uint64_t                         talker = 0;
     bool                             ended = false;
 
-    QuestHarness(FakeQuestApi& api_, const QuestTestData& data, svc::SavedQuestLog log, svc::Character r = cyb_record(), bool gm = false) : Harness(std::move(r)), api(api_) {
+    static svc::Character with_gm_level(svc::Character r, bool gm) {
+        if (gm) r.gm_level = 3;
+        return r;
+    }
+    QuestHarness(FakeQuestApi& api_, const QuestTestData& data, svc::SavedQuestLog log, svc::Character r = cyb_record(), bool gm = false) : Harness(with_gm_level(std::move(r), gm)), api(api_) {
         record.quest_log = std::move(log);
         qs::QuestWorker::Config wc;
         wc.poll_interval = milliseconds(20);
@@ -154,6 +158,8 @@ struct QuestHarness : Harness {
         talker = fx.add(*vendor_t, kCx + 800, kCy + 300, false, 0, "Sosha Terim", kSoshaRoot);   // 8.5 m
         if (world::WorldActor* a = fx.world->registry().find(talker)) a->npc.instance_guid = kSoshaInstance;
         start();
+        if (gm) s->set_gm_enabled(true);   // the account's .GM On
+        s->set_destiny_board(false);   // (these tests count the quests they start; test_destiny_board runs it)
     }
     ~QuestHarness() override { end(); }
     /// The character leaves: the session saves what it holds, and the worker's thread gets it done.
@@ -541,6 +547,53 @@ static void test_quest_data() {
 }
 
 // ---- the offer, the accept, the abandon and the relog ---------------------------------------------------------------------------------
+
+/// A book that starts a quest (CSQ_AS_0002_THO_Book_TheHowlingOak, a closed book on a table): its Blueprint is no pawn, so the world makes it a quest object from the recorded one, and its
+/// use opens the conversation of its population instance, which offers the quest.
+static void test_quest_from_object() {
+    std::printf("a quest offered by an object: the book's use opens its conversation\n");
+    constexpr int64_t kBookInstance = 6064631051549736966ll, kBookDialogue = 6064634349883573778ll, kBookIcd = 6064633962143220383ll, kBookPid = 6064633690231341063ll;
+    const char* kBookPath = "/Game/DesignAssets/Quests/SidequestAssets/CSQ_INTS_NEW/CSQ_INT_ClosedBook.Default__CSQ_INT_ClosedBook_C";
+    std::string why;
+    const auto data = quest_test_data(why);
+    if (!data) { std::printf("  [skip] SKIP: %s\n", why.c_str()); return; }
+    auto db = content::ContentDb::open(dialogue_db_path(), why);
+    std::optional<content::ObjectData> objects;
+    if (db) objects = db->object_data(why);
+    if (!objects) { std::printf("  [skip] SKIP: %s\n", why.c_str()); return; }
+    const qs::QuestBook qb(data->quests);
+    CHECK(!qb.offers(kBookInstance, 0).empty(), "the book's population instance offers a quest");
+    std::optional<spawns::GenericNpcs> generic;
+    FakeQuestApi api;
+    QuestHarness h(api, *data, svc::SavedQuestLog{});
+    h.fx.world->set_objects(std::move(*objects));
+    generic.emplace(*h.fx.captured, nullptr, spawns::GenericConfig{});
+    content::NpcAssetRow asset;
+    asset.archetype_path = kBookPath;
+    const spawns::OpenTemplate* open = generic->prop_template(asset);
+    CHECK(open && open->category == "prop", "the book's Blueprint is made as a quest object from a recorded one");
+    if (!open) return;
+    spawns::InstanceParams p;
+    p.x = kCx + 150;
+    p.y = kCy;
+    p.z = bootstrap::kDefaultSpawn.z;
+    p.server_id = kServerId;
+    p.pop_instance = kBookInstance;
+    p.component_def = kBookIcd;
+    p.interact_def = kBookPid;
+    auto w = spawns::instantiate(*open, h.fx.minter(), p, why);
+    CHECK(w.has_value(), "the book is made");
+    if (!w) return;
+    w->npc.instance_guid = kBookInstance;
+    w->npc.dialogue_root = kBookDialogue;
+    const uint64_t book = w->id, component = w->npc.interact_component;
+    CHECK(h.fx.world->registry().add(std::move(*w)), "the book stands beside the character");
+    h.play();
+    h.run(milliseconds(1500));
+    CHECK(h.s->actor_view()->state_of(book) == world::ClientState::Awake, "the client has the book open");
+    h.client_request(interact(component), h.pawn_ch);
+    CHECK(h.s->talk().open() && h.s->talk().state().source == book, "its use opens the book's conversation");
+}
 
 static void test_quest_offer_accept_abandon() {
     std::printf("a quest offered by an NPC: decline, close, refuse, accept, abandon, take it again, relog\n");
@@ -944,6 +997,7 @@ struct LogFacts : dl::Facts {
     const qs::QuestLog& log;
     explicit LogFacts(const qs::QuestLog& l) : log(l) {}
     int64_t player_variable(const std::string& n) const override { return log.variable(n); }
+    int64_t quest_variable(int64_t quest, const std::string& n) const override { return log.quest_variable(quest, n); }
     std::optional<int64_t> quest_count(int64_t quest, const std::string& query) const override { return log.quest_count(quest, query); }
 };
 
@@ -1223,6 +1277,222 @@ static void test_quest_hand_in() {
 
 /// The engine alone: the hand-in objectives a talk completes (the optional crest of The Root of the Problem is done at the last node of Eudoxia's talk, there is no hand-in node for it), the
 /// talk that starts at the node such an objective names, and the objectives the hand-in refuses.
+static void test_destiny_board() {
+    std::printf("the Destiny board: tracks run their quests, what the character does counts, a milestone pays\n");
+    std::string why;
+    const auto data = quest_test_data(why);
+    if (!data) { std::printf("  [skip] SKIP: %s\n", why.c_str()); return; }
+    const qs::QuestBook qb(data->quests);
+    const qs::destiny::Track& track = qs::destiny::kTracks[0];
+    const content::QuestRow* root = qb.quest(track.quest);
+    CHECK(root && root->flavor == "Destiny", "the first track is a Destiny quest in the data");
+    if (!root) return;
+    const auto named = [&](std::string_view name) -> const content::QuestRow* {
+        for (const auto& [guid, q] : qb.data().quests) {
+            if (q.name == name) return &q;
+        }
+        return nullptr;
+    };
+    const content::QuestRow* kills = named("Destiny_Novice_FirstStep_KillEnemies_02");
+    const content::QuestRow* loots = named("Destiny_Novice_FirstStep_LootItems_02");
+    const content::QuestRow* inner = named("Destiny_Novice_FirstStep_02");
+    const content::QuestRow* milestone = named("Destiny_Novice_FirstStep_Milestone1_02");
+    CHECK(kills && loots && inner && milestone, "(the track's quests are in the data)");
+    if (!kills || !loots || !inner || !milestone) return;
+
+    qs::QuestLog log(11);
+    LogFacts facts(log);
+    dl::Evaluator ev(*data->book, facts);
+    std::vector<qs::Effect> effects;
+    const double now = 10.0;
+    bool paid = false;
+    // what the session does with the engine's effects: a sub-quest starts, a finished quest leaves the log; then the engine looks again
+    const auto settle = [&] {
+        for (int round = 0; round < 12; ++round) {
+            {
+                qs::Engine eng(log, qb, ev, facts, effects, now);
+                eng.settle();
+            }
+            std::vector<qs::Effect> list;
+            list.swap(effects);
+            bool any = false;
+            for (const qs::Effect& e : list) {
+                if (e.kind == qs::Effect::Kind::StartQuest) {
+                    if (const content::QuestRow* d = qb.quest(e.quest); d && log.can_start(d, ev, false) == qs::Create::Ok) {
+                        qs::Engine starter(log, qb, ev, facts, effects, now);
+                        starter.start(*d, 0);
+                        any = true;
+                    }
+                } else if (e.kind == qs::Effect::Kind::GrantRewards && e.quest == milestone->guid) {
+                    paid = !e.tables.empty();
+                }
+            }
+            std::vector<int64_t> done;
+            for (const qs::QuestInstance& q : log.instances()) {
+                if (q.status == qs::Status::Completed && !q.awaiting_claim) done.push_back(q.record);
+            }
+            for (const int64_t record : done) {
+                log.finish(record);
+                any = true;
+            }
+            if (!any && effects.empty()) break;
+        }
+    };
+    {
+        qs::Engine eng(log, qb, ev, facts, effects, now);
+        eng.start(*root, 0);
+    }
+    settle();
+    CHECK(log.find(track.quest) && log.find(inner->guid), "the track starts the quest it runs");
+    CHECK(log.find(kills->guid) && log.find(loots->guid), "... and that quest starts its steps");
+    CHECK(!log.find(milestone->guid) && log.completions(milestone->guid) == 0, "a milestone waits for its count");
+    {
+        qs::Engine eng(log, qb, ev, facts, effects, now);
+        for (int i = 0; i < 9; ++i) eng.kill(123456, 0);
+    }
+    settle();
+    CHECK(log.find(kills->guid) && !log.find(kills->guid)->awaiting_claim, "nine kills of ten: the step goes on");
+    {
+        qs::Engine eng(log, qb, ev, facts, effects, now);
+        eng.kill(123456, 0);
+        for (int i = 0; i < 5; ++i) eng.notified("LootItem", 0);
+    }
+    settle();
+    std::printf("  [info] kills %d (objective %d of %lld), loots %d, reward %lld\n", log.completions(kills->guid), log.find(kills->guid) ? log.find(kills->guid)->objectives[0].count : -1, static_cast<long long>(kills->objectives[0].count), log.completions(loots->guid), static_cast<long long>(log.quest_variable(inner->guid, "Destiny_Reward")));
+    const qs::QuestInstance* killed = log.find(kills->guid);
+    const qs::QuestInstance* looted = log.find(loots->guid);
+    CHECK(killed && killed->awaiting_claim && looted && looted->awaiting_claim, "ten kills and five loots finish their steps, whatever the creature, and they wait to be claimed");
+    CHECK(log.quest_variable(inner->guid, "Destiny_Reward") == 2, "the track counts two steps");
+    const qs::QuestInstance* reached = log.find(milestone->guid);
+    CHECK(reached && reached->awaiting_claim && reached->status == qs::Status::Completed, "two steps reach the first milestone, and it waits to be claimed");
+    CHECK(!paid, "nothing pays before the claim");
+    CHECK(reached && !qs::quest_reward_tables(*milestone, *reached).empty(), "the milestone has rewards for the claim");
+    if (reached) {
+        // the client's claim button asks for a step that is Active and Completed at once (UDestinies::HandleClaimButtonClicked)
+        const auto vars = qs::instance_variables(*reached);
+        const auto value = [&](const char* suffix) {
+            const uint64_t key = qs::city_hash64(qs::quest_variable_name(milestone->guid, suffix));
+            for (const auto& [hash, v] : vars) {
+                if (hash == key) return v;
+            }
+            return -1;
+        };
+        CHECK(value("Active") == 1 && value("Completed") == 1, "a step that waits is Active and Completed for the client");
+    }
+    // a saved log: what waits still waits, and the rows the client saved before the links are cleared once
+    {
+        qs::QuestLog again(12);
+        again.load(log.to_saved(), data->quests, now);
+        const qs::QuestInstance* was_root = log.find(track.quest);
+        const qs::QuestInstance* was_inner = log.find(inner->guid);
+        const qs::QuestInstance* new_root = again.find(track.quest);
+        const qs::QuestInstance* new_inner = again.find(inner->guid);
+        CHECK(again.find(milestone->guid) && again.find(milestone->guid)->awaiting_claim, "a step that waits still waits after a login");
+        CHECK(was_root && new_root && !(was_root->guid == new_root->guid), "a character from before the links gets a new guid for the track's root");
+        CHECK(was_inner && new_inner && !(was_inner->guid == new_inner->guid), "... and for the quest it runs");
+        CHECK(again.find(kills->guid) && again.find(kills->guid)->guid == log.find(kills->guid)->guid, "... and for no step");
+        CHECK(again.variable(qs::kDestinyLinksVariable) == 1 && again.changed(), "that is done once, and saved");
+        qs::QuestLog third(13);
+        third.load(again.to_saved(), data->quests, now);
+        CHECK(third.find(track.quest) && new_root && third.find(track.quest)->guid == new_root->guid, "the next login keeps the guid");
+    }
+    // a gather step counts only what its filter holds
+    const content::QuestRow* fish = named("Destiny_Novice_Gathering_Catch_Fish_02");
+    CHECK(fish && !fish->objectives.empty(), "(the fishing step is in the data)");
+    if (fish && !fish->objectives.empty()) {
+        qs::Engine eng(log, qb, ev, facts, effects, now);
+        eng.start(*fish, 0);
+        eng.gathered(987654321, 0, 3);
+        CHECK(log.find(fish->guid)->objectives[0].count == 0, "an item that is no fish does not count");
+        int64_t real = 0;
+        for (const qs::destiny::GatherFilter& f : qs::destiny::kGather) {
+            if (f.objective == fish->objectives[0].guid && f.count > 0) real = f.items[0];
+        }
+        eng.gathered(real, 0, 3);
+        CHECK(real != 0 && log.find(fish->guid)->objectives[0].count == 3, "a fish does");
+    }
+    // the session: the tracks start by themselves, and the client's call is answered on the PlayerController's channel
+    FakeQuestApi api;
+    QuestHarness h(api, *data, log_after_start());
+    h.s->set_destiny_board(true);
+    h.play();
+    h.run(milliseconds(3000));
+    CHECK(h.s->quest_log().find(track.quest) != nullptr, "a character has the tracks without being given them");
+    std::printf("  [info] the board puts %zu quests in the log\n", h.s->quest_log().instances().size());
+    const size_t from = h.got.size();
+    repl::RpcParams none;
+    h.client_request(actor_rpc(class_named("AoCPlayerControllerBP_C"), "ServerGetDestinyClientData", none), h.pc_ch);
+    h.run(milliseconds(200));
+    CHECK(h.got.size() > from, "ServerGetDestinyClientData is answered");
+    // the links that keep a track's root and the quest it runs out of the client's tracker
+    const qs::QuestInstance* live_root = h.s->quest_log().find(track.quest);
+    const qs::QuestInstance* live_inner = h.s->quest_log().find(inner->guid);
+    CHECK(live_root && !live_root->destiny_parent.zero() && !live_root->destiny_objective.zero(), "a track's root names a parent and an instigating objective for the client");
+    CHECK(live_root && live_inner && live_inner->destiny_parent == live_root->guid && live_inner->destiny_objective == live_root->objectives[0].guid, "the quest a track runs names the root and its objective");
+    // a claim of a quest with nothing waiting pays nothing and changes nothing
+    if (live_inner) {
+        const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
+        const schema::RpcSchema* claim = pc.rpc("ServerNCSCompleteCommission");
+        CHECK(claim != nullptr, "(the claim's call is in the schema)");
+        repl::RpcParams params;
+        const char* const names[4] = {"QuestInstanceGuid.A", "QuestInstanceGuid.B", "QuestInstanceGuid.C", "QuestInstanceGuid.D"};
+        const uint32_t words[4] = {live_inner->guid.a, live_inner->guid.b, live_inner->guid.c, live_inner->guid.d};
+        for (int i = 0; claim && i < 4; ++i) repl::set_rpc_param(*claim, params, names[i], repl::Value::i64(static_cast<int32_t>(words[i])));
+        const int64_t record = live_inner->record;
+        h.client_request(actor_rpc(pc, "ServerNCSCompleteCommission", params), h.pc_ch);
+        h.run(milliseconds(200));
+        const qs::QuestInstance* after = h.s->quest_log().find(record);
+        CHECK(after && after->status == qs::Status::Active, "a claim of a quest still running is refused");
+    }
+    // the milestones' previews
+    {
+        const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
+        const schema::RpcSchema* ask = pc.rpc("ServerGetDestinyTrackMilestoneRewards");
+        CHECK(ask != nullptr, "(the milestones' call is in the schema)");
+        repl::RpcParams params;
+        bool set = ask != nullptr;
+        for (const char* id : {"DestinyTrackData.DestinyTrackQuest", "DestinyTrackData.DestinyTrackSkillTree"}) {   // (the whole struct is written, as the client does)
+            const std::string at = id;
+            const int64_t guid = at.ends_with("Quest") ? track.quest : track.tree;
+            set = set && repl::set_rpc_param(*ask, params, at + ".Guid", repl::Value::i64(guid));
+            set = set && repl::set_rpc_param(*ask, params, at + ".TypeId", repl::Value::i64(0));
+            set = set && repl::set_rpc_param(*ask, params, at + ".Name", repl::Value(repl::NameValue::hardcoded_name(0)));
+        }
+        set = set && repl::set_rpc_param(*ask, params, "DestinyTrackData.MilestoneRewardObjectives", repl::Value(repl::ArrayValue{}));
+        CHECK(set, "(the milestones' call names the track)");
+        const size_t before = h.got.size();
+        if (set) h.client_request(actor_rpc(pc, "ServerGetDestinyTrackMilestoneRewards", params), h.pc_ch);
+        h.run(milliseconds(200));
+        CHECK(h.got.size() > before, "ServerGetDestinyTrackMilestoneRewards is answered");
+    }
+    // a claim through the session: the step that waits finishes, once
+    {
+        FakeQuestApi claim_api;
+        QuestHarness c(claim_api, *data, log.to_saved());
+        c.play();
+        c.run(milliseconds(500));
+        const qs::QuestInstance* waiting = c.s->quest_log().find(milestone->guid);
+        CHECK(waiting && waiting->awaiting_claim, "the session keeps a step that waits");
+        c.run(milliseconds(2500));
+        waiting = c.s->quest_log().find(milestone->guid);
+        CHECK(waiting && waiting->awaiting_claim, "... for as long as it is not claimed");
+        if (waiting) {
+            const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
+            const schema::RpcSchema* claim = pc.rpc("ServerNCSCompleteCommission");
+            repl::RpcParams params;
+            const char* const names[4] = {"QuestInstanceGuid.A", "QuestInstanceGuid.B", "QuestInstanceGuid.C", "QuestInstanceGuid.D"};
+            const uint32_t words[4] = {waiting->guid.a, waiting->guid.b, waiting->guid.c, waiting->guid.d};
+            for (int i = 0; claim && i < 4; ++i) repl::set_rpc_param(*claim, params, names[i], repl::Value::i64(static_cast<int32_t>(words[i])));
+            c.client_request(actor_rpc(pc, "ServerNCSCompleteCommission", params), c.pc_ch);
+            c.run(milliseconds(100));
+            c.client_request(actor_rpc(pc, "ServerNCSCompleteCommission", params), c.pc_ch);
+            c.run(milliseconds(3000));
+            CHECK(!c.s->quest_log().find(milestone->guid), "the claim takes it out of the log");
+            CHECK(c.s->quest_log().completions(milestone->guid) == 1, "... counted once, a second claim changes nothing");
+        }
+    }
+}
+
 static void test_quest_hand_in_engine() {
     std::printf("quests: hand-in objectives in the engine (a talk that completes one, the node its talk starts at)\n");
     std::string why;

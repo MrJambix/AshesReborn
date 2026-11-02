@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  worldd: the world server (plan A4: the connection layer, plan A5: the native bootstrap)
+// =====================================================================//  worldd: the world server (plan A4: the connection layer, plan A5: the native bootstrap)
 //
 //  Registers with mesh, accepts game clients on UDP, redeems their join
 //  tickets with the gateway and loads their characters, and takes them
@@ -15,13 +14,15 @@
 //  position_saver.h), also when worldd stops.
 //
 //      worldd --bind 127.0.0.1:7777 --service-token-file dist/services/service.token
-// ============================================================================
-#include "login/login_service.h"
+// =====================================================================#include "login/login_service.h"
 #include "login/login_worker.h"
 #include "net/cookie.h"
 #include "net/endpoint.h"
+#include "net/tick_loop.h"
+#include "net/tick_profile.h"
 #include "net/udp_socket.h"
 #include "protocol/server_guid_allocator.h"
+#include "session/guild_saver.h"
 #include "session/player_world.h"
 #include "session/gm_travel.h"
 #include "quest/quest_service.h"
@@ -41,15 +42,27 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cmath>
 #include <csignal>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <optional>
 #include <thread>
+#include <utility>
 // CoA - C.Y.B
+
+#if defined(_MSC_VER)
+// The fixed-rate tick waits on the socket until its next tick is due: Windows ends such waits on its timer step, 15.6 ms unless the
+// process asks for 1 ms (timeapi.h's declarations, without windows.h in this file).
+#pragma comment(lib, "winmm.lib")
+extern "C" __declspec(dllimport) unsigned int __stdcall timeBeginPeriod(unsigned int period_ms);
+extern "C" __declspec(dllimport) unsigned int __stdcall timeEndPeriod(unsigned int period_ms);
+#endif
 
 using namespace aoc::worldd;
 
@@ -63,6 +76,54 @@ void sleep_unless_stopped(std::chrono::milliseconds d) {
     const auto until = Clock::now() + d;
     while (!g_stop && Clock::now() < until) std::this_thread::sleep_for(std::chrono::milliseconds(50));
 }
+
+double us_between(Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::micro>(b - a).count(); }
+
+// The loop's own numbers (--loop-stats <seconds>; off by default, it changes no behaviour).  Every interval one `[loop]` line in the form the load
+// test reads: the units of work (the ticks; with --tick-hz 0 the old loop's passes, a datagram and the tick after it), the share of the interval
+// spent working (the units and, with the tick, the datagrams), the p50, p99 and longest unit (a histogram of 8 buckets to the doubling from 1 us:
+// bucket i ends at 2^((i+1)/8) us, a longer unit lands in the last), the datagrams, the bytes and packets each way, the sessions and the position
+// saver's queue.
+struct LoopStats {
+    static constexpr int kBuckets = 8 * 24;   // up to 2^24 us, 16.8 s
+    std::array<uint32_t, kBuckets> hist{};
+    uint64_t units = 0, datagrams = 0, bytes_in = 0, bytes_out = 0, packets_out = 0;
+    double busy_us = 0, max_us = 0, unit_us = 0, receive_us = 0;
+
+    void note_datagram(size_t bytes, double us) {
+        ++datagrams;
+        bytes_in += bytes;
+        receive_us += us;
+    }
+    void note_unit(double us) {
+        ++units;
+        busy_us += us;
+        unit_us += us;
+        max_us = std::max(max_us, us);
+        int i = us < 1.0 ? 0 : static_cast<int>(8.0 * std::log2(us));
+        if (i >= kBuckets) i = kBuckets - 1;
+        ++hist[static_cast<size_t>(i)];
+    }
+    double percentile_us(double p) const {
+        if (units == 0) return 0;
+        const uint64_t want = std::max<uint64_t>(1, static_cast<uint64_t>(std::ceil(p * static_cast<double>(units))));
+        uint64_t seen = 0;
+        for (int i = 0; i < kBuckets; ++i) {
+            seen += hist[static_cast<size_t>(i)];
+            if (seen >= want) return std::min(std::exp2(static_cast<double>(i + 1) / 8.0), max_us);
+        }
+        return max_us;
+    }
+    std::string buckets() const {
+        std::string out;
+        for (int i = 0; i < kBuckets; ++i) {
+            if (hist[static_cast<size_t>(i)] == 0) continue;
+            if (!out.empty()) out += ',';
+            out += std::to_string(i) + ":" + std::to_string(hist[static_cast<size_t>(i)]);
+        }
+        return out;
+    }
+};
 
 }  // namespace
 
@@ -273,6 +334,14 @@ int main(int argc, char** argv) {
     // plan E1, stage 3, part 2: what follows a death (combat/aftermath.h)
     bool no_loot = false, no_respawn = false, no_death_loss = false;
     double corpse_seconds = 15.0, loot_corpse_seconds = 120.0, loot_chance_mult = 1.0, loot_rarity_boost = 1.0;
+    bool no_guilds = false;
+    app.add_flag("--no-guilds", no_guilds, "the kill switch for guilds: no guild component reaches a client, so a guild cannot cost its members their connection; what is saved stays saved")->envname("AOC_NO_GUILDS");
+    bool no_ground_crates = false;
+    app.add_flag("--no-ground-crates", no_ground_crates, "Drop Crate puts the crate in the item bag instead of laying it on the ground for others to pick up")->envname("AOC_NO_GROUND_CRATES");
+    std::string ground_crates_file;
+    app.add_option("--ground-crates-file", ground_crates_file,
+                   "where the crates on the ground are kept between runs (default: ground_crates.json beside AOC_WORLD_STARTED_FILE, the supervisor's run folder; neither: a restart loses them)")
+        ->envname("AOC_GROUND_CRATES_FILE");
     double exp_rate = 1.0;
     app.add_option("--exp-rate", exp_rate, "multiplies earned Adventuring, weapon and profession XP; does not change saved progress or level scrolls")
         ->envname("AOC_EXP_RATE")->check(CLI::Range(0.0, 1000.0))->capture_default_str();
@@ -317,8 +386,53 @@ int main(int argc, char** argv) {
     app.add_option("--max-sessions", endpoint_config.max_sessions,
                    "the most client sessions at once; further handshakes are ignored (0: no limit)")
         ->capture_default_str();
+    // the server's tick at a fixed rate (net/tick_loop.h)
+    int tick_hz = 30;
+    double loop_stats_seconds = 0;
+    bool no_view_spread = false;
+    app.add_option("--tick-hz", tick_hz,
+                   "the server's tick, times a second (10 to 120): every session's due work and every client's packets; the original server sent every 33 ms, 30 times a second. "
+                   "The NPCs keep their 15 Hz step and each player's view of the world about 15 passes a second (the length of 67 ms in whole ticks: 20 a second at 20 Hz, 12.5 at 25 Hz, "
+                   "10 at 10 Hz). 0: the old loop, a tick after every datagram")
+        ->envname("AOC_TICK_HZ")
+        ->capture_default_str();
+    app.add_flag("--no-view-spread", no_view_spread,
+                 "the kill switch for the spread of the players' view passes: each player's passes land on the tick its first pass fell on (players who join together then pass together)")
+        ->envname("AOC_NO_VIEW_SPREAD");
+    int move_ack_gap_ms = 100;
+    app.add_option("--move-ack-gap-ms", move_ack_gap_ms,
+                   "the pace of the answers to a player's good moves: the latest good move of a tick is answered when more than this many milliseconds have gone by since the last answer, "
+                   "as the original server did (about every second move of a walking player); 0 answers every move at once")
+        ->envname("AOC_MOVE_ACK_GAP_MS")->check(CLI::Range(0, 1000))->capture_default_str();
+    app.add_option("--loop-stats", loop_stats_seconds,
+                   "every N seconds (1 or more) print a [loop] line (the ticks, the share of the time working, the p50/p99/longest tick, the datagrams and bytes each way, the sessions, the "
+                   "save queue) and a [tick] line (the rate, and where the tick's time went: the world, the sessions, their views, the sends, the costliest session); 0: off")
+        ->envname("AOC_LOOP_STATS_SECONDS")
+        ->capture_default_str();
     CLI11_PARSE(app, argc, argv);
     if (!rates::valid(exp_rate)) { spdlog::error("--exp-rate must be finite and between 0 and 1000"); return 1; }
+    if (tick_hz != 0 && (tick_hz < TickSchedule::kMinHz || tick_hz > TickSchedule::kMaxHz)) {
+        std::fprintf(stderr, "--tick-hz must be 0 (the old loop) or %d to %d, not %d\n", TickSchedule::kMinHz, TickSchedule::kMaxHz, tick_hz);
+        return 2;
+    }
+    if (!std::isfinite(loop_stats_seconds) || (loop_stats_seconds != 0 && loop_stats_seconds < 1)) {
+        std::fprintf(stderr, "--loop-stats must be 0 (off) or a number of seconds, 1 or more, not %g\n", loop_stats_seconds);
+        return 2;
+    }
+    // CLI11's Range lets a NaN through (every comparison with it is false), so the numbers that were range-checked are checked once more as numbers
+    {
+        const std::pair<const char*, double> checked[] = {
+            {"--area-radius", area_radius_m},         {"--scenery-radius", scenery_radius_m},   {"--spawn-hour", spawn_hour},
+            {"--npc-damage-mult", npc_damage_mult},   {"--loot-chance-mult", loot_chance_mult}, {"--loot-rarity-boost", loot_rarity_boost},
+            {"--gather-respawn-mult", gather_respawn_mult}, {"--foliage-regrow-mult", foliage_regrow_mult},
+            {"--max-move-speed", movement.limits.max_speed}};
+        for (const auto& [flag, value] : checked) {
+            if (!std::isfinite(value)) {
+                std::fprintf(stderr, "%s must be a number, not %g\n", flag, value);
+                return 2;
+            }
+        }
+    }
 // (C.Y.B | CoA)
 
     std::vector<spdlog::sink_ptr> sinks{std::make_shared<spdlog::sinks::stderr_color_sink_mt>()};
@@ -406,14 +520,62 @@ int main(int argc, char** argv) {
     const std::string quests_addr = quests_env && *quests_env ? quests_env : "127.0.0.1:50058";
     quest::GrpcQuestApi quest_api(quests_addr, *token);
     quest::QuestWorker quest_worker(quest_api);
+    // Guilds: declared before the world, whose book hands it their changes, so it outlives every session and writes what is left when worldd stops.
+    guild::GuildSaver guild_saver(services);
     PlayerWorld players(content ? &*content : nullptr, content_problem, mode, reg.server_id, guids);
+    {
+        std::vector<svc::SavedGuild> rows;
+        const svc::CallStatus listed = services.list_guilds(rows);
+        std::vector<guild::Guild> loaded;
+        std::map<guild::Guid, double> cooldowns;
+        for (const svc::SavedGuild& row : rows) {
+            if (row.guid == guild::kCooldownRow) cooldowns = guild::cooldowns_from_json(row.data);
+            else if (auto g = guild::from_json(row.guid, row.name, row.data)) loaded.push_back(std::move(*g));
+            else spdlog::error("[guild] the guild {} does not read: it is left out", row.guid);
+        }
+        if (listed != svc::CallStatus::Ok) spdlog::error("[guild] the guilds could not be read (status {}): worldd starts with none, and a name a saved guild holds will not save", static_cast<int>(listed));
+        else spdlog::info("[guild] {} guilds", loaded.size());
+        players.guild_book()->load(std::move(loaded), std::move(cooldowns));
+        players.guild_book()->set_store({[&guild_saver](const guild::Guild& g) { guild_saver.save(g); }, [&guild_saver](const guild::Guid& g) { guild_saver.remove(g); },
+                                         [&guild_saver](const std::map<guild::Guid, double>& c) { guild_saver.save_cooldowns(c); }});
+    }
     players.set_experience_rate(exp_rate);
+    players.set_guilds_enabled(!no_guilds);
+    if (no_guilds) spdlog::warn("[guild] OFF (--no-guilds)");
+    players.set_ground_crates_enabled(!no_ground_crates);
+    // (the supervisor's run folder, C:\SandalCore\run on the VPS, outlives an update, which replaces the whole dist folder)
+    if (ground_crates_file.empty()) {
+        if (const char* started = std::getenv("AOC_WORLD_STARTED_FILE"); started && *started) {
+            ground_crates_file = (std::filesystem::path(started).parent_path() / "ground_crates.json").string();
+        }
+    }
+    players.set_ground_crates_file(ground_crates_file);
+    if (ground_crates_file.empty()) spdlog::warn("[crates] no --ground-crates-file: the crates on the ground are lost at a restart");
+    else spdlog::info("[crates] the crates on the ground are kept in {}", ground_crates_file);
+    if (no_ground_crates) spdlog::warn("[crates] the crates on the ground are OFF (--no-ground-crates): Drop Crate puts a crate in the item bag");
     spdlog::info("Ashes Reborn rates: earned XP x{}, loot chance x{} (capped at 100 percent per roll)", exp_rate, loot_chance_mult);
     if (content && !players.ready()) {
         // content.db opened, but its ability rows are not what this worldd runs (plan A7): the same refusal as a missing file
         spdlog::error("worldd refuses every login: {}", players.content_problem());
     }
     players.set_movement(movement);
+    players.set_move_ack_gap(std::chrono::milliseconds(move_ack_gap_ms));
+    spdlog::info("[movement] {}", move_ack_gap_ms > 0 ? "a player's good moves are answered at the original server's pace: the latest one of a tick, at most one in " + std::to_string(move_ack_gap_ms) + " ms"
+                                                       : std::string("every good move of a player is answered at once (--move-ack-gap-ms 0)"));
+    if (tick_hz > 0) {
+        // each player's view pass and its Dormancy closes keep their lengths (67 ms, 134 ms) on the tick's grid
+        ActorView::Config view = players.view_config();
+        const int64_t ticks_per_pass = tick_view_timing(view.relevancy, TickSchedule::period_of(tick_hz));
+        // the players' passes take turns on the ticks of their cycle instead of all landing on the tick their first pass fell on (session/view_phases.h)
+        if (ticks_per_pass > 1 && !no_view_spread) view.phases = std::make_shared<ViewPhases>(static_cast<unsigned>(ticks_per_pass));
+        players.set_view_config(view);
+        spdlog::info("[tick] the server ticks {} times a second (every {:.2f} ms): each tick runs every session's due work and sends every client's packets; the NPCs step 15 times a "
+                     "second and each player's view of the world passes every {} ms (Dormancy closes after {} ms){}",
+                     tick_hz, std::chrono::duration<double, std::milli>(TickSchedule::period_of(tick_hz)).count(), view.relevancy.tick.count(), view.relevancy.dormancy_delay.count(),
+                     view.phases ? ", the players' passes spread over " + std::to_string(ticks_per_pass) + " ticks" : std::string());
+    } else {
+        spdlog::info("[tick] --tick-hz 0: the old loop, every session's tick and sends after every datagram (and every 10 ms without one)");
+    }
     players.set_position_sink(&saver);
     players.set_gm_commands(gm_commands);
     players.set_reactions_enabled(!no_reactions);
@@ -558,13 +720,13 @@ int main(int argc, char** argv) {
         {
             std::string animation_error;
             if (!players.load_npc_abilities(npc_abilities_path, npc_montages_path, npc_targeting_path, animation_error)) {
-                spdlog::warn("[combat] no creature attack animations ({}): the creatures swing without an animation (run scripts/extract_game_data.ps1)", animation_error);
+                spdlog::warn("[combat] no mob attack animations ({}): the mobs swing without an animation (run scripts/extract_game_data.ps1)", animation_error);
             }
         }
         {
             std::string senses_error;
             if (!players.load_npc_senses(npc_senses_path, npc_aggro_curves_path, senses_error)) {
-                spdlog::warn("[combat] no creature senses ({}): every creature notices within {} cm and leashes at {} cm (run scripts/extract_game_data.ps1)", senses_error, npc_aggro_cm, npc_leash_cm);
+                spdlog::warn("[combat] no mob senses ({}): every mob notices within {} cm and leashes at {} cm (run scripts/extract_game_data.ps1)", senses_error, npc_aggro_cm, npc_leash_cm);
             }
         }
         {
@@ -686,8 +848,13 @@ int main(int argc, char** argv) {
     LoginWorker worker(login, reg.server_id, [&](uint64_t id, LoginResult r) {
         endpoint_ptr->post_login_result(id, std::move(r));
     });
+    LoopStats loop_stats;
     Endpoint endpoint(endpoint_config, signer, worker,
-                      [&](const Address& to, const std::vector<uint8_t>& pkt) { socket->send(to, pkt.data(), pkt.size()); },
+                      [&](const Address& to, const std::vector<uint8_t>& pkt) {
+                          loop_stats.bytes_out += pkt.size();
+                          ++loop_stats.packets_out;
+                          socket->send(to, pkt.data(), pkt.size());
+                      },
                       secure_random, Clock::now());
     endpoint_ptr = &endpoint;
 
@@ -750,23 +917,102 @@ int main(int argc, char** argv) {
         }
     };
 
-    spdlog::info("listening on UDP {}", socket->local_address().to_string());
-    while (!g_stop) {
+    // --loop-stats: the [loop] and [tick] lines of each interval
+    TickProfile& profile = tick_profile();
+    profile.on = loop_stats_seconds > 0;
+    std::optional<TickLoop> tick_loop;
+    if (tick_hz > 0) tick_loop.emplace(TickLoop::Config{tick_hz, 4, 256}, Clock::now());
+    auto window_start = Clock::now();
+    const auto log_stats = [&](Clock::time_point at) {
+        const double window_s = std::chrono::duration<double>(at - window_start).count();
+        if (loop_stats_seconds <= 0 || window_s < loop_stats_seconds) return;
+        const double busy_us = loop_stats.busy_us + (tick_loop ? loop_stats.receive_us : 0.0);   // (the old loop's passes hold their datagram)
+        spdlog::info("[loop] {:.1f} s: passes={} busy={:.2f}% p50={:.3f} p99={:.3f} max={:.3f} ms datagrams={} in={} out={} packets_out={} sessions={} save_queue={} saved={} save_failed={} "
+                     "save_dropped={} hist={}",
+                     window_s, loop_stats.units, busy_us / (window_s * 1e6) * 100.0, loop_stats.percentile_us(0.50) / 1000.0, loop_stats.percentile_us(0.99) / 1000.0,
+                     loop_stats.max_us / 1000.0, loop_stats.datagrams, loop_stats.bytes_in, loop_stats.bytes_out, loop_stats.packets_out, endpoint.session_count(), saver.queued(),
+                     saver.saved(), saver.failed(), saver.dropped(), loop_stats.buckets());
+        endpoint.take_costliest(profile);
+        const TickLoop::Stats ls = tick_loop ? tick_loop->take_stats() : TickLoop::Stats{};
+        const uint64_t ticks = tick_loop ? ls.ticks : loop_stats.units;
+        const double late_ms = tick_loop ? std::chrono::duration<double, std::milli>(tick_loop->schedule().late_max()).count() : 0.0;
+        spdlog::info("[tick] {:.1f} s: rate={} ticks={} ({:.1f}/s) datagrams={:.1f}/s ({:.2f} a tick, at most {} between two ticks, at most {} in one read); ms: receive={:.1f} tick={:.1f} "
+                     "world={:.1f} (npcs={:.1f} combat={:.1f} people={:.1f} window={:.1f} aftermath={:.1f}) sessions={:.1f} view={:.1f} (scan={:.1f}, {} passes; opens={:.1f}, {}; updates={:.1f}, {}: "
+                     "build={:.1f}) flush={:.1f}; late_max={:.1f} ms "
+                     "caught_up={} skipped={} restarts={}; costliest session: {} {:.1f} ms (view {:.1f}; {} awake, {} dormant)",
+                     window_s, tick_hz, ticks, static_cast<double>(ticks) / window_s, static_cast<double>(loop_stats.datagrams) / window_s,
+                     ticks ? static_cast<double>(loop_stats.datagrams) / static_cast<double>(ticks) : 0.0, ls.max_datagrams_per_tick, ls.max_batch, loop_stats.receive_us / 1000.0,
+                     loop_stats.unit_us / 1000.0, profile.world_us / 1000.0, profile.npcs_us / 1000.0, profile.combat_us / 1000.0, profile.people_us / 1000.0, profile.window_us / 1000.0,
+                     profile.aftermath_us / 1000.0, profile.sessions_us / 1000.0, profile.view_us / 1000.0, profile.view_scan_us / 1000.0, profile.view_passes, profile.open_us / 1000.0,
+                     profile.opens, profile.update_us / 1000.0, profile.updates, profile.update_build_us / 1000.0, profile.flush_us / 1000.0,
+                     late_ms, ls.caught_up, ls.skipped, ls.restarts,
+                     profile.top_name.empty() ? std::string("none") : profile.top_name, profile.top_us / 1000.0, profile.top_view_us / 1000.0, profile.top_awake, profile.top_dormant);
+        if (tick_loop) tick_loop->schedule().reset_late_max();
+        loop_stats = LoopStats{};
+        profile.restart();
+        window_start = at;
+    };
+
+    spdlog::info("listening on UDP {} (receive buffer {} KB)", socket->local_address().to_string(), socket->receive_buffer_bytes() / 1024);
+    if (!tick_loop) {
+        // --tick-hz 0: the old loop, every session's tick after every datagram
+        while (!g_stop) {
+            Address from;
+            const auto n = socket->receive(buf.data(), buf.size(), from, std::chrono::milliseconds(10));
+            const auto now = Clock::now();
+            if (!n) {
+                spdlog::error("the UDP socket failed; stopping");
+                exit_code = 1;
+                break;
+            }
+            if (*n > 0) {
+                guarded_datagram(from, *n, now);
+                if (profile.on) loop_stats.note_datagram(*n, us_between(now, Clock::now()));
+            }
+            guarded_tick(now);
+            admin_queue.drain();
+            if (stream) {
+                stream->publish();
+                stream->note_loop(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - now));
+            }
+            if (profile.on) {
+                const auto done = Clock::now();
+                loop_stats.note_unit(us_between(now, done));
+                log_stats(done);
+            }
+        }
+    } else {
+#if defined(_MSC_VER)
+        timeBeginPeriod(1);
+#endif
         Address from;
-        const auto n = socket->receive(buf.data(), buf.size(), from, std::chrono::milliseconds(10));
-        const auto now = Clock::now();
-        if (!n) {
-            spdlog::error("the UDP socket failed; stopping");
-            exit_code = 1;
-            break;
+        TickLoop::Ports ports;
+        ports.now = [] { return Clock::now(); };
+        ports.receive = [&](std::chrono::microseconds timeout) { return socket->receive(buf.data(), buf.size(), from, timeout); };
+        ports.datagram = [&](size_t n, Clock::time_point now) {
+            guarded_datagram(from, n, now);
+            if (profile.on) loop_stats.note_datagram(n, us_between(now, Clock::now()));
+        };
+        ports.tick = [&](Clock::time_point t) {
+            const auto started = Clock::now();
+            guarded_tick(t);
+            admin_queue.drain();
+            if (stream) stream->publish();
+            const auto done = Clock::now();
+            if (stream) stream->note_loop(std::chrono::duration_cast<std::chrono::microseconds>(done - started));
+            if (profile.on) loop_stats.note_unit(us_between(started, done));
+        };
+        while (!g_stop) {
+            if (!tick_loop->run_once(ports)) {
+                spdlog::error("the UDP socket failed; stopping");
+                exit_code = 1;
+                break;
+            }
+            if (profile.on) log_stats(Clock::now());
         }
-        if (*n > 0) guarded_datagram(from, *n, now);
-        guarded_tick(now);
-        admin_queue.drain();
-        if (stream) {
-            stream->publish();
-            stream->note_loop(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - now));
-        }
+#if defined(_MSC_VER)
+        timeEndPeriod(1);
+#endif
     }
 
     if (stream) stream->stop();

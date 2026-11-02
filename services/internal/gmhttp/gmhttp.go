@@ -28,6 +28,26 @@ type World interface {
 	AccountCommand(context.Context, *adminv1.AccountCommandRequest, ...grpc.CallOption) (*adminv1.AccountCommandResponse, error)
 }
 
+// authorize checks a request's login token and the account's grant. A code of 0 means the account is the GM.
+func authorize(ctx context.Context, r *http.Request, tokens Tokens, grants Grants) (account.Account, int, string) {
+	headers := r.Header.Values("Authorization")
+	if len(headers) != 1 || !strings.HasPrefix(headers[0], "Bearer ") || len(headers[0]) > 4103 {
+		return account.Account{}, 401, "Sign in first."
+	}
+	acc, err := tokens.ValidateToken(ctx, strings.TrimPrefix(headers[0], "Bearer "))
+	if err != nil {
+		return account.Account{}, 401, "Your sign-in expired. Sign in again."
+	}
+	level, err := grants.GMLevel(ctx, acc.ID)
+	if err != nil {
+		return account.Account{}, 503, "Account permissions are unavailable."
+	}
+	if level != 3 {
+		return account.Account{}, 403, "This account is not a GM."
+	}
+	return acc, 0, ""
+}
+
 func Handler(tokens Tokens, grants Grants, world World) http.Handler {
 	var mu sync.Mutex
 	var next time.Time // only one GM account exists; cap commands/polls to 5 per second
@@ -49,23 +69,9 @@ func Handler(tokens Tokens, grants Grants, world World) http.Handler {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		headers := r.Header.Values("Authorization")
-		if len(headers) != 1 || !strings.HasPrefix(headers[0], "Bearer ") || len(headers[0]) > 4103 {
-			errorReply(401, "Sign in first.")
-			return
-		}
-		acc, err := tokens.ValidateToken(ctx, strings.TrimPrefix(headers[0], "Bearer "))
-		if err != nil {
-			errorReply(401, "Your sign-in expired. Sign in again.")
-			return
-		}
-		level, err := grants.GMLevel(ctx, acc.ID)
-		if err != nil {
-			errorReply(503, "Account permissions are unavailable.")
-			return
-		}
-		if level != 3 {
-			errorReply(403, "This account is not a GM.")
+		acc, code, message := authorize(ctx, r, tokens, grants)
+		if code != 0 {
+			errorReply(code, message)
 			return
 		}
 		mu.Lock()

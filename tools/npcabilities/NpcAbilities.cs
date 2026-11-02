@@ -66,7 +66,8 @@ public static partial class Reader
 {
     public const string AbilitiesFile = "npc_abilities.tsv";
     public const string MontagesFile = "npc_montages.tsv";
-    public const string AbilitiesHeader = "archetype\tability\ttask\tcooldown\tstop_movement\torder\tmin_distance\tmax_distance\tmax_angle\tgates\tunknown\tfight\tconds\twhy\tstarts\trotate\tarrival";
+    static readonly System.Text.RegularExpressions.Regex AccfTimer = new(@"accf\(([^,]+),", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    public const string AbilitiesHeader ="archetype\tability\ttask\tcooldown\tstop_movement\torder\tmin_distance\tmax_distance\tmax_angle\tgates\tunknown\tfight\tconds\twhy\tstarts\trotate\tarrival";
     public const string MontagesHeader = "montage\tguid\tpackage\tpackage_guid\tlength\trate_scale\tsections\thits\troot_motion\troot_unreadable\tanim_end\tfires";
 
     public sealed class AbilityRow
@@ -506,13 +507,13 @@ public static partial class Reader
 
     /// <summary>
     /// Abilities the world cannot play yet.  A creature's tree skips them, as it skips a task with a condition the table cannot say, instead of landing them as hits nothing shows; the text says what
-    /// each one waits for.  (The fire mage's Flame Burst is a spray of fire in front of it, its Flame Throw a stream it aims by a score among everyone it hates, its Flame Ring a ring of fire on the ground.)
+    /// each one waits for.  (The fire mage's Flame Burst is a spray of fire in front of it, its Flame Throw a stream it aims by a score among everyone it hates.  Its Flame Ring, a ring of fire on
+    /// the ground, is played: its hit leaves a zone, which the world's creature zones run.)
     /// </summary>
     static readonly Dictionary<long, string> Waiting = new()
     {
         [6064631901149396992] = "waits for the spray hit shape (Flame Burst)",
         [6064629308658155610] = "waits for channelled attacks aimed by score (Flame Throw)",
-        [6064629308660187227] = "waits for ground zones of a creature (Flame Ring)",
     };
 
     /// <summary>How near its target a creature's approach brings it: the arrival distance of the move-to-target task of a state directly below the Combat state on `path`; -1 when there is none.</summary>
@@ -660,6 +661,15 @@ public static partial class Reader
                 {
                     row.Unknown = true;
                     why.Add(waits);
+                }
+                // a timer that starts empty (accf) holds once the fight's clock passes its seconds, and after that by its cooldown alone: unless taking the task restarts that cooldown
+                // (`starts`), the creature would use it on every try, so such a task waits
+                foreach (System.Text.RegularExpressions.Match accf in AccfTimer.Matches(string.Join("|", groups)))
+                {
+                    string timer = Uri.UnescapeDataString(accf.Groups[1].Value);
+                    if (starts.Any(st => st.StartsWith(timer + "=", StringComparison.Ordinal))) continue;
+                    row.Unknown = true;
+                    why.Add("accf(not restarted:" + timer + ")");
                 }
                 row.Gates = string.Join(";", gates);
                 row.Conds = string.Join("|", groups);

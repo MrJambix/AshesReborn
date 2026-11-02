@@ -36,6 +36,9 @@ type Store interface {
 	// Plan D1: a character's XP per leveling type, and the save of its level, class and XP.
 	Experience(ctx context.Context, id string) ([]character.Experience, error)
 	SaveProgress(ctx context.Context, id string, p character.Progress) (character.Character, error)
+	ListGuilds(ctx context.Context) ([]character.Guild, error)
+	SaveGuild(ctx context.Context, g character.Guild) error
+	DeleteGuild(ctx context.Context, guid string) error
 	// Plan D1, stage 2: the ranks a character bought and its action bar.
 	SkillRanks(ctx context.Context, id string) ([]character.TreeRanks, error)
 	ActionBar(ctx context.Context, id string) ([]character.ActionbarSlot, error)
@@ -75,8 +78,9 @@ var _ FTUEStore = (*character.Store)(nil)
 // replaces the warehouse is refused.
 type WarehouseStore interface {
 	WarehouseItems(ctx context.Context, id string) ([]character.WarehouseItem, error)
+	WarehouseContainers(ctx context.Context, id string) ([]character.WarehouseContainer, error)
 	SaveInventoryEverything(ctx context.Context, id string, items []character.Item, wallet []character.WalletEntry, replaceWallet bool, jobs []character.ProcessingJob, replaceJobs bool,
-		known []int64, replaceKnown bool, warehouse []character.WarehouseItem, replaceWarehouse bool) error
+		known []int64, replaceKnown bool, warehouse []character.WarehouseItem, replaceWarehouse bool, containers []character.WarehouseContainer) error
 }
 
 var _ WarehouseStore = (*character.Store)(nil)
@@ -321,6 +325,13 @@ func (s *Server) GetCharacter(ctx context.Context, r *characterv1.GetCharacterRe
 				return nil, toStatus(ctx, err)
 			}
 			out.WarehouseItems = toProtoWarehouse(stored)
+			bought, err := ws.WarehouseContainers(ctx, c.ID)
+			if err != nil {
+				return nil, toStatus(ctx, err)
+			}
+			for _, b := range bought {
+				out.WarehouseContainers = append(out.WarehouseContainers, &characterv1.WarehouseContainer{Area: b.Area, NodeGuid: b.NodeGUID, ContainerGuid: b.ContainerGUID})
+			}
 		}
 		if as, ok := s.store.(AttunementStore); ok {
 			a, err := as.Attunements(ctx, c.ID)
@@ -338,6 +349,36 @@ func (s *Server) GetCharacter(ctx context.Context, r *characterv1.GetCharacterRe
 // ~ C-Y-B - C | O | A ~
 
 // SaveProgress writes the level, the class and the XP rows (plan D1; worldd saves them as its player levels).
+// ListGuilds implements CharacterService.ListGuilds.
+func (s *Server) ListGuilds(ctx context.Context, _ *characterv1.ListGuildsRequest) (*characterv1.ListGuildsResponse, error) {
+	guilds, err := s.store.ListGuilds(ctx)
+	if err != nil {
+		return nil, toStatus(ctx, err)
+	}
+	resp := &characterv1.ListGuildsResponse{}
+	for _, g := range guilds {
+		resp.Guilds = append(resp.Guilds, &characterv1.Guild{Guid: g.GUID, Name: g.Name, Data: g.Data})
+	}
+	return resp, nil
+}
+
+// SaveGuild implements CharacterService.SaveGuild.
+func (s *Server) SaveGuild(ctx context.Context, r *characterv1.SaveGuildRequest) (*characterv1.SaveGuildResponse, error) {
+	g := r.GetGuild()
+	if err := s.store.SaveGuild(ctx, character.Guild{GUID: g.GetGuid(), Name: g.GetName(), Data: g.GetData()}); err != nil {
+		return nil, toStatus(ctx, err)
+	}
+	return &characterv1.SaveGuildResponse{}, nil
+}
+
+// DeleteGuild implements CharacterService.DeleteGuild.
+func (s *Server) DeleteGuild(ctx context.Context, r *characterv1.DeleteGuildRequest) (*characterv1.DeleteGuildResponse, error) {
+	if err := s.store.DeleteGuild(ctx, r.GetGuid()); err != nil {
+		return nil, toStatus(ctx, err)
+	}
+	return &characterv1.DeleteGuildResponse{}, nil
+}
+
 func (s *Server) SaveProgress(ctx context.Context, r *characterv1.SaveProgressRequest) (*characterv1.SaveProgressResponse, error) {
 	p := character.Progress{Level: r.GetLevel(), ClassID: r.GetClassId(), ReplaceSkillRanks: r.GetReplaceSkillRanks(), ReplaceActionBar: r.GetReplaceActionBar(),
 		ReplaceCompletedFTUEs: r.GetReplaceCompletedFtues(), CompletedFTUEs: r.GetCompletedFtues(),
@@ -433,7 +474,8 @@ func toProtoJobs(jobs []character.ProcessingJob) []*characterv1.ProcessingJob {
 	out := make([]*characterv1.ProcessingJob, 0, len(jobs))
 	for _, j := range jobs {
 		p := &characterv1.ProcessingJob{JobGuid: j.JobGUID, StationKey: j.StationKey, RecipeGuid: j.RecipeGUID, SubRecipeGuid: j.SubRecipeGUID, Quantity: j.Quantity,
-			QueuedAtMs: j.QueuedAt.UnixMilli(), StartedAtMs: j.StartedAt.UnixMilli(), DurationMs: j.DurationMs, ClientTxn: j.ClientTxn}
+			QueuedAtMs: j.QueuedAt.UnixMilli(), StartedAtMs: j.StartedAt.UnixMilli(), DurationMs: j.DurationMs, ClientTxn: j.ClientTxn,
+			RatingXp: j.RatingXP, RatingQuantity: j.RatingQuantity, RatingRarity: j.RatingRarity}
 		for _, r := range j.Resources {
 			res := &characterv1.JobResource{RecordId: r.RecordID}
 			for _, ra := range r.Rarities {
@@ -450,7 +492,8 @@ func fromProtoJobs(jobs []*characterv1.ProcessingJob) []character.ProcessingJob 
 	out := make([]character.ProcessingJob, 0, len(jobs))
 	for _, p := range jobs {
 		j := character.ProcessingJob{JobGUID: p.GetJobGuid(), StationKey: p.GetStationKey(), RecipeGUID: p.GetRecipeGuid(), SubRecipeGUID: p.GetSubRecipeGuid(), Quantity: p.GetQuantity(),
-			QueuedAt: time.UnixMilli(p.GetQueuedAtMs()).UTC(), StartedAt: time.UnixMilli(p.GetStartedAtMs()).UTC(), DurationMs: p.GetDurationMs(), ClientTxn: p.GetClientTxn()}
+			QueuedAt: time.UnixMilli(p.GetQueuedAtMs()).UTC(), StartedAt: time.UnixMilli(p.GetStartedAtMs()).UTC(), DurationMs: p.GetDurationMs(), ClientTxn: p.GetClientTxn(),
+			RatingXP: p.GetRatingXp(), RatingQuantity: p.GetRatingQuantity(), RatingRarity: p.GetRatingRarity()}
 		for _, r := range p.GetResources() {
 			res := character.JobResource{RecordID: r.GetRecordId()}
 			for _, ra := range r.GetRarities() {
@@ -499,8 +542,12 @@ func (s *Server) SaveInventory(ctx context.Context, r *characterv1.SaveInventory
 		for _, w := range r.GetWarehouseItems() {
 			stored = append(stored, fromProtoWarehouse(w))
 		}
+		bought := make([]character.WarehouseContainer, 0, len(r.GetWarehouseContainers()))
+		for _, c := range r.GetWarehouseContainers() {
+			bought = append(bought, character.WarehouseContainer{Area: c.GetArea(), NodeGUID: c.GetNodeGuid(), ContainerGUID: c.GetContainerGuid()})
+		}
 		if err := ws.SaveInventoryEverything(ctx, r.GetId(), items, wallet, r.GetReplaceWallet(), fromProtoJobs(r.GetProcessingJobs()), r.GetReplaceProcessingJobs(), r.GetKnownRecipes(),
-			r.GetReplaceKnownRecipes(), stored, true); err != nil {
+			r.GetReplaceKnownRecipes(), stored, true, bought); err != nil {
 			return nil, toStatus(ctx, err)
 		}
 		return &characterv1.SaveInventoryResponse{Saved: int32(len(items))}, nil

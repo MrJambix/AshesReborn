@@ -11,13 +11,15 @@
 //      list: an item takes one slot, its slot is its index.  It holds items (gear, tools, usables ...), never a material.
 //    * the material tabs (area Materials): one set for each town.  The free base tab ("BaseStorage") is a grid of 8 x 16 cells, laid out like a material bag: an item takes inv_w x inv_h
 //      cells and its slot is the row-major index of its top-left cell.  It holds materials (and Glint, which is one), never anything else.
-//    * the cargo tab (area Cargo): one for each town of the Village level and up, a grid of 6 x 8.  It holds crates, and no crate exists yet, so nothing goes in.
-//  What a character owns is the free ones; buying more is the next step.
+//    * the cargo tab (area Cargo): one for each town of the Village level and up, a grid of 6 x 8.  It holds crates and nothing else.
+//  What a character owns is the free ones and what it bought (Storage::bought), each bought once: an item chunk for good in every town, a tab in the town it was bought in.  The rules of a
+//  purchase are the client's own copy of the retail code [exe: APlayerCharacter::PurchaseWarehouseStorageItemChunk 0x146c360d0, ...MaterialTab 0x146c39f80]: the town's def lists the container,
+//  it is not owned yet, its availability expression holds, and every cost is paid.
 //
-//  A move.  The window asks the server to move a stack between a bag (the item bag or a material bag) and a warehouse container, or inside one container.  The server takes the whole
-//  stack to an empty place (a stack is never split or merged: a move onto a stack of the same item is refused, as in the bags), or swaps two whole stacks of list containers.  What is
-//  refused changes nothing and tells the client nothing but the storages as they are.  The answer is a Remove from the place the stack left and an Add where it arrived; the bag's side
-//  carries the item toast, the warehouse's does not.
+//  A move.  The window asks the server to move a stack between a bag (the item bag, a material bag, or the cargo slot for a crate) and a warehouse container, or between containers of the open
+//  window of one kind.  The count is what moves: part of a stack makes a stack of its own, and a move onto a stack of the same item and quality joins it, as much as fits (as the bags do; no retail
+//  capture shows either in the warehouse).  Two whole stacks of list containers swap.  What is refused changes nothing and tells the client nothing but the storages as they are.  The answer is a
+//  Remove from the place the stack left and an Add where it arrived; the bag's side carries the item toast, the warehouse's does not.
 //
 //  The rules of what may go where are the client's own (a material only in a material container, anything else only in an item container) and the owner's of the bags (the item bag
 //  holds no materials).  A container the window does not have open, another town's tab and a place outside the container are refused.
@@ -188,9 +190,9 @@ public:
         return s;
     }
 
-    /// The containers a character has in a town's warehouse: the free base chunk, the free base tab and, where its requirement holds, the free cargo tab.  Empty for a town that has no
-    /// warehouse.  (Buying more is the next step; what a character owns is the first of each def that costs nothing.)
-    std::vector<Spec> owned(int64_t node_guid, const Facts& facts) const {
+    /// The containers a character has in a town's warehouse: the free base chunk, the free base tab and, where its requirement holds, the free cargo tab, then what it bought, in the defs' order
+    /// (a tab's index is its place among the tabs of its kind).  Empty for a town that has no warehouse.  What was bought stays the character's whatever its requirement says now.
+    std::vector<Spec> owned(int64_t node_guid, const Facts& facts, const std::set<Key>& bought = {}) const {
         std::vector<Spec> out;
         const content::WarehouseData::Node* n = node(node_guid);
         if (!n) return out;
@@ -203,6 +205,10 @@ public:
                 s.slots = c->second.size;
                 out.push_back(s);
                 break;   // the first free one: the character's base chunk
+            }
+            for (const int64_t guid : it->second) {
+                if (!bought.count(Key{Area::Items, 0, guid})) continue;
+                if (const auto s = chunk_spec(guid)) out.push_back(*s);
             }
         }
         const auto first_free_tab = [&](int64_t def, Area area) {
@@ -222,10 +228,98 @@ public:
                 out.push_back(s);
                 break;
             }
+            int index = 0;
+            for (const int64_t guid : d->second.tabs) {
+                const auto t = d_.tabs.find(guid);
+                if (t == d_.tabs.end() || !bought.count(Key{area, node_guid, guid})) continue;
+                Spec s;
+                s.key = Key{area, node_guid, guid};
+                s.columns = d->second.columns;
+                s.rows = d->second.rows;
+                s.slots = d->second.columns * d->second.rows;
+                s.index = ++index;
+                s.member = t->second.member;
+                out.push_back(s);
+            }
         };
         first_free_tab(n->resource_def, Area::Materials);
         first_free_tab(n->crate_def, Area::Cargo);
         return out;
+    }
+
+    /// An item chunk as a container; nullopt for a record that is none.
+    std::optional<Spec> chunk_spec(int64_t guid) const {
+        const auto c = d_.chunks.find(guid);
+        if (c == d_.chunks.end()) return std::nullopt;
+        Spec s;
+        s.key = Key{Area::Items, 0, guid};
+        s.slots = c->second.size;
+        return s;
+    }
+
+    /// What a purchase would be: the container's place and its costs, or why not.
+    struct Purchase {
+        std::string                                  refusal;   // empty when it may be bought
+        Key                                          key;
+        std::vector<std::pair<int64_t, double>>      costs;     // currency def, amount in that def's units
+    };
+
+    /// The rules of a purchase in the town's warehouse [exe: 0x146c360d0, 0x146c39f80].  `tab` says which RPC asked: the material tab one also buys cargo tabs (the client's "purchase cargo slot").
+    Purchase purchase(int64_t node_guid, int64_t record, bool tab, const Facts& facts, const std::set<Key>& bought) const {
+        Purchase p;
+        const content::WarehouseData::Node* n = node(node_guid);
+        if (!n) {
+            p.refusal = "the town has no warehouse";
+            return p;
+        }
+        const std::string* requirement = nullptr;
+        const std::vector<content::WarehouseCostRow>* costs = nullptr;
+        if (tab) {
+            const auto listed_in = [&](int64_t def) {
+                const auto d = d_.defs.find(def);
+                return d != d_.defs.end() && std::find(d->second.tabs.begin(), d->second.tabs.end(), record) != d->second.tabs.end();
+            };
+            const auto t = d_.tabs.find(record);
+            const bool material = listed_in(n->resource_def), cargo = listed_in(n->crate_def);
+            if (t == d_.tabs.end() || (!material && !cargo)) {
+                p.refusal = "the town's warehouse does not list that tab";
+                return p;
+            }
+            p.key = Key{cargo && !material ? Area::Cargo : Area::Materials, node_guid, record};
+            requirement = &t->second.requirement;
+            costs = &t->second.costs;
+        } else {
+            const auto def = d_.chunk_defs.find(n->chunks_def);
+            const auto c = d_.chunks.find(record);
+            if (c == d_.chunks.end() || def == d_.chunk_defs.end() || std::find(def->second.begin(), def->second.end(), record) == def->second.end()) {
+                p.refusal = "the town's warehouse does not list that item chunk";
+                return p;
+            }
+            p.key = Key{Area::Items, 0, record};
+            requirement = &c->second.requirement;
+            costs = &c->second.costs;
+        }
+        if (bought.count(p.key)) {
+            p.refusal = "the character owns it already";
+            return p;
+        }
+        if (costs->empty()) {
+            p.refusal = "it costs nothing: it is not bought";
+            return p;
+        }
+        if (!holds(*requirement, facts)) {
+            p.refusal = "it is not available in this town to this character";
+            return p;
+        }
+        for (const content::WarehouseCostRow& c : *costs) {
+            const auto amount = cost_amount(c, facts);
+            if (!amount || *amount < 0) {
+                p.refusal = "a cost of its record does not read";
+                return p;
+            }
+            p.costs.emplace_back(c.currency, *amount);
+        }
+        return p;
     }
 
     /// The character's base item chunk, the same in every town: the first free chunk of a town's chunk def (the item chunks do not depend on the town, so any town gives it).  It is made
@@ -264,9 +358,14 @@ public:
     /// Loads the rows the character service sent (a row of an area or town this build does not know is kept: it is saved back as it was).
     void load(const std::vector<svc::WarehouseItem>& rows) {
         items_.clear();
+        bought_.clear();
         for (const svc::WarehouseItem& w : rows) {
             const auto area = area_of(w.area);
             if (!area) continue;
+            if (w.container_only) {
+                bought_.insert(Key{*area, w.node_guid, w.container_guid});
+                continue;
+            }
             items_[{Key{*area, w.node_guid, w.container_guid}, w.item.slot}] = w.item;
         }
     }
@@ -284,8 +383,20 @@ public:
             w.item.slot = place.second;
             out.push_back(std::move(w));
         }
+        for (const Key& k : bought_) {
+            svc::WarehouseItem w;
+            w.area = area_name(k.area);
+            w.node_guid = k.node;
+            w.container_guid = k.record;
+            w.container_only = true;
+            out.push_back(std::move(w));
+        }
         return out;
     }
+
+    /// The containers the character bought.
+    const std::set<Key>& bought() const { return bought_; }
+    void add_bought(const Key& key) { bought_.insert(key); }
 
     size_t size() const { return items_.size(); }
     const svc::InventoryItem* at(const Key& key, int slot) const {
@@ -313,6 +424,7 @@ public:
 
 private:
     std::map<std::pair<Key, int>, svc::InventoryItem> items_;
+    std::set<Key>                                     bought_;
 };
 
 // ---- a move ------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -332,6 +444,7 @@ struct Request {
     std::string            guid;           // the instance in the source slot
     std::string            to_guid;        // a Swap: the instance in the target slot
     int32_t                to_count = 0;
+    std::string            new_guid;       // the instance a part of a stack becomes, should the move make one
 };
 
 /// One event the client is told, in order: an Add or a Remove at a bag or a warehouse place.
@@ -342,6 +455,7 @@ struct Step {
     Key                    key;
     int                    slot = 0;
     svc::InventoryItem     item;
+    int32_t                count = 0;      // a Remove of part of a stack: how many leave, `item` being the stack as it was (0: all of it)
 };
 
 struct Result {
@@ -349,6 +463,7 @@ struct Result {
     std::string       refusal;       // why not (for the log); empty when ok
     std::vector<Step> steps;         // empty when refused
     bool              bags_changed = false;       // a bag's items changed (the inventory is to be saved)
+    bool              cargo_changed = false;      // the crate on the back came or went
 };
 
 /// What the window has open: the containers of the town it was opened for.
@@ -366,6 +481,7 @@ struct OpenWindow {
 namespace detail {
 
 inline bool is_bag(svc::ItemContainer c) { return c == svc::ItemContainer::Backpack || items::is_resource(c); }
+inline bool is_cargo_slot(const End& e) { return !e.in_warehouse && e.bag == svc::ItemContainer::Equipment && e.slot == items::equip::CargoHold; }
 
 /// The cells a grid container's items cover, `ignore` aside.
 inline std::vector<bool> covered(const Spec& spec, const Storage& wh, const items::ResourceGrid& grid, const items::ItemCatalog& catalog, const std::string* ignore = nullptr) {
@@ -390,7 +506,8 @@ inline std::string why_not_here(const Spec& spec, int slot, const svc::Inventory
             if (!info->resource) return "only a material is put in a material tab";
             break;
         case Area::Cargo:
-            return "the cargo tab holds crates, and no crate exists yet";
+            if (!info->cargo_crate()) return "only a crate is put in a cargo tab";
+            break;
     }
     if (slot < 0 || slot >= spec.slots) return "slot " + std::to_string(slot) + " is not a slot of the container";
     if (spec.grid()) {
@@ -423,8 +540,8 @@ inline Result transfer(items::Inventory& bags, Storage& wh, const items::ItemCat
     const auto check_end = [&](const End& e) -> std::string {
         if (e.in_warehouse) {
             if (!open.find(e.key)) return "that container is not open in the warehouse window";
-        } else if (!detail::is_bag(e.bag)) {
-            return "only the item bag and the material bags exchange items with the warehouse";
+        } else if (!detail::is_bag(e.bag) && !detail::is_cargo_slot(e)) {
+            return "only the item bag, the material bags and the cargo slot exchange items with the warehouse";
         }
         return {};
     };
@@ -432,19 +549,20 @@ inline Result transfer(items::Inventory& bags, Storage& wh, const items::ItemCat
     if (std::string why = check_end(r.to); !why.empty()) return refuse("the target: " + why);
     if (!r.from.in_warehouse && !r.to.in_warehouse) return refuse("a move between two bags is the bags' own");
     if (r.from.in_warehouse == r.to.in_warehouse && r.from.in_warehouse && r.from.key == r.to.key && r.from.slot == r.to.slot) return refuse("the item is moved onto its own slot");
-    if (r.from.in_warehouse && r.to.in_warehouse && r.from.key != r.to.key) return refuse("an item does not move from one warehouse container to another");
+    if (r.from.in_warehouse && r.to.in_warehouse && r.from.key.area != r.to.key.area) return refuse("an item does not move between warehouse containers of different kinds");
 
     // the stack that moves
     const svc::InventoryItem* source = r.from.in_warehouse ? wh.at(r.from.key, r.from.slot) : bags.at(r.from.bag, r.from.slot);
     if (!source) return refuse("no item in the source slot");
     if (items::guid_of(r.guid) == std::nullopt || source->instance_guid != r.guid) return refuse("the item in the source slot is not the instance the client named");
-    if (r.count != source->quantity) return refuse("the move names " + std::to_string(r.count) + " of a stack of " + std::to_string(source->quantity) + " (splitting is not made)");
+    if (r.count < 1 || r.count > source->quantity) return refuse("the move names " + std::to_string(r.count) + " of a stack of " + std::to_string(source->quantity));
     const svc::InventoryItem moving = *source;
 
     if (r.type == repl::StorageEventType::Swap) {
         // two whole stacks of list containers change places: the item bag and an item chunk
         const auto is_list = [&](const End& e) { return e.in_warehouse ? !open.find(e.key)->grid() : e.bag == svc::ItemContainer::Backpack; };
         if (!is_list(r.from) || !is_list(r.to)) return refuse("only the stacks of the item bag and the item chunks are swapped");
+        if (r.count != moving.quantity) return refuse("a swap names whole stacks only");
         const svc::InventoryItem* other = r.to.in_warehouse ? wh.at(r.to.key, r.to.slot) : bags.at(r.to.bag, r.to.slot);
         if (!other) return refuse("no item in the target slot to swap with");
         if (items::guid_of(r.to_guid) == std::nullopt || other->instance_guid != r.to_guid) return refuse("the item in the target slot is not the instance the client named");
@@ -492,59 +610,117 @@ inline Result transfer(items::Inventory& bags, Storage& wh, const items::ItemCat
         return out;
     }
 
-    // Move and Fill: the whole stack to an empty place
+    // Move and Fill.  Who loses what: the source's stack shrinks or goes.
+    const auto leave_source = [&](int32_t n, Step& leave) -> std::string {
+        leave.type = repl::StorageEventType::Remove;
+        leave.in_warehouse = r.from.in_warehouse;
+        leave.bag = r.from.bag;
+        leave.key = r.from.key;
+        leave.slot = r.from.slot;
+        leave.item = moving;
+        leave.count = n < moving.quantity ? n : 0;
+        if (r.from.in_warehouse) {
+            if (n < moving.quantity) {
+                svc::InventoryItem rest = moving;
+                rest.quantity = moving.quantity - n;
+                wh.put(r.from.key, r.from.slot, rest);
+            } else {
+                wh.erase(r.from.key, r.from.slot);
+            }
+            return {};
+        }
+        out.bags_changed = true;
+        if (detail::is_cargo_slot(r.from)) {
+            const items::Outcome taken = bags.remove_cargo(moving.instance_guid);
+            out.cargo_changed = taken.ok;
+            return taken.refusal;
+        }
+        return bags.consume(r.from.bag, r.from.slot, moving.instance_guid, n).refusal;
+    };
+
+    // onto a stack of the same item and quality: as much as fits joins it
+    const svc::InventoryItem* onto = r.to.in_warehouse ? wh.at(r.to.key, r.to.slot) : bags.at(r.to.bag, r.to.slot);
+    if (onto && onto->instance_guid != moving.instance_guid) {
+        if (onto->item_record_id != moving.item_record_id || onto->quality != moving.quality) return refuse("the target slot holds another item (a move onto an item is a swap)");
+        const auto info = catalog.info(moving.item_record_id);
+        if (!info) return refuse("the item's record is not one this server knows");
+        const int32_t room = std::max(1, info->max_stack) - onto->quantity;
+        if (room <= 0) return refuse("the target stack is full");
+        const int32_t moved = std::min(r.count, room);
+        const svc::InventoryItem target = *onto;
+        svc::InventoryItem joined = target;
+        joined.quantity += moved;
+        items::Inventory trial = bags;
+        if (!r.to.in_warehouse) {
+            // (the bag's stack leaves and comes back larger, in one step of the copy)
+            const items::Outcome off = trial.consume(r.to.bag, r.to.slot, target.instance_guid, target.quantity);
+            if (!off.ok) return refuse(off.refusal);
+            const items::Outcome on = trial.add_at(r.to.bag, r.to.slot, joined, catalog);
+            if (!on.ok) return refuse(on.refusal);
+            out.bags_changed = true;
+        }
+        Step leave, remove, add;
+        items::Inventory original = bags;
+        bags = std::move(trial);
+        if (std::string why = leave_source(moved, leave); !why.empty()) {
+            bags = std::move(original);
+            return refuse(why);
+        }
+        if (r.to.in_warehouse) wh.put(r.to.key, r.to.slot, joined);
+        remove.type = repl::StorageEventType::Remove;
+        remove.in_warehouse = r.to.in_warehouse;
+        remove.bag = r.to.bag;
+        remove.key = r.to.key;
+        remove.slot = r.to.slot;
+        remove.item = target;
+        add = remove;
+        add.type = repl::StorageEventType::Add;
+        add.item = joined;
+        out.steps = {leave, remove, add};
+        out.ok = true;
+        return out;
+    }
+    if (r.type == repl::StorageEventType::Fill) return refuse("no stack to join in the target slot");
+
+    // to an empty place: the whole stack, or the part that becomes a stack of its own
+    const bool part = r.count < moving.quantity;
+    if (part && (!items::guid_of(r.new_guid) || r.new_guid == moving.instance_guid)) return refuse("the new stack needs an instance guid of its own");
+    svc::InventoryItem arriving = moving;
+    arriving.quantity = r.count;
+    if (part) arriving.instance_guid = r.new_guid;
+    arriving.slot = r.to.slot;
     if (r.to.in_warehouse) {
         const Spec* spec = open.find(r.to.key);
-        const std::string* ignore = r.from.in_warehouse ? &moving.instance_guid : nullptr;
+        const std::string* ignore = r.from.in_warehouse && r.from.key == r.to.key && !part ? &moving.instance_guid : nullptr;
         const std::string why = detail::why_not_here(*spec, r.to.slot, moving, wh, catalog, ignore);
         if (!why.empty()) return refuse(why);
-        // it leaves a bag, or another place of the same container
-        Step remove, add;
-        remove.type = repl::StorageEventType::Remove;
-        remove.in_warehouse = r.from.in_warehouse;
-        remove.bag = r.from.bag;
-        remove.key = r.from.key;
-        remove.slot = r.from.slot;
-        remove.item = moving;
+        Step leave, add;
+        if (std::string gone = leave_source(r.count, leave); !gone.empty()) return refuse(gone);
         add.type = repl::StorageEventType::Add;
         add.in_warehouse = true;
         add.key = r.to.key;
         add.slot = r.to.slot;
-        add.item = moving;
-        add.item.slot = r.to.slot;
-        if (r.from.in_warehouse) {
-            wh.erase(r.from.key, r.from.slot);
-        } else {
-            const items::Outcome removed = bags.consume(r.from.bag, r.from.slot, moving.instance_guid, moving.quantity);
-            if (!removed.ok) return refuse(removed.refusal);
-            out.bags_changed = true;
-        }
-        wh.put(r.to.key, r.to.slot, moving);
-        out.steps = {remove, add};
+        add.item = arriving;
+        wh.put(r.to.key, r.to.slot, arriving);
+        out.steps = {leave, add};
         out.ok = true;
         return out;
     }
-    // out of the warehouse into a bag
+    // out of the warehouse into a bag, or a crate onto the back
     {
-        svc::InventoryItem arriving = moving;
-        const items::Outcome added = bags.add_at(r.to.bag, r.to.slot, arriving, catalog);
+        const items::Outcome added = detail::is_cargo_slot(r.to) ? bags.grant_cargo(arriving, catalog) : bags.add_at(r.to.bag, r.to.slot, arriving, catalog);
         if (!added.ok) return refuse(added.refusal);
-        wh.erase(r.from.key, r.from.slot);
-        Step remove, add;
-        remove.type = repl::StorageEventType::Remove;
-        remove.in_warehouse = true;
-        remove.key = r.from.key;
-        remove.slot = r.from.slot;
-        remove.item = moving;
+        Step leave, add;
+        if (std::string gone = leave_source(r.count, leave); !gone.empty()) return refuse(gone);
         add.type = repl::StorageEventType::Add;
         add.in_warehouse = false;
         add.bag = r.to.bag;
         add.slot = r.to.slot;
-        add.item = moving;
+        add.item = arriving;
         add.item.container = r.to.bag;
-        add.item.slot = r.to.slot;
+        out.cargo_changed = detail::is_cargo_slot(r.to);
         out.bags_changed = true;
-        out.steps = {remove, add};
+        out.steps = {leave, add};
         out.ok = true;
         return out;
     }

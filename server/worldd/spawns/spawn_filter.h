@@ -47,6 +47,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 // ~ C-O-A & C-Y-B ~
@@ -69,6 +70,14 @@ struct SpawnContext {
     /// Nodes 1, stage 3b: the zone of influence the context itself stands in (a city node's), used when a point has none of its own.  0: none.  A node's populations (a
     /// layout's, a building's) are judged with their node's zone, so a filter that names zones passes there (the area's circle has none: E1's zone refusal stays for it).
     int64_t     zone = 0;
+    /// The node that owns a zone of influence and the level it had when the area was filled (Wilderness 0).  A filter of the open world that names nodes (PCG_ANV_*_Node_Wilderness_level_0_2) is
+    /// about the node whose zone the point stands in, at that node's level.  A context that names its own node (a node's populations) does not ask this.  Empty: no zone has a node.
+    /// Filled once: a level change later does not change the open world's spawns.
+    struct ZoneNode {
+        int64_t node = 0;
+        int     level = 0;
+    };
+    std::map<int64_t, ZoneNode> zone_nodes;
     /// The spawn sources (npc_gate.source: "NarrativeObjective", "EventTriggerDef", "StoryArcPhase", ...) that are running; a set only they spawn spawns.
     std::set<std::string> active_gates;
     /// Let the Blueprints whose body needs an NPCAppearanceComponent through (their opens carry none: they show invisible).

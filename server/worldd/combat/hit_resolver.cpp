@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include <spdlog/spdlog.h>
+
 namespace aoc::worldd::combat {
 
 namespace {
@@ -69,6 +71,92 @@ bool HitResolver::resolve(Fighter& attacker, Fighter& target, const abilities::H
 }
 // C_Y_B / CoA
 
+void HitResolver::effects_of(Fighter& attacker, Fighter& target, const abilities::HitDef& hit, std::vector<LandedEffect>& out) {
+    std::string err;
+    auto a = attacker.stats().evaluation(attacker.worn(), err, true);
+    auto t = target.stats().evaluation(target.worn(), err, true);
+    if (!a || !t) return;
+    ResolverHost host(rng_);
+    effects_of(*a, host, t.get(), hit, out);
+}
+
+bool HitResolver::holds(Fighter& fighter, int64_t expr, bool none) {
+    const content::ExprRow* row = expr ? catalog_.expr(expr) : nullptr;
+    if (!row || row->program < 0) return none;
+    std::string err;
+    auto a = fighter.stats().evaluation(fighter.worn(), err, true);
+    if (!a) return none;
+    ResolverHost host(rng_);
+    double v = 0;
+    return a->eval(row->program, host, v, err) ? v != 0.0 : none;
+}
+
+bool HitResolver::holds(Fighter& fighter, Fighter& target, int64_t expr, bool none) {
+    const content::ExprRow* row = expr ? catalog_.expr(expr) : nullptr;
+    if (!row || row->program < 0) return none;
+    std::string err;
+    auto a = fighter.stats().evaluation(fighter.worn(), err, true);
+    auto t = target.stats().evaluation(target.worn(), err, true);
+    if (!a || !t || !a->set_actor(stats::kRoleTarget, *t, err)) return none;
+    ResolverHost host(rng_);
+    double v = 0;
+    const bool ran = a->eval(row->program, host, v, err);
+    a->clear_actors();
+    return ran ? v != 0.0 : none;
+}
+
+void HitResolver::effects_of(stats::CharacterStats::Evaluation& attacker, ContextHost& host, stats::CharacterStats::Evaluation* target, const abilities::HitDef& hit,
+                             std::vector<LandedEffect>& out) {
+    std::string err;
+    if (target && target != &attacker) {
+        if (!attacker.set_actor(stats::kRoleTarget, *target, err)) return;
+    } else {
+        attacker.clear_actors();
+    }
+    struct Forget {
+        stats::CharacterStats::Evaluation& e;
+        ~Forget() { e.clear_actors(); }
+    } forget{attacker};
+    const auto run = [&](int64_t expr, double& v) {
+        const content::ExprRow* row = catalog_.expr(expr);
+        return row && row->program >= 0 && attacker.eval(row->program, host, v, err) && std::isfinite(v);
+    };
+    for (const content::HitEffectRow& row : hit.effects) {
+        if (row.kind == "self") continue;
+        const abilities::EffectDef* def = catalog_.effect(row.effect_guid);
+        if (!def) continue;
+        double v = 0;
+        if (row.requirement_expr != 0 && (!run(row.requirement_expr, v) || v == 0.0)) continue;
+        if (def->row.requirement_expr != 0 && (!run(def->row.requirement_expr, v) || v == 0.0)) continue;   // (the effect's own: a Boss takes no stun)
+        LandedEffect e;
+        e.def = def;
+        if (row.stack_count_expr != 0 && run(row.stack_count_expr, v)) {
+            if (std::floor(v) < 1) continue;   // a count that works out to nothing applies nothing: the data's way to make an effect conditional
+            e.stacks = static_cast<int>(std::min(std::floor(v), 4096.0));
+        }
+        e.stack_limit = std::max(1, def->row.global_stack_limit);
+        if (def->row.in_place_stack_limit_expr != 0 && run(def->row.in_place_stack_limit_expr, v) && v >= 1) e.stack_limit = static_cast<int>(std::min(v, 4096.0));
+        const int64_t duration = row.duration_expr != 0 ? row.duration_expr : def->row.infinite_duration ? 0 : def->row.duration_expr;
+        if (duration != 0) {
+            if (!run(duration, v)) {
+                spdlog::debug("[combat] the effect {} has no duration here: {}", def->row.name, err);
+                continue;
+            }
+            e.seconds = std::max(0.0, v);
+        }
+        for (const content::ModRow& m : def->mods) {
+            if (m.shield_absorb || m.value_expr == 0) continue;
+            // GetOwner() in an effect's mod is its holder: Brace's shield is 30% of the pet's own Health, not its summoner's
+            const content::ExprRow* mod = catalog_.expr(m.value_expr);
+            const bool holders = target && mod && mod->program >= 0 && mod->text.find("GetOwner(") != std::string::npos;
+            if (holders ? !target->eval(mod->program, host, v, err) || !std::isfinite(v) : !run(m.value_expr, v)) continue;
+            if (m.stat_guid == content::kGuidTempHealth) e.shield += std::max(0.0, v);
+            else e.mods.push_back({m.stat_guid, v});
+        }
+        out.push_back(std::move(e));
+    }
+}
+
 bool HitResolver::resolve_with(stats::CharacterStats::Evaluation& attacker, ContextHost& host, const stats::CharacterStats::Evaluation* target, double distance_cm,
                                bool enemy, bool neutral, const abilities::HitDef& hit, const HitMeta& meta, Resolved& out, std::string& why) {
     out = Resolved{};
@@ -107,6 +195,7 @@ bool HitResolver::resolve_with(stats::CharacterStats::Evaluation& attacker, Cont
     ctx.active_is_target = meta.target_is_active;
     ctx.active_in_hit = meta.active_in_hit;
     ctx.target_is_closest = meta.target_is_closest;
+    ctx.target_effects = meta.target_effects;
     const HitAspect aspect = aspect_of(ctx.tags);
     ctx.hit.tag = aspect.element;
     ctx.hit.physical = aspect.physical;
@@ -148,6 +237,12 @@ bool HitResolver::resolve_with(stats::CharacterStats::Evaluation& attacker, Cont
 
     // ---- the mods
     host.set_context(&ctx);
+    for (const auto& [term, expr] : hit.kept_terms) {
+        const content::ExprRow* row = catalog_.expr(expr);
+        double v = 0;
+        std::string e;
+        if (row && row->program >= 0 && attacker.eval(row->program, host, v, e) && std::isfinite(v)) host.keep_term(term, v);
+    }
     bool ok = true;
     for (const content::ModRow& m : hit.mods) {
         if (m.shield_absorb || m.value_expr == 0) continue;
@@ -177,6 +272,77 @@ bool HitResolver::resolve_with(stats::CharacterStats::Evaluation& attacker, Cont
         if (row && row->program >= 0 && attacker.eval(row->program, host, v, e) && std::isfinite(v)) out.threat = std::max(0.0, v);
     }
     return ok;
+}
+
+// ---- what a hit puts on its target, and whether it may run at all ----------------------------------------------------------------------
+
+namespace {
+
+// The context the expressions of a hit run in, once its stat mods are applied (the fields resolve_with fills; no rolls: the flags are the hit's).
+void fill_context(HitContext& ctx, const CombatData& data, const abilities::HitDef& hit, const HitMeta& meta, const EvalView& attacker_view, const EvalView* target_view,
+                  double distance_cm, bool enemy, bool neutral) {
+    ctx.profile = &data.profile();
+    if (hit.use_item_tags) ctx.tags = meta.item_tags;
+    ctx.tags.insert(ctx.tags.end(), hit.tags.begin(), hit.tags.end());
+    ctx.tags.insert(ctx.tags.end(), meta.ability_tags.begin(), meta.ability_tags.end());
+    ctx.source_type = meta.source_type;
+    ctx.instigator = &attacker_view;
+    ctx.target = target_view;
+    ctx.targets = meta.targets;
+    ctx.distance_cm = distance_cm;
+    ctx.enemy = enemy;
+    ctx.neutral = neutral;
+    ctx.active_is_target = meta.target_is_active;
+    ctx.active_in_hit = meta.active_in_hit;
+    ctx.target_is_closest = meta.target_is_closest;
+    ctx.target_effects = meta.target_effects;
+    const HitAspect aspect = aspect_of(ctx.tags);
+    ctx.hit.tag = aspect.element;
+    ctx.hit.physical = aspect.physical;
+}
+
+}  // namespace
+
+void HitResolver::effects_of(Fighter& attacker, Fighter& target, const abilities::HitDef& hit, const HitMeta& meta, std::vector<LandedEffect>& out) {
+    std::string err;
+    auto a = attacker.stats().evaluation(attacker.worn(), err, true);
+    auto t = target.stats().evaluation(target.worn(), err, true);
+    if (!a || !t) return;
+    ResolverHost host(rng_);
+    const Relation rel = data_.relation(attacker.alignments(), target.alignments());
+    effects_with(*a, host, t.get(), distance_cm(attacker.position(), target.position()), rel == Relation::Hostile, rel == Relation::Neutral, hit, meta, out);
+}
+
+void HitResolver::effects_with(stats::CharacterStats::Evaluation& attacker, ContextHost& host, stats::CharacterStats::Evaluation* target, double distance_cm, bool enemy, bool neutral,
+                               const abilities::HitDef& hit, const HitMeta& meta, std::vector<LandedEffect>& out) {
+    const EvalView attacker_view(attacker);
+    const EvalView target_view(target ? *target : attacker);
+    HitContext ctx;
+    fill_context(ctx, data_, hit, meta, attacker_view, target && target != &attacker ? &target_view : nullptr, distance_cm, enemy, neutral);
+    const HitContext* previous = host.context();
+    host.set_context(&ctx);
+    effects_of(attacker, host, target, hit, out);
+    host.set_context(previous);
+}
+
+bool HitResolver::requirement_holds(Fighter& attacker, Fighter& target, const abilities::HitDef& hit, const HitMeta& meta) {
+    if (hit.row.requirement_expr == 0) return true;
+    std::string err;
+    auto a = attacker.stats().evaluation(attacker.worn(), err, true);
+    auto t = target.stats().evaluation(target.worn(), err, true);
+    const content::ExprRow* e = catalog_.expr(hit.row.requirement_expr);
+    if (!a || !t || !e || e->program < 0 || !a->set_actor(stats::kRoleTarget, *t, err)) return true;
+    const EvalView attacker_view(*a), target_view(*t);
+    const Relation rel = data_.relation(attacker.alignments(), target.alignments());
+    HitContext ctx;
+    fill_context(ctx, data_, hit, meta, attacker_view, &target_view, distance_cm(attacker.position(), target.position()), rel == Relation::Hostile, rel == Relation::Neutral);
+    ResolverHost host(rng_);
+    host.set_context(&ctx);
+    double v = 0;
+    const bool ran = a->eval(e->program, host, v, err) && std::isfinite(v);
+    host.set_context(nullptr);
+    a->clear_actors();
+    return ran ? v != 0 : true;   // (one that cannot run here, a reaction's that reads the hit it answers, is left to the hit's own numbers)
 }
 
 }  // namespace aoc::worldd::combat

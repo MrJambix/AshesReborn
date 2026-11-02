@@ -91,8 +91,8 @@ repl::Actor public_pawn(const bootstrap::PlayerBootstrap& player, const stats::C
         } else if (component.guid == guids.ability) {
             sub.obj = project(component.obj, {"bReplicates", "bIsActive"}, {"ReplicatedActiveAbilities"});
         } else if (component.guid == guids.stats) {
-            sub.obj = project(component.obj, {"bReplicates", "bIsActive"}, {"StatRepInt32OwnerProxy", "StatRepInt32EveryoneProxy",
-                "StatRepFloatArrayOwnerProxy", "StatRepFloatArrayEveryoneProxy", "CurrentEffects", "CrowdControlEffects"});
+            sub.obj = project(component.obj, {"bReplicates", "bIsActive", "CrowdControlState."}, {"StatRepInt32OwnerProxy", "StatRepInt32EveryoneProxy",
+                "StatRepFloatArrayOwnerProxy", "StatRepFloatArrayEveryoneProxy", "CurrentEffects"});
             // Proxy-only stats are absent from the owner's bootstrap. Give their public
             // array its own stable IDs and keys so later changes are genuine deltas.
             auto* array = sub.obj.arrays.get(*sub.obj.schema, "StatRepInt32ProxyOnly");
@@ -121,6 +121,21 @@ repl::Actor public_pawn(const bootstrap::PlayerBootstrap& player, const stats::C
             }
         } else if (component.guid == guids.alignment) {
             sub.obj = project(component.obj, {"bReplicates", "bIsActive", "Alignments"});
+        } else if (player.guild_component_guid().ObjectId != 0 && component.guid == player.guild_component_guid()) {
+            // What the client's GetGuildName and IsGuildmate read of another character (0x146ac0740, 0x146b4b7e0): never the members, the ranks or the cooldown.
+            // A player in no guild has nothing to show: the client reads a component it was never sent as empty.
+            const auto* guild_name = component.obj.state.get(*component.obj.schema, "GuildName");
+            const auto* named = guild_name ? guild_name->get_if<std::string>() : nullptr;
+            if (!named || named->empty()) continue;
+            sub.obj = project(component.obj, {"bReplicates", "bIsActive", "GuildName"});
+            if (const auto* whole = component.obj.state.get(*component.obj.schema, "GuildData")) {
+                if (const auto* wire = whole->get_if<repl::GuildDataWire>()) {
+                    repl::GuildDataWire shown;   // the name and the guid: GuildData is one command, so what stays private has to be left out of its value
+                    shown.name = wire->name;
+                    shown.guid = wire->guid;
+                    sub.obj.state.set(*sub.obj.schema, "GuildData", Value(std::move(shown)));
+                }
+            }
         } else continue; // Deny inventories, wallet, XP, account data and future components by default.
         out.subobjects.push_back(std::move(sub));
     }

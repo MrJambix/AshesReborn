@@ -290,6 +290,37 @@ void test_kill(Fixture& f) {
 
 // ---- the respawn -----------------------------------------------------------------------------------------------------------------
 
+void test_party_share(Fixture& f) {
+    std::printf("a kill and the killer's party\n");
+    Scene s(f);
+    if (!s.ok()) return;
+    combat_rig::FakePlayer near_party(s.rig, 78, combat::Vec3{800, 0, 1098}), far_party(s.rig, 79, combat::Vec3{50000, 0, 1098}), stranger(s.rig, 80, combat::Vec3{700, 0, 1098});
+    s.world->add_player(&near_party);
+    s.world->add_player(&far_party);
+    s.world->add_player(&stranger);
+    s.after->set_party_of([&](combat::PlayerPort& a, combat::PlayerPort& b) {
+        const auto in = [&](combat::PlayerPort& p) { return &p == s.player.get() || &p == &near_party || &p == &far_party; };
+        return in(a) && in(b);
+    });
+    const uint64_t wolf = s.wolf(10, 100);
+    CHECK(wolf != 0, "a wolf is there");
+    if (!wolf) return;
+    s.kill(wolf);
+    CHECK(!s.player->kills.empty(), "the killer is paid");
+    CHECK(!near_party.kills.empty() && far_party.kills.empty(), "a member near it is paid, one far away is not");
+    CHECK(stranger.kills.empty(), "someone beside it and in no party is not");
+    if (!s.player->kills.empty() && !near_party.kills.empty()) {
+        CHECK(near_party.kills[0].adventuring_xp == s.player->kills[0].adventuring_xp, "the same Adventuring experience");
+        CHECK(near_party.kills[0].weapon_xp == 0, "but no Weapon experience for a weapon he did not use");
+        CHECK(near_party.kills[0].instance == s.player->kills[0].instance && near_party.kills[0].blueprint == s.player->kills[0].blueprint, "and what a quest's Kill objective reads");
+    }
+    const combat::Corpse* corpse = s.after->corpse_of(wolf);
+    CHECK(corpse && corpse->rights.count(near_party.actor_id()) == 1 && corpse->rights.count(stranger.actor_id()) == 0, "he may loot it, and the stranger may not");
+    s.world->remove_player(&near_party);
+    s.world->remove_player(&far_party);
+    s.world->remove_player(&stranger);
+}
+
 void test_respawn(Fixture& f) {
     std::printf("the respawn\n");
     Scene s(f);
@@ -439,6 +470,28 @@ void test_huntable(Fixture& f) {
     // a hunt that never comes: the 120 s
     CHECK(s.w.registry.find(plain) == nullptr, "(the plain corpses are long gone)");
 
+    // a hunt that completes late: the channel of 14 s and the record's 5 s more are over (19 s) and the completion comes at 25 s; the creature still dies for its clients, goes 4 s later
+    // and its spawn point refills it
+    {
+        Scene l(f, 12);
+        if (!l.ok()) {
+            CHECK(false, "the scene");
+            return;
+        }
+        l.after->set_huntable([](const world::NpcInfo& i) { return i.interact_def == kHuntDef; });
+        const uint64_t id = make_huntable(l, 10, 15000.0);   // (150 m from the player: out of any creature's notice)
+        CHECK(id != 0 && l.after->hunt_started(id, l.now, 14.0), "a hunt starts on a living huntable");
+        l.run(25.0);
+        CHECK(l.after->corpse_of(id) == nullptr && l.w.registry.find(id) != nullptr, "25 s on, its record is gone and the creature still stands");
+        CHECK(l.after->hunt_done(id, l.now), "the hunt completes 6 s late and is still done");
+        const combat::Corpse* late = l.after->corpse_of(id);
+        CHECK(late && late->hunted && !late->living && near(late->close_at, l.now + 4.0, 0.01), "the creature is a hunted corpse that goes 4 s later");
+        l.run(4.5);
+        CHECK(l.w.registry.find(id) == nullptr && l.after->corpse_of(id) == nullptr, "4.5 s on it is gone");
+        l.run(10.0);
+        CHECK(l.respawns.size() == 1 && l.respawns[0] == 5, "and its spawn point refilled it");
+    }
+
     // the kill switch: the corpse is still hunted
     {
         combat::AftermathConfig cfg;
@@ -545,6 +598,7 @@ int main() {
         return 1;
     }
     test_kill(f);
+    test_party_share(f);
     test_respawn(f);
     test_hostile(f);
     test_huntable(f);

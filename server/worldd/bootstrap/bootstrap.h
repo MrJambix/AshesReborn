@@ -61,6 +61,9 @@
 #include "bootstrap/ability_replication.h"
 #include "bootstrap/constants.h"
 #include "bootstrap/player_setup.h"
+#include "session/group.h"
+#include "session/crowd_state.h"
+#include "session/guild.h"
 #include "protocol/repl/leveling.h"
 #include "protocol/repl/replicator.h"
 #include "protocol/repl/skill_rpc.h"
@@ -299,6 +302,8 @@ public:
     std::optional<Send> death_location(double x, double y, double z);
     /// The PlayerController's ClientRestart(NewPawn) and ClientSetCameraMode, twice, as the death frame of the retail captures has them.
     std::optional<Send> death_restart();
+    /// ClientPromptResurrect: the alert of a dead player that another player's Resurrect has reached, naming that player's CharacterGuid.
+    std::optional<Send> prompt_resurrect(const std::array<uint32_t, 4>& instigator);
     /// The pawn's SendClientRespawnChoices(RespawnChoices {ClosestLegalRespawns, HomeRespawn}): where the player may come back.  `home_on_cooldown` is the flag a refused home choice sends back.
     std::optional<Send> respawn_choices(std::span<const int64_t> closest, int64_t home, bool previous_choice_invalid = false, bool home_on_cooldown = false);
 
@@ -335,9 +340,14 @@ public:
     std::optional<Send> craft_batched_events(std::span<const ItemEvent> events);
     /// Crafting, step 3: ClientInterruptCraft (no parameters) on the PlayerController: the client's quick make stops, with nothing taken.  nullopt before the pawn's second state.
     std::optional<Send> craft_interrupted();
+    /// A reward box: ClientOpenRewardSelection on the PlayerController, the choose-one window of `box` listing `reward`'s items.  nullopt before the pawn's second state or when the RPC does not build.
+    std::optional<Send> open_reward_selection(const repl::GuidValue& box, const repl::RewardInstance& reward);
     /// OwnerInfo.PlayerKnownRecipeIds: the recipes the character has learned (the ones the game makes a player learn; the others are known to the client by their own flag), in the order
     /// given.  Sent with the next currencies_update().  False when the pawn has no OwnerInfo or the list is over `kMaxKnownRecipes`.
     bool set_known_recipes(const std::vector<int64_t>& recipes);
+    /// OwnerInfo.IgnoredCharacterNames: the names the player ignores, which the client's ignore list window shows (UFriendsListMenu reads the component's array).  Sent with the next
+    /// currencies_update().  False when the pawn has no OwnerInfo or the list is over 200 names.
+    bool set_ignored_names(const std::vector<std::string>& names);
     /// OwnerInfo.ActiveProcessingStations: the stations where the player has a job running or waiting, each as the four words of its StationGuid.  Sent with the next currencies_update() (the
     /// pawn's update that carries the OwnerInfo changes).  False when the pawn has no OwnerInfo.
     bool set_active_stations(const std::vector<std::array<int32_t, 4>>& stations);
@@ -346,6 +356,8 @@ public:
     /// The vendors milestone, step 0: a purchase's answer in one chain: ClientShowCurrencyCallout(currency tier, signed delta) first, then the ClientReceiveStorageEvent calls of `events`
     /// (at most kMaxEventsPerChain), in that order.  What the storages hold follows the events, as item_events does.
     std::optional<Send> purchase_answer(int64_t currency_tier, int64_t delta, std::span<const ItemEvent> events);
+    /// ClientOpenCrateSellWindow: the buyer's shop and actor, with no per-commodity counts or per-node costs (modelled: nothing keeps them yet).
+    std::optional<Send> open_crate_sell(int64_t vendor_def, const emit::FIntrepidNetworkGUID& vendor);
     /// The vendors milestone, step 1: a sale's answer in one chain, in the retail order: the ClientReceiveStorageEvent calls of `events` first, then
     /// ClientShowCurrencyCallout(currency tier, signed delta).  What the storages hold follows the events.
     std::optional<Send> sale_answer(int64_t currency_tier, int64_t delta, std::span<const ItemEvent> events);
@@ -447,6 +459,23 @@ public:
     /// ClientUpdateGroup of an empty group, and the class's default action bar (ClientReceiveActionbarSlotPayload,
     /// as captured): the replies to ServerRequestClientLoad.
     std::optional<Send> empty_group();
+    /// Parties and raids (bootstrap/bootstrap_group.inc): ClientUpdateGroup with the whole group as this player sees it, ClientRequestJoinGroup, and
+    /// ClientRequestConvertToRaid, the leader's question when a full party invites one more.
+    std::optional<Send> group_update(const group::View& view);
+    std::optional<Send> group_invitation(const group::Invitation& invitation);
+    std::optional<Send> group_convert_prompt(const std::string& invited);
+    /// Guilds (bootstrap/bootstrap_guild.inc).  open_guild_component and set_guild_view change the pawn's state: the caller sends pawn_state_update().
+    bool open_guild_component(const emit::FIntrepidNetworkGUID& guid);
+    const emit::FIntrepidNetworkGUID& guild_component_guid() const { return guild_component_guid_; }
+    bool set_guild_view(const guild::View& view);
+    std::optional<Send> guild_invitation(const guild::Invitation& invitation);
+    std::optional<Send> guild_reply(const guild::Reply& reply);
+    std::optional<Send> guild_list(const std::vector<std::pair<std::string, guild::Guid>>& guilds);
+    std::optional<Send> open_create_guild_panel();
+    /// ClientReceiveTaxDetails: the answer to ServerGetTaxDetails.
+    std::optional<Send> tax_details(const protocol::repl::StationTax& tax);
+    /// The stats component's CrowdControlState (session/crowd_state.h), times on the synchronized clock.  Nothing goes out until ability_update().  False when the pawn does not take it.
+    bool set_crowd_control(const crowd::State& state, double sync_start, double sync_end);
     std::optional<Send> default_action_bar();
     /// Plan D1, stage 2: the character's own action bar as one ClientReceiveActionbarSlotPayload on the PlayerController (reliable): the reply to
     /// ServerRequestClientLoad, and the clearing of a class's slots when the class changes.
@@ -541,6 +570,9 @@ public:
     /// The player's summoned combat pet, tracked by its spawning effect instance.
     /// An empty GUID clears PetArray. Requires ensure_interact_info().
     std::optional<Send> pawn_combat_pet(const emit::FIntrepidNetworkGUID& pet, int64_t effect_id);
+    /// The stance of the player's pets, on the owner's InteractInfo beside PetArray [exe: ABaseCharacter::ServerSendPetCommand_Implementation 0x6b5dc20 writes the record's RequestedStance there].
+    /// Requires ensure_interact_info().
+    std::optional<Send> pawn_pet_stance(int64_t stance);
     /// Gathering stage 2 (the fix after the user's test 1): the pawn's InteractInfo.ChannelingData = `data` [R: 1427 packet 67 sets it with the node's wake, packet 674 clears it
     /// 2 ms after the result frame; nine more harvests and a corpse harvest the same].  The client plays the gather animation and shows the bar from it, and sends its own
     /// ServerInterruptChannel when the player moves.  The InteractInfo must exist (ensure_interact_info).  One pawn update; nothing when `data` is what the client holds.
@@ -609,6 +641,23 @@ public:
     /// Whatever is dirty on the pawn (the level, the class, the stats, the TempHealth mark, HeldItems ...) as one chain,
     /// reliable; nullopt when nothing is. Take a checkpoint() first, as for every send.
     std::optional<Send> pawn_state_update(const char* what = "level");
+    /// The Destiny window: what each track stands at (ClientReceiveDestinyClientData), and a track's milestones (ClientReceiveDestinyTrackMilestoneRewards).  The reward previews are empty, as a quest
+    /// offer's are: the rewards themselves are paid.
+    struct DestinyTrackOut {
+        int64_t  quest = 0;
+        uint32_t instance[4] = {0, 0, 0, 0};
+        int32_t  completed = 0, total = 0;
+        bool     active = true;
+    };
+    struct DestinyMilestoneOut {
+        uint32_t instance[4] = {0, 0, 0, 0};
+        int64_t  quest = 0;
+        int64_t  objective = 0;
+        bool     completed = false;
+        repl::RewardInstance reward;
+    };
+    std::optional<Send> destiny_client_data(const std::vector<DestinyTrackOut>& tracks);
+    std::optional<Send> destiny_milestones(int64_t track, const std::vector<DestinyMilestoneOut>& milestones);
     /// BroadcastPlayLevelUpEffects(Category, InLevel) on the pawn: the level-up's effects and sound (unreliable, as the
     /// function's flags say: a lost one costs the fanfare, not the level). `category_guid` is the LevelingTypeDef (Adventuring).
     std::optional<Send> level_up_broadcast(int64_t category_guid, int level);
@@ -729,6 +778,8 @@ private:
     void sync_xp_tracker();
     /// Missing systems, step 0: puts the tutorial component on the PlayerController with the setup's list (once); false when it does not build.
     bool add_ftue_component();
+    std::optional<Send> guild_call(const char* what, repl::RpcParams params);
+    emit::FIntrepidNetworkGUID guild_component_guid_{};
     bool add_quest_component();
     std::optional<Send> update(Role role, const char* what, repl::Actor& actor, repl::ActorShadow& shadow);
     std::optional<Send> rpcs(Role role, const char* what, std::span<const repl::RpcRequest> calls);

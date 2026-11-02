@@ -188,6 +188,9 @@ bool                           name_fits(const NameValue& name);
 bool                           text_fits(const TextValue& text);
 
 std::optional<std::string>     read_fstring(wire::PacketReader& r);
+/// FGuildData's NetSerialize (value.h, GuildDataWire).
+bool                           write_guild_data(emit::BunchWriter& out, const GuildDataWire& g);
+std::optional<GuildDataWire>   read_guild_data(wire::PacketReader& r);
 bool                           write_fstring(emit::BunchWriter& out, const std::string& utf8);
 
 std::optional<NameValue>       read_name(wire::PacketReader& r);
