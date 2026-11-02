@@ -37,6 +37,7 @@
 //                                a new maximum are clamped, below it they stay; nothing is sent when no stat moves; the deltas wait for a full window
 //                                with the rest of the update; a stat of the ability runtime goes through it (MaxStamina clamps Stamina)
 // ============================================================================
+#include "test_registry.h"
 #include "capture_leveling.h"
 #include "capture_packets.h"
 #include "content_db_fixture.h"
@@ -2822,32 +2823,6 @@ static BunchWriter select_reward(int index) {
     return actor_rpc(pc, "ServerSelectReward", p);
 }
 
-static void test_level_up_refills() {
-    std::printf("a level gained gives Health, Mana and Stamina back\n");
-    Harness h(record_with_scrolls());
-    const int64_t kHealth = guid_named(h, "Health"), kMaxHealth = guid_named(h, "MaxHealth"), kMana = guid_named(h, "Mana"), kMaxMana = guid_named(h, "MaxMana");
-    const emit::FIntrepidNetworkGUID ability = h.s->bootstrap().setup().guids.ability;
-    const svc::InventoryItem* scepter = h.s->inventory().at(Worn, 15);
-    CHECK(scepter != nullptr, "(the Bard wears the Scepter)");
-    if (!scepter) return;
-    h.settle();
-    CHECK(h.s->set_current_value(kHealth, 1.0f) && h.s->set_current_value(kMana, 1.0f), "(Health and Mana are spent)");
-    h.request(trigger_with_item(ability, content::kGuidDodge, 6, 15, items::to_instance(*scepter), 4), h.pawn_ch);
-    CHECK(h.s->abilities() && h.s->abilities()->stamina() < h.s->abilities()->max_stamina(), "(a Dodge spends Stamina)");
-    h.request_both(item_used(3, 4, guid_n(210)), item_activate(3, 4, guid_n(210)));
-    CHECK(h.s->progress().level == 10, "(the scroll takes the character to level 10)");
-    h.settle();
-    const sg::CharacterStats* cs = h.s->character_stats();
-    CHECK(cs->find(kHealth)->value == cs->find(kMaxHealth)->value && client_stat(h, kHealth) == client_stat(h, kMaxHealth) && client_stat(h, kMaxHealth) > 1.0f, "Health is at the new maximum, on the server and the client");
-    CHECK(cs->find(kMana)->value == cs->find(kMaxMana)->value && client_stat(h, kMana) == client_stat(h, kMaxMana) && client_stat(h, kMaxMana) > 1.0f, "Mana is at the new maximum, on the server and the client");
-    CHECK(h.s->abilities()->stamina() == h.s->abilities()->max_stamina() && client_stat(h, content::kGuidStamina) == client_stat(h, content::kGuidMaxStamina), "Stamina is at its maximum, in the runtime and on the client");
-    for (int i = 0; i < 300; ++i) h.step(milliseconds(20));   // (the Dodge's pause of the recovery ends)
-    std::string why;
-    const bool agree = stats_match(h, &why);
-    if (!agree) std::printf("  [info] %s\n", why.c_str());
-    CHECK(agree && !h.s->abilities_failed(), "the session's stats agree with the client's and the abilities stay on");
-}
-
 static void test_d1_level_scroll() {
     std::printf("plan D1: the level-10 scroll, then the level-25 scroll\n");
     Harness h(record_with_scrolls());
@@ -4860,6 +4835,8 @@ static void test_consumables_item_gone_and_death() {
     CHECK(cs->find(gc::kProcessingXpRating)->value == xp_before && pipe->stacks_of(gc::kProcessingXpEffect) == 0, "the hit the client asked for before the death gave no buff");
 }
 
+#include "items_session_registered.inc"
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // (a crash must not take the last results with it)
     auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
@@ -4890,7 +4867,6 @@ int main() {
     test_stats_at_the_join();
     test_stats_follow_the_chest();
     test_health_and_mana_clamp();
-    test_level_up_refills();
     test_reward_box();
     test_nothing_changes_nothing_sent();
     test_stats_wait_for_the_window();
@@ -4938,6 +4914,7 @@ int main() {
     test_resource_no_room_at_login();
     test_real_content_db();
 
+    g_fail += aoc_tests::run();   // every check registered in items_session_registered.inc
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

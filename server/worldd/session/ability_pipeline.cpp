@@ -3800,7 +3800,7 @@ void AbilityPipeline::step_own(Cast& cast, double t) {
 }
 
 void AbilityPipeline::release_held(int32_t client_id, double t) {
-    const double due = t + kHeldEndDelay;
+    const double due = t + kHeldEndDelay;   // a held ability (Guard, Reflect) ends with the key's release: its effects go kHeldEndDelay later
     for (Held& h : held_) {
         if (h.client_id == client_id && !h.end_due) h.end_due = due;
     }

@@ -7,7 +7,11 @@
 #include "combat/hit_resolver.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <functional>
+#include <map>
+#include <set>
 
 #include <spdlog/spdlog.h>
 
@@ -16,6 +20,30 @@ namespace aoc::worldd::combat {
 namespace {
 
 double clamp01(double v) { return std::isfinite(v) ? std::clamp(v, 0.0, 1.0) : 0.0; }
+
+// The guids of the effects a compiled expression text asks the length of: CalcEffectDuration($#<record type>:<guid>$).
+std::vector<int64_t> effect_duration_refs(const std::string& text) {
+    std::vector<int64_t> out;
+    const std::string call = "CalcEffectDuration(";
+    for (size_t p = text.find(call); p != std::string::npos; p = text.find(call, p + 1)) {
+        size_t q = p + call.size();
+        while (q < text.size() && text[q] == ' ') ++q;
+        if (text.compare(q, 2, "$#") != 0) continue;
+        q += 2;
+        while (q < text.size() && std::isdigit(static_cast<unsigned char>(text[q]))) ++q;
+        if (q >= text.size() || text[q] != ':') continue;
+        ++q;
+        int64_t guid = 0;
+        bool any = false;
+        while (q < text.size() && std::isdigit(static_cast<unsigned char>(text[q])) && guid < 922337203685477580LL) {
+            guid = guid * 10 + (text[q] - '0');
+            any = true;
+            ++q;
+        }
+        if (any && q < text.size() && text[q] == '$') out.push_back(guid);
+    }
+    return out;
+}
 
 // The host of a resolver run on its own (an NPC's hit): a random number from the resolver's source and nothing of a cast.
 class ResolverHost final : public ContextHost {
@@ -113,18 +141,57 @@ void HitResolver::effects_of(stats::CharacterStats::Evaluation& attacker, Contex
     } else {
         attacker.clear_actors();
     }
+    // The effect whose numbers are being worked out is the context's effect in progress (EffectHasTag(GetEffect(), tag), GetEffect() == <effect>), and CalcEffectDuration(<effect>)
+    // reads the lengths of the effects the expression names, worked out ahead of it: the engine cannot run a program from inside another one.  Only where the hit has a context
+    // (a hit of a player's resolved through effects_with); the host gets its own context back after.
+    const HitContext* outer = host.context();
+    HitContext ctx = outer ? *outer : HitContext{};
+    std::vector<std::string> effect_tags;
+    std::map<int64_t, double> durations;
+    ctx.effect_tags = &effect_tags;
+    ctx.effect_durations = &durations;
+    if (outer) host.set_context(&ctx);
     struct Forget {
         stats::CharacterStats::Evaluation& e;
-        ~Forget() { e.clear_actors(); }
-    } forget{attacker};
-    const auto run = [&](int64_t expr, double& v) {
+        ContextHost&                       h;
+        const HitContext*                  c;
+        ~Forget() {
+            h.set_context(c);
+            e.clear_actors();
+        }
+    } forget{attacker, host, outer};
+    const auto number = [&](int64_t expr, double& v) {
         const content::ExprRow* row = catalog_.expr(expr);
         return row && row->program >= 0 && attacker.eval(row->program, host, v, err) && std::isfinite(v);
+    };
+    std::set<int64_t> measuring;
+    const std::function<void(int64_t)> measure = [&](int64_t expr) {
+        const content::ExprRow* e = expr != 0 && outer ? catalog_.expr(expr) : nullptr;
+        if (!e) return;
+        for (const int64_t guid : effect_duration_refs(e->text)) {
+            if (durations.count(guid) != 0 || !measuring.insert(guid).second) continue;
+            const abilities::EffectDef* d = catalog_.effect(guid);
+            double secs = 0;
+            if (d && !d->row.infinite_duration && d->row.duration_expr != 0) {
+                measure(d->row.duration_expr);
+                double v = 0;
+                if (number(d->row.duration_expr, v)) secs = std::max(0.0, v);
+            }
+            durations[guid] = secs;
+            measuring.erase(guid);
+        }
+    };
+    const auto run = [&](int64_t expr, double& v) {
+        measure(expr);
+        return number(expr, v);
     };
     for (const content::HitEffectRow& row : hit.effects) {
         if (row.kind == "self") continue;
         const abilities::EffectDef* def = catalog_.effect(row.effect_guid);
         if (!def) continue;
+        effect_tags = def->row.tags;
+        effect_tags.insert(effect_tags.end(), def->row.effect_tags.begin(), def->row.effect_tags.end());
+        ctx.effect_guid = def->row.guid;
         double v = 0;
         if (row.requirement_expr != 0 && (!run(row.requirement_expr, v) || v == 0.0)) continue;
         if (def->row.requirement_expr != 0 && (!run(def->row.requirement_expr, v) || v == 0.0)) continue;   // (the effect's own: a Boss takes no stun)
@@ -144,6 +211,10 @@ void HitResolver::effects_of(stats::CharacterStats::Evaluation& attacker, Contex
             }
             e.seconds = std::max(0.0, v);
         }
+        // ExtendDuration: the seconds one more application adds and the longest it may be extended to; an amount that does not run (the burn aura's does not compile) leaves the
+        // duration refreshed in full
+        e.extended_max = def->row.extended_max;
+        if (def->row.extension_expr != 0 && run(def->row.extension_expr, v)) e.extension = std::max(0.0, v);
         for (const content::ModRow& m : def->mods) {
             if (m.shield_absorb || m.value_expr == 0) continue;
             // GetOwner() in an effect's mod is its holder: Brace's shield is 30% of the pet's own Health, not its summoner's

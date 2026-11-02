@@ -9,18 +9,6 @@ namespace repl = ::aoc::protocol::repl;
 
 // ---- the hit rules ------------------------------------------------------------------------------------------------------------------
 
-void test_session_dice_seed() {
-    std::printf("the dice of a session\n");
-    using combat::session_dice_seed;
-    CHECK(session_dice_seed(0, 3) == 3 * 7919u + 1u, "a test's world (seed 0) keeps the plain function of the player id");
-    CHECK(session_dice_seed(11, 3) == session_dice_seed(11, 3), "the same run seed and player repeat their rolls (--combat-seed)");
-    CHECK(session_dice_seed(11, 3) != session_dice_seed(12, 3), "another start rolls another sequence for the same player");
-    CHECK(session_dice_seed(11, 3) != session_dice_seed(11, 4), "two players of one run do not share a sequence");
-    bool none_zero = true;
-    for (uint64_t run = 1; run < 2000; ++run) none_zero = none_zero && session_dice_seed(run, run * 3) != 0;
-    CHECK(none_zero, "a seed is never 0");
-}
-
 void test_aspect() {
     std::printf("the element and aspect of a hit\n");
     using combat::aspect_of;

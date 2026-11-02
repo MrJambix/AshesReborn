@@ -1792,6 +1792,7 @@ struct CombatWorld::LandSource {
     bool                         children = true;        // it fires the hits it lists
     bool                         skip_requirement = false;
     bool                         predicted = false;      // the client predicts it (an effect's Tick hit)
+    int                          stacks = 1;             // the stacks its numbers count for (the tick of an effect that recalculates its hits: every stack it holds)
 };
 
 namespace {
@@ -1822,13 +1823,16 @@ void CombatWorld::apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& e,
     const content::EffectRow& row = e.def->row;
     const bool in_place = row.stack_type.find("StackInPlace") != std::string::npos;
     const bool separate = row.stack_type.find("StackSeperate") != std::string::npos;
+    // the instance this application is for: the first of the record, or (a record that compares sources: a bleed for each attacker) the first of the same instigator
     Npc::HeldEffect* held = nullptr;
     int same = 0;
     for (Npc::HeldEffect& h : n->effects) {
         if (h.def != e.def) continue;
         ++same;
-        if (!held) held = &h;
+        if (!held && (!row.compare_source || h.by == by)) held = &h;
     }
+    // ... and on the holder already from other instigators: one more instance only up to the record's global limit (0: no limit)
+    if (!held && row.compare_source && same > 0 && row.global_stack_limit > 0 && same >= row.global_stack_limit) return;
     // STACK_OverrideAlways: a new application replaces it, as a new instance whose Apply hits run again (a burn's second hit ticks at once)
     if (held && row.stack_type.find("OverrideAlways") != std::string::npos) {
         if (row.stack_duration_refresh.find("NeverRefresh") != std::string::npos) return;   // (a record that never refreshes keeps what it has)
@@ -1843,8 +1847,15 @@ void CombatWorld::apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& e,
         if (separate) return;   // it holds as many as the record allows
         held->stacks = in_place ? std::min(e.stack_limit, held->stacks + e.stacks) : 1;
         held->mods = e.mods;
+        if (row.stack_duration_refresh.find("ExtendDuration") != std::string::npos && e.extension >= 0 && held->until >= 0 && until >= 0) {
+            // ExtendDuration: the time left grows by the amount the application worked out, up to the longest the record allows (what is left already is never cut)
+            double end = held->until + e.extension;
+            if (e.extended_max > 0) end = std::min(end, now + e.extended_max);
+            held->until = std::max(end, held->until);
+        } else {
+            held->until = until;
+        }
         held->start = now;
-        held->until = until;
         held->by = by;
         held->taken = 0;
         const bootstrap::EffectItem item = effect_item_of(held->key, *e.def, now, until, held->stacks);
@@ -1860,7 +1871,8 @@ void CombatWorld::apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& e,
         h.stacks = in_place ? std::min(e.stack_limit, e.stacks) : 1;
         h.start = now;
         h.until = until;
-        h.next_tick = row.tick_timer > 0 ? now + row.tick_timer : 0;
+        // the first tick as it lands, unless the record skips it (as the player's own effects: ability_pipeline.cpp); a bleed's first tick is a second later, a hemorrhage's at once
+        h.next_tick = row.tick_timer > 0 ? std::max(row.ignore_initial_tick ? now + row.tick_timer : now, 1e-9) : 0;
         h.mods = e.mods;
         h.by = by;
         h.key = next_effect_key_++;
@@ -2053,6 +2065,12 @@ void CombatWorld::land_for_player(uint64_t by, uint64_t target, const abilities:
             if (m.stat_guid == data_.ids().health) m.value *= m.value < 0 ? damage : healing;
         }
     }
+    // the tick of an effect that recalculates its hits is worked out for one stack and counts for all the stacks it holds now: a poison of five stacks takes five times what one
+    // stack takes [M: how a poison's ticks grow with its stacks is not known; each tick counts every stack]
+    if (src.stacks > 1 && !r.miss()) {
+        for (ResolvedMod& m : r.mods) m.value *= static_cast<double>(src.stacks);
+        r.threat *= static_cast<double>(src.stacks);
+    }
     HitOrigin origin;
     origin.landed_here = true;
     origin.hit = &hit;
@@ -2079,7 +2097,11 @@ void CombatWorld::land_for_player(uint64_t by, uint64_t target, const abilities:
             apply_effect_to_npc(target, e, by, now);
         }
     }
-    if (src.children) land_children(by, target, hit, src, now, depth);
+    if (src.children) {
+        LandSource child = src;
+        child.stacks = 1;   // (what a tick's hit fires counts for itself, not for the tick's stacks)
+        land_children(by, target, hit, child, now, depth);
+    }
 }
 
 void CombatWorld::land_children(uint64_t by, uint64_t target, const abilities::HitDef& hit, const LandSource& src, double now, int depth) {
@@ -2109,11 +2131,12 @@ void CombatWorld::land_children(uint64_t by, uint64_t target, const abilities::H
     }
 }
 
-void CombatWorld::run_phases(uint64_t holder, const abilities::EffectDef& def, uint64_t by, std::initializer_list<const char*> phases, double now) {
+void CombatWorld::run_phases(uint64_t holder, const abilities::EffectDef& def, uint64_t by, std::initializer_list<const char*> phases, double now, int stacks) {
     LandSource src;
     src.type = content::kSourceTypeEffect;
     src.guid = def.row.guid;
     src.predicted = phases.size() == 1 && std::string_view(*phases.begin()) == "Tick";   // an effect's Tick hit is predicted by the client; an Apply or Expire hit is not
+    if (src.predicted && def.row.recalc_on_tick) src.stacks = std::max(1, stacks);
     for (const auto& [phase, hit_guid] : def.hits) {
         bool wanted = false;
         for (const char* p : phases) wanted = wanted || phase == p;
@@ -2413,12 +2436,14 @@ void CombatWorld::step_effects(double now) {
             const abilities::EffectDef* def;
             uint64_t                    by;
             double                      at;
+            int                         stacks = 1;   // (a tick counts for the stacks held when it falls due)
         };
         std::vector<Due> ticks, expired, broken;
         for (size_t i = 0; i < n.effects.size();) {
             Npc::HeldEffect& h = n.effects[i];
-            while (h.next_tick > 0 && h.next_tick <= now && (h.until < 0 || h.next_tick <= h.until)) {
-                ticks.push_back({h.def, h.by, h.next_tick});
+            // an end comes before a tick of the same moment: the tick that would fall on an effect's last moment never happens (retail's Hemorrhage and Conflagration)
+            while (h.next_tick > 0 && h.next_tick <= now && (h.until < 0 || h.next_tick < h.until - 1e-6)) {
+                ticks.push_back({h.def, h.by, h.next_tick, h.stacks});
                 h.next_tick += h.def->row.tick_timer;
             }
             const FragileRow* fragile = fragile_effect(h.def->row.guid);
@@ -2440,7 +2465,7 @@ void CombatWorld::step_effects(double now) {
         if (!expired.empty() || !broken.empty()) effects_changed(n, now);
         for (const Due& d : expired) run_phases(id, *d.def, d.by, {"Expire", "End"}, d.at);
         for (const Due& d : broken) run_phases(id, *d.def, d.by, {"Remove", "End"}, d.at);
-        for (const Due& d : ticks) run_phases(id, *d.def, d.by, {"Tick"}, d.at);
+        for (const Due& d : ticks) run_phases(id, *d.def, d.by, {"Tick"}, d.at, d.stacks);
     }
 }
 

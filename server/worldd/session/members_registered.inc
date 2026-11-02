@@ -25,3 +25,5 @@
 #include "session/members/guild.inc"
 #include "session/members/fall.inc"
 #include "session/members/ground_crate.inc"
+#include "session/members/based_move.inc"
+#include "session/members/view_phases.inc"

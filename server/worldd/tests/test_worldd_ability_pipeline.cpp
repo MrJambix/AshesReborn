@@ -20,6 +20,7 @@
 //    A7                 Sprint's speed from its formula (1.3 at level 25) and on top of a buff, Dodge's cooldown beside the generic ones, no key collides
 //  Without a content.db the test says so and is skipped.
 // ============================================================================
+#include "test_registry.h"
 #include "ability_rig.h"
 #include "bootstrap/constants.h"
 #include "session/summoner_pets.h"
@@ -794,43 +795,6 @@ void test_a7_beside() {
 
 // ---- plan D2, stage 2: class resources, the Mend chain, the client's end of an ability ----------------------------------------------------
 
-void test_guard_stamina_recovery() {
-    std::printf("Guard releases restore stamina recovery, including quick taps and end requests\n");
-    for (int release = 0; release < 4; ++release) {
-        Rig r(5, 1);
-        CHECKF(r.ok(), "the Rogue rig: %s", r.problem.c_str());
-        if (!r.ok()) return;
-        r.know({"General_Guard"});
-        CHECK(r.trigger("General_Guard", 1.0) == Refusal::None, "Guard starts");
-        const int32_t client_id = r.next_client_id - 1;
-        if (release < 2) {
-            // Release before the item, or between the item and its delayed effect.
-            CHECK(r.pipe->cancel(client_id, release == 0 ? 1.01 : 1.31), "the quick release is accepted");
-        }
-        r.run_to(1.5);
-        CHECK(r.a7->trigger(content::kGuidDodge, 100, 1.5) == Refusal::None, "the first Dodge starts");
-        r.take();
-        r.run_to(2.3);
-        CHECK(r.a7->trigger(content::kGuidDodge, 101, 2.3) == Refusal::None, "the second Dodge starts after its cooldown");
-        r.take();
-        CHECK(r.a7->stamina() == 0 && r.pawn.stat(content::kGuidStamina) == 0, "two Dodges exhaust stamina on the server and client");
-        if (release == 2) {
-            CHECK(r.pipe->cancel(client_id, 2.3), "the active Guard release is accepted");
-        } else if (release == 3) {
-            int64_t instance = -1;
-            for (const auto& [id, item] : r.pawn.abilities)
-                if (item.ability_guid == r.ability("General_Guard")) instance = item.server_instance_id;
-            CHECK(instance >= 0 && r.pipe->end_request(static_cast<int32_t>(instance), 2.3), "the active Guard end request is accepted");
-        }
-        r.run_to(5.0);
-        r.run_to(6.0);   // A7's next tick follows the pipeline's restoration of its recovery rate.
-        CHECKF(r.pawn.effect(r.effect("General_Guard")) == nullptr, "release %d leaves no Guard effect", release);
-        CHECKF(near(r.pawn.stat(content::kGuidStaminaRegeneration), 5.0, 1e-6), "release %d restores the replicated recovery rate", release);
-        CHECKF(r.a7->stamina() > 0 && r.pawn.stat(content::kGuidStamina) > 0, "release %d recovers from zero on the server and client", release);
-        CHECK(r.pawn.broken.empty(), "every ability update applies");
-    }
-}
-
 void test_class_resources() {
     std::printf("class resources are held stats that move by their regeneration\n");
     constexpr int64_t kFocus = 6064633175093543338ll;   // the Ranger's Focus
@@ -1506,6 +1470,7 @@ static void test_summoner_completion() {
         CHECK(r.pawn.broken.empty(), "cancelling keeps the replicated arrays valid");
     }
 }
+#include "ability_pipeline_registered.inc"
 
 int main() {
     if (!real_db_present()) {
@@ -1534,7 +1499,6 @@ int main() {
     test_regeneration();
     test_movement();
     test_a7_beside();
-    test_guard_stamina_recovery();
     test_class_resources();
     test_mend_chain();
     test_cleric_divine_power();
@@ -1544,6 +1508,7 @@ int main() {
     test_cleric_divine_casts();
     test_end_request();
     test_summoner_completion();
+    g_fail += aoc_tests::run();   // every check registered in ability_pipeline_registered.inc
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

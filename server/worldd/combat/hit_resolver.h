@@ -86,13 +86,6 @@ struct ResolvedMod {
     double  value = 0;      // the formula's value: a loss is negative
 };
 
-struct Resolved {
-    uint8_t                  flags = 0;     // stats::kHitMiss | kHitBlock | kHitCrit (Lethal is the applier's)
-    std::vector<ResolvedMod> mods;
-    double                   threat = 0;    // what a damaging hit adds to the target's threat table
-    bool miss() const { return (flags & stats::kHitMiss) != 0; }
-};
-
 /// The number a session's own dice (its abilities' hit, block and critical rolls, RandDouble) start from.  `world_seed` is the one number the whole run starts from (worldd draws a new one on
 /// every start unless --combat-seed names it); 0, a test's world, keeps the plain function of the player id.  A player id is never used twice in a run, so a new login rolls a new sequence too.
 inline uint64_t session_dice_seed(uint64_t world_seed, uint64_t player_id) {
@@ -104,6 +97,13 @@ inline uint64_t session_dice_seed(uint64_t world_seed, uint64_t player_id) {
     return seed != 0 ? seed : 1;
 }
 
+struct Resolved {
+    uint8_t                  flags = 0;     // stats::kHitMiss | kHitBlock | kHitCrit (Lethal is the applier's)
+    std::vector<ResolvedMod> mods;
+    double                   threat = 0;    // what a damaging hit adds to the target's threat table
+    bool miss() const { return (flags & stats::kHitMiss) != 0; }
+};
+
 /// What a hit leaves on an actor that is not its caster: an effect with its numbers worked out as the caster is now.
 struct LandedEffect {
     const abilities::EffectDef*   def = nullptr;
@@ -112,6 +112,8 @@ struct LandedEffect {
     double                        seconds = -1;   // < 0: it has no end
     std::vector<stats::EffectMod> mods;           // for one stack
     double                        shield = 0;     // a TempHealth mod's amount
+    double                        extension = -1;     // ExtendDuration: the seconds one more application adds (ExtensionAmount); < 0: none worked out, refreshed in full
+    double                        extended_max = 0;   // ... the most seconds an extended instance has left (ExtendedMaximum); 0: no limit
 };
 
 class HitResolver {

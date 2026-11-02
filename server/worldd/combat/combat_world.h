@@ -556,7 +556,7 @@ private:
     std::map<uint64_t, uint64_t> pet_stand_downs_;
     double pet_regen_at_ = 0;
     /// The effect's hits of the phases, on its holder.
-    void  run_phases(uint64_t holder, const abilities::EffectDef& def, uint64_t by, std::initializer_list<const char*> phases, double now);
+    void  run_phases(uint64_t holder, const abilities::EffectDef& def, uint64_t by, std::initializer_list<const char*> phases, double now, int stacks = 1);
     /// A creature's hit landed on a pet: its effects react (Brace) and what damage breaks, breaks.
     void  pet_was_hit(Npc& pet, const IncomingHit& hit, double taken, double now);
     double incoming_mult(const Npc& n, const HitOrigin* origin, uint64_t attacker) const;

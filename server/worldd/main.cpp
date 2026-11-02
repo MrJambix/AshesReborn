@@ -24,6 +24,7 @@
 #include "protocol/server_guid_allocator.h"
 #include "session/guild_saver.h"
 #include "session/player_world.h"
+#include "session/shared_updates.h"
 #include "session/gm_travel.h"
 #include "quest/quest_service.h"
 #include "session/position_saver.h"
@@ -399,6 +400,18 @@ int main(int argc, char** argv) {
     app.add_flag("--no-view-spread", no_view_spread,
                  "the kill switch for the spread of the players' view passes: each player's passes land on the tick its first pass fell on (players who join together then pass together)")
         ->envname("AOC_NO_VIEW_SPREAD");
+    unsigned view_threads = 4;
+    CLI::Option* view_threads_option = app.add_option("--view-threads", view_threads,
+                   "the threads that run the players' view passes side by side, the tick's own included (0 to 8): with 1 or more the tick runs every session's own work, then all the due passes at once "
+                   "with the world's registry frozen, then every session's flush (session/view_pool.h); 1 runs the passes in order on the tick's own thread. 0: each session's work, view and "
+                   "flush in turn, as before. The default is 4. Needs --tick-hz 10 or more (--tick-hz 0, the old loop, runs no threads and refuses an asked-for number); more threads than the machine has "
+                   "cores less two are not started (at least one is)")
+        ->envname("AOC_VIEW_THREADS")->check(CLI::Range(0, static_cast<int>(kViewWorkers)))->capture_default_str();
+    std::string share_updates_text = "on";
+    app.add_option("--share-updates", share_updates_text,
+                   "on, off or verify: build the change of a mob once for every player who holds it in the same state, and send each of them that update (session/shared_updates.h); "
+                   "verify also builds one shared update in eight the plain way and compares the bytes (a difference is logged and turns sharing off). Off sends what every player's own update builds")
+        ->envname("AOC_SHARE_UPDATES")->check(CLI::IsMember({"on", "off", "verify"}))->capture_default_str();
     int move_ack_gap_ms = 100;
     app.add_option("--move-ack-gap-ms", move_ack_gap_ms,
                    "the pace of the answers to a player's good moves: the latest good move of a tick is answered when more than this many milliseconds have gone by since the last answer, "
@@ -411,6 +424,13 @@ int main(int argc, char** argv) {
         ->capture_default_str();
     CLI11_PARSE(app, argc, argv);
     if (!rates::valid(exp_rate)) { spdlog::error("--exp-rate must be finite and between 0 and 1000"); return 1; }
+    if (view_threads > 0 && tick_hz == 0) {
+        if (view_threads_option->count() > 0) {   // asked for, on the command line or in AOC_VIEW_THREADS: the old loop has no phases to run the passes in
+            std::fprintf(stderr, "--view-threads needs the fixed-rate tick (--tick-hz 10 or more): the old loop (--tick-hz 0) has no phases to run the passes in\n");
+            return 2;
+        }
+        view_threads = 0;   // (the default gives way to the old loop that --tick-hz 0 asks for)
+    }
     if (tick_hz != 0 && (tick_hz < TickSchedule::kMinHz || tick_hz > TickSchedule::kMaxHz)) {
         std::fprintf(stderr, "--tick-hz must be 0 (the old loop) or %d to %d, not %d\n", TickSchedule::kMinHz, TickSchedule::kMaxHz, tick_hz);
         return 2;
@@ -576,6 +596,18 @@ int main(int argc, char** argv) {
     } else {
         spdlog::info("[tick] --tick-hz 0: the old loop, every session's tick and sends after every datagram (and every 10 ms without one)");
     }
+    // the update of a mob built once for the players who hold it in the same state (session/shared_updates.h); on unless --share-updates says otherwise
+    const ShareMode share_mode = SharedUpdates::parse(share_updates_text);
+    std::shared_ptr<SharedUpdates> shared_updates;
+    if (share_mode != ShareMode::Off) shared_updates = std::make_shared<SharedUpdates>(share_mode);
+    {
+        ActorView::Config view = players.view_config();
+        view.shared = shared_updates;   // (none for off: the test programs' environment switch is not read here)
+        players.set_view_config(view);
+    }
+    spdlog::info("[share-updates] {}", share_mode == ShareMode::Off ? "off (--share-updates off): every player's view builds the changes it sends (the default, on, builds a mob's change once for the players who hold it in the same state)"
+                 : share_mode == ShareMode::On ? "on: a mob's change is built once for the players who hold it in the same state (--share-updates off: every player's view builds its own)"
+                                               : "verify: shared, and one shared update in eight is built the plain way as well and compared; a difference turns sharing off");
     players.set_position_sink(&saver);
     players.set_gm_commands(gm_commands);
     players.set_reactions_enabled(!no_reactions);
@@ -821,6 +853,21 @@ int main(int argc, char** argv) {
     spdlog::info("moves are checked: at most {:.0f} cm/s along the ground; positions are saved every {} s and when a session ends",
                  movement.limits.max_speed, movement.save_interval.count());
     endpoint_config.players = &players;
+    {   // the players' view passes on several threads (session/view_pool.h): never more threads than the machine has cores less two (the network thread and the game's)
+        const unsigned cores = std::thread::hardware_concurrency();
+        const unsigned room = cores > 3 ? cores - 2 : 1;
+        endpoint_config.view_threads = std::min(view_threads, std::max(room, 1u));
+        if (endpoint_config.view_threads != view_threads) {
+            if (view_threads_option->count() > 0) spdlog::warn("[view-threads] {} asked for, {} used: this machine has {} cores", view_threads, endpoint_config.view_threads, cores);
+            else spdlog::info("[view-threads] the default of {} is lowered to {}: this machine has {} cores, and the passes get no more threads than its cores less two (at least one)", view_threads, endpoint_config.view_threads, cores);
+        }
+        if (endpoint_config.view_threads == 0) {
+            spdlog::info("[view-threads] off: each session's work, view and flush run in turn on the network thread (--view-threads 0, or --tick-hz 0; --view-threads N runs the passes of the players' views on N threads)");
+        } else {
+            spdlog::info("[view-threads] {}: the tick runs every session's own work, then all the due passes of the players' views at once on {} thread(s), the network thread's included, then every flush{}",
+                         endpoint_config.view_threads, endpoint_config.view_threads, endpoint_config.view_threads == 1 ? " (one thread: the passes run in order here)" : "");
+        }
+    }
 // C-Y-B and C-O-A
 
     std::atomic<int> exit_code{0};
@@ -923,6 +970,9 @@ int main(int argc, char** argv) {
     std::optional<TickLoop> tick_loop;
     if (tick_hz > 0) tick_loop.emplace(TickLoop::Config{tick_hz, 4, 256}, Clock::now());
     auto window_start = Clock::now();
+    SharedUpdates::Stats share_before;   // (--share-updates: the counts of the interval are the difference to these)
+    double   view_busy_before = 0;       // (--view-threads: the same for the threads' time in passes)
+    uint64_t view_jobs_before = 0;
     const auto log_stats = [&](Clock::time_point at) {
         const double window_s = std::chrono::duration<double>(at - window_start).count();
         if (loop_stats_seconds <= 0 || window_s < loop_stats_seconds) return;
@@ -947,6 +997,21 @@ int main(int argc, char** argv) {
                      profile.opens, profile.update_us / 1000.0, profile.updates, profile.update_build_us / 1000.0, profile.flush_us / 1000.0,
                      late_ms, ls.caught_up, ls.skipped, ls.restarts,
                      profile.top_name.empty() ? std::string("none") : profile.top_name, profile.top_us / 1000.0, profile.top_view_us / 1000.0, profile.top_awake, profile.top_dormant);
+        if (shared_updates) {
+            const SharedUpdates::Stats now = shared_updates->stats();
+            spdlog::info("[share] {:.1f} s: mode={} updates built once for several players: used={} built={}; built for one player only={}; checked={} differed={}", window_s,
+                         SharedUpdates::name(shared_updates->mode()), now.hits - share_before.hits, now.builds - share_before.builds, now.private_builds - share_before.private_builds,
+                         now.verified - share_before.verified, now.mismatches - share_before.mismatches);
+            share_before = now;
+        }
+        if (endpoint.view_threads() > 0) {
+            const double busy = endpoint.view_busy_seconds();
+            const uint64_t jobs = endpoint.view_jobs();
+            spdlog::info("[view-threads] {:.1f} s: {} thread(s) ran the players' views: {:.1f} ms of thread time in {} jobs ({:.1f} us each; view= in the [tick] line is this time added up, not wall time)", window_s,
+                         endpoint.view_threads(), (busy - view_busy_before) * 1000.0, jobs - view_jobs_before, jobs > view_jobs_before ? (busy - view_busy_before) * 1e6 / static_cast<double>(jobs - view_jobs_before) : 0.0);
+            view_busy_before = busy;
+            view_jobs_before = jobs;
+        }
         if (tick_loop) tick_loop->schedule().reset_late_max();
         loop_stats = LoopStats{};
         profile.restart();
