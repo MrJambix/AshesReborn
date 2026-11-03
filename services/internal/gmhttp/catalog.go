@@ -49,13 +49,14 @@ var retired = regexp.MustCompile(`(?i)^(obsolete|notused|retired|zlegacy|test_)|
 // Items are named by Guid, because three names are shared and a name would be refused. Quests are named by name: QuestBook::find
 // reads a Guid only below 19 digits, and every Guid in the data has 19. Everything else is unique by name.
 var catalogQueries = map[string]string{
-	"item":    `SELECT guid, name, '', level, max_stack_size, 0 FROM item`,
-	"recipe":  `SELECT name, name, '', tier, 0, 0 FROM craft_recipe`,
-	"quest":   `SELECT name, name, '', level, 0, disabled FROM quest`,
-	"node":    `SELECT name, name, node_name, 0, 0, NOT levelable FROM city_node`,
-	"station": `SELECT name, name, CASE WHEN display_name LIKE '%\_Label' ESCAPE '\' THEN '' ELSE display_name END, 0, 0, blacklisted FROM craft_station_def`,
-	"plot":    `SELECT DISTINCT name, name, '', 0, 0, 0 FROM service_plot WHERE name LIKE '%Service%'`,
-	"line":    `SELECT DISTINCT skill_line_name, skill_line_name, '', 0, 0, 0 FROM item_weapon WHERE skill_line_name <> ''`,
+	"item":       `SELECT guid, name, '', level, max_stack_size, 0 FROM item`,
+	"recipe":     `SELECT name, name, '', tier, 0, 0 FROM craft_recipe`,
+	"quest":      `SELECT name, name, '', level, 0, disabled FROM quest`,
+	"node":       `SELECT name, name, node_name, 0, 0, NOT levelable FROM city_node`,
+	"station":    `SELECT name, name, CASE WHEN display_name LIKE '%\_Label' ESCAPE '\' THEN '' ELSE display_name END, 0, 0, blacklisted FROM craft_station_def`,
+	"plot":       `SELECT DISTINCT name, name, '', 0, 0, 0 FROM service_plot WHERE name LIKE '%Service%'`,
+	"line":       `SELECT DISTINCT skill_line_name, skill_line_name, '', 0, 0, 0 FROM item_weapon WHERE skill_line_name <> ''`,
+	"profession": `SELECT name, name, '', 0, 0, 0 FROM profession`,
 }
 
 func (c *Catalog) load() {

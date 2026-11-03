@@ -656,4 +656,224 @@ PlayerSession::GmWeaponResult PlayerSession::gm_set_weapon_xp(Connection& conn, 
     return r;
 }
 
+// ============================================================================================================================
+//  the GM tools' Adventuring, professions and Health: what a kill, a harvest or a level gained sends, with no kill, harvest or scroll behind it
+// ============================================================================================================================
+
+PlayerSession::GmProgressResult PlayerSession::gm_adventuring(Connection& conn, GmAdventuring change, int64_t amount, Clock::time_point now, const std::string& by) {
+    GmProgressResult r;
+    r.what = "Adventuring";
+    r.xp_before = r.xp_after = progress_.xp;
+    r.level_before = r.level_after = progress_.level;
+    r.debt_before = r.debt_after = progress_.debt;
+    const leveling::LevelCurve* curve = world_ ? world_->level_curve() : nullptr;
+    if (!curve) {
+        r.refusal = "this world has no Adventuring curve (its content.db lacks it)";
+        return r;
+    }
+    const std::span<const content::AutoGrant> grants = world_->auto_grants();
+    leveling::XpResult xp;
+    xp.before = xp.after = progress_;
+    switch (change) {
+        case GmAdventuring::AddXp:
+            if (amount < 1 || amount > curve->max_xp()) {
+                r.refusal = "the XP must be 1 to " + std::to_string(curve->max_xp());
+                return r;
+            }
+            xp = leveling::add_xp(*curve, grants, progress_, amount);
+            break;
+        case GmAdventuring::SetLevel: {
+            if (amount < 1 || amount > curve->cap()) {
+                r.refusal = "a level is 1 to " + std::to_string(curve->cap());
+                return r;
+            }
+            const int level = static_cast<int>(amount);
+            if (level <= progress_.level) {
+                r.refusal = name() + " is level " + std::to_string(progress_.level) + (level == progress_.level ? " already" : ": a level can only be raised (the ranks the higher levels granted would stay)");
+                return r;
+            }
+            leveling::Progress from = progress_;   // the debt is not paid by a level set by hand: it stays as it was
+            from.debt = 0;
+            xp = leveling::add_xp(*curve, grants, from, curve->xp_for(level) - from.xp);
+            xp.before = progress_;
+            xp.after.debt = progress_.debt;
+            break;
+        }
+        case GmAdventuring::ClearDebt:
+            if (progress_.debt == 0) {
+                r.refusal = name() + " has no experience debt";
+                return r;
+            }
+            xp.after.debt = 0;
+            break;
+    }
+    if (!xp.changed()) {
+        r.refusal = name() + " is at the most Adventuring XP a character holds";
+        return r;
+    }
+    if (!room_for(4 + grants.size())) {
+        r.refusal = name() + "'s connection is busy: try again in a moment";
+        return r;
+    }
+    progress_ = xp.after;
+    progress_changed_ = true;
+    const bool leveled = xp.leveled();
+    if (leveled) levels_gained_ += static_cast<size_t>(xp.after.level - xp.before.level);
+    bootstrap::AbilityChange rank_effects;
+    std::vector<repl::SkillOnActionbar> skill_updates;
+    if (leveled) finish_level_up(xp, false, now, rank_effects, skill_updates);
+    const int64_t total = progress_.xp, debt = progress_.debt;
+    queue("XPTracker", [total, debt](bootstrap::PlayerBootstrap& pb) -> std::optional<bootstrap::Send> {
+        if (!pb.set_progress(total, debt)) return std::nullopt;
+        return pb.leveling_update();
+    }, conn, /*must_build=*/true);
+    if (leveled) {
+        const int level = progress_.level;
+        queue("BroadcastPlayLevelUpEffects", [level](bootstrap::PlayerBootstrap& pb) { return pb.level_up_broadcast(content::kGuidAdventuring, level); }, conn);
+        queue("pawn state", [](bootstrap::PlayerBootstrap& pb) { return pb.pawn_state_update("level and stats"); }, conn, /*must_build=*/true);
+    }
+    for (const repl::SkillOnActionbar& u : skill_updates) {
+        queue("ClientUpdateSkillOnActionbar", [u](bootstrap::PlayerBootstrap& pb) { return pb.skill_on_actionbar(u); }, conn, /*must_build=*/true);
+    }
+    r.ok = true;
+    r.xp_after = progress_.xp;
+    r.level_after = progress_.level;
+    r.debt_after = progress_.debt;
+    spdlog::info("[gm] {}: Adventuring changed by {}: {} XP, level {}, debt {} -> {} XP, level {}, debt {}", name(), by, r.xp_before, r.level_before, r.debt_before, r.xp_after, r.level_after,
+                 r.debt_after);
+    hand_over_progress(leveled ? "a level-up" : "a game master changed the experience");
+    return r;
+}
+
+PlayerSession::GmProgressResult PlayerSession::gm_profession(Connection& conn, int64_t profession, GmProfession change, int64_t amount, Clock::time_point now, const std::string& by) {
+    (void)now;
+    GmProgressResult r;
+    if (!professions_.valid()) {
+        r.refusal = "this world has no professions (its content.db lacks them)";
+        return r;
+    }
+    const professions::Book& book = *professions_.book();
+    std::vector<const professions::Profession*> targets;
+    if (profession == 0) {
+        for (const professions::Profession& p : book.all()) targets.push_back(&p);
+        r.what = "every profession";
+    } else if (const professions::Profession* p = book.find(profession)) {
+        targets.push_back(p);
+        r.what = p->name;
+        const professions::State s = professions_.state(p->guid);
+        r.xp_before = r.xp_after = s.xp;
+        r.level_before = r.level_after = s.level;
+        r.tier_before = r.tier_after = book.tier(s.tier).name;
+    } else {
+        r.refusal = "no profession has the record " + std::to_string(profession);
+        return r;
+    }
+    const int top_level = book.tier(professions::kTiers - 1).max_level;
+    if (change == GmProfession::AddXp && amount < 1) {
+        r.refusal = "the XP must be 1 or more";
+        return r;
+    }
+    if (change == GmProfession::SetLevel && (amount < 1 || amount > top_level)) {
+        r.refusal = "a profession's level is 1 to " + std::to_string(top_level);
+        return r;
+    }
+    if (change == GmProfession::SetTier && (amount < 0 || amount >= professions::kTiers)) {
+        r.refusal = "a certification is 0 (" + book.tier(0).name + ") to " + std::to_string(professions::kTiers - 1) + " (" + book.tier(professions::kTiers - 1).name + ")";
+        return r;
+    }
+    if (!room_for(2 + targets.size())) {
+        r.refusal = name() + "'s connection is busy: try again in a moment";
+        return r;
+    }
+    professions::Professions after = professions_;
+    for (const professions::Profession* p : targets) {
+        const professions::State was = after.state(p->guid);
+        if (change == GmProfession::AddXp) {
+            after.add_xp(p->guid, amount);
+        } else if (change == GmProfession::SetLevel) {
+            const int level = static_cast<int>(amount);
+            int tier = 0;   // the lowest certification whose cap reaches the level
+            while (tier + 1 < professions::kTiers && book.tier(tier).max_level < level) ++tier;
+            after.set_state(p->guid, professions::State{tier, level, p->curve.xp_for(level)});
+        } else {
+            const int tier = static_cast<int>(amount);
+            const professions::Tier& t = book.tier(tier);
+            const int level = std::clamp(was.level, t.min_level, t.max_level);
+            after.set_state(p->guid, professions::State{tier, level, level == was.level ? was.xp : p->curve.xp_for(level)});
+        }
+    }
+    const std::vector<professions::Change> changes = set_professions(after);
+    if (changes.empty()) {
+        r.refusal = "nothing changes: " + name() + "'s " + r.what + (change == GmProfession::AddXp ? " holds the most XP its certification allows" : " is there already");
+        return r;
+    }
+    r.changed = static_cast<int>(changes.size());
+    if (profession == 0) {   // the first that moved stands for them all
+        const professions::Change& c = changes.front();
+        r.xp_before = c.before.xp, r.xp_after = c.after.xp;
+        r.level_before = c.before.level, r.level_after = c.after.level;
+        r.tier_before = book.tier(c.before.tier).name, r.tier_after = book.tier(c.after.tier).name;
+    } else {
+        const professions::State s = professions_.state(profession);
+        r.xp_after = s.xp;
+        r.level_after = s.level;
+        r.tier_after = book.tier(s.tier).name;
+    }
+    const int64_t total = progress_.xp, debt = progress_.debt;
+    const std::vector<ProfessionWire> wire = profession_wire(changes);
+    queue("XPTracker", [total, debt, wire](bootstrap::PlayerBootstrap& pb) -> std::optional<bootstrap::Send> {
+        if (!pb.set_progress(total, debt)) return std::nullopt;
+        for (const ProfessionWire& w : wire) {
+            if (!pb.set_profession(w.leveling_type, w.xp, w.certification)) return std::nullopt;
+        }
+        return pb.leveling_update();
+    }, conn, /*must_build=*/true);
+    queue_profession_level_ups(conn, changes);
+    r.ok = true;
+    spdlog::info("[gm] {}: {} changed by {}: {} profession(s) moved; {} level {} ({}) -> level {} ({}), {} XP", name(), r.what, by, r.changed, profession == 0 ? "the first" : "it", r.level_before,
+                 r.tier_before, r.level_after, r.tier_after, r.xp_after);
+    hand_over_progress("a game master changed a profession");
+    return r;
+}
+
+PlayerSession::GmHealResult PlayerSession::gm_heal(Connection& conn, Clock::time_point now, const std::string& by) {
+    (void)now;
+    GmHealResult r;
+    if (dead_) {
+        r.refusal = name() + " is dead: the respawn gives the Health back";
+        return r;
+    }
+    if (!stats_ || !stats_->started()) {
+        r.refusal = name() + "'s stats have not started yet: try again in a moment";
+        return r;
+    }
+    if (!room_for(2)) {
+        r.refusal = name() + "'s connection is busy: try again in a moment";
+        return r;
+    }
+    const auto value = [&](int64_t record) {
+        const stats::StatValue* v = stats_->find(record);
+        return v ? static_cast<double>(v->value) : 0.0;
+    };
+    r.health_before = value(content::kGuidHealth);
+    r.mana_before = value(content::kGuidMana);
+    // as a level gained gives them back (finish_level_up)
+    if (const stats::StatValue* hp = stats_->find(content::kGuidMaxHealth)) set_current_value(content::kGuidHealth, hp->value);
+    if (const stats::StatValue* mp = stats_->find(content::kGuidMaxMana)) set_current_value(content::kGuidMana, mp->value);
+    if (abilities_) {
+        bootstrap::AbilityChange refill;
+        abilities_->refill_stamina(refill);
+        stats_->set_current(content::kGuidStamina, static_cast<float>(abilities_->stamina()));
+        if (pb_.apply_ability_change(refill)) abilities_dirty_ = true;
+    } else if (const stats::StatValue* sp = stats_->find(content::kGuidMaxStamina)) {
+        set_current_value(content::kGuidStamina, sp->value);
+    }
+    queue("pawn state", [](bootstrap::PlayerBootstrap& pb) { return pb.pawn_state_update("a game master's heal"); }, conn, /*must_build=*/true);
+    r.ok = true;
+    r.health = value(content::kGuidHealth);
+    r.mana = value(content::kGuidMana);
+    spdlog::info("[gm] {}: healed by {}: Health {:.0f} -> {:.0f}, Mana {:.0f} -> {:.0f}", name(), by, r.health_before, r.health, r.mana_before, r.mana);
+    return r;
+}
+
 }}  // namespace aoc::worldd

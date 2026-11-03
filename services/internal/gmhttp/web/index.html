@@ -9,6 +9,8 @@
 <script src="commands.js" defer></script>
 <script src="app.js" defer></script>
 <script src="tools.js" defer></script>
+<script src="progression.js" defer></script>
+<script src="map.js" defer></script>
 </head>
 <body>
 
@@ -37,9 +39,11 @@
 
   <nav class="nav" aria-label="Sections">
     <button data-view="overview">Overview</button>
+    <button data-view="map">Map</button>
     <button data-view="players">Players</button>
     <button data-view="give-items">Give items</button>
     <button data-view="give-money">Give money</button>
+    <button data-view="progression">Progression</button>
     <button data-view="find">Find</button>
     <button data-view="places">Places</button>
     <button data-view="commands">Commands</button>
@@ -77,18 +81,29 @@
           </table></div>
         </div>
         <form id="give-form" class="card sticky" novalidate>
-          <label for="give-player">Player</label>
+          <label for="give-player">Give to</label>
           <input id="give-player" value="self">
+          <div class="presets who" data-for="give-player"></div>
           <label>Item</label>
           <p id="give-selected" class="muted">Choose one from the list.</p>
           <label for="give-count">Count</label>
           <input id="give-count" type="number" min="1" max="100000" step="1" value="1">
           <div id="give-count-presets" class="presets"></div>
-          <label for="give-rarity">Rarity</label>
-          <select id="give-rarity">
-            <option value="">The item's own</option>
-            <option>Common</option><option>Uncommon</option><option>Rare</option><option>Heroic</option><option>Epic</option><option>Legendary</option><option>Artifact</option>
-          </select>
+          <label>Quality</label>
+          <div id="give-quality-mode" class="presets" role="group" aria-label="Quality">
+            <button type="button" data-mode="" aria-pressed="true">The item's own</button>
+            <button type="button" data-mode="rarity" aria-pressed="false">A rarity</button>
+            <button type="button" data-mode="quality" aria-pressed="false">An exact quality</button>
+          </div>
+          <div id="give-quality-box" hidden>
+            <div class="pair">
+              <div><label for="give-rarity">Rarity</label><select id="give-rarity"></select></div>
+              <div><label for="give-quality">Quality (1-200)</label><input id="give-quality" type="number" min="1" max="200" step="1" value="1"></div>
+            </div>
+            <input id="give-quality-range" class="range" type="range" min="1" max="200" step="1" value="1" aria-label="Quality">
+            <div id="give-quality-scale" class="q-scale" aria-hidden="true"></div>
+            <p id="give-quality-note" class="muted small"></p>
+          </div>
           <button id="give-submit" class="primary wide" type="submit" disabled>Give</button>
           <p id="give-problem" class="muted small"></p>
           <p id="give-result" class="small" role="status"></p>
@@ -99,8 +114,9 @@
     <section id="view-give-money" class="view" hidden>
       <h2>Give money</h2>
       <form id="money-form" class="card narrow" novalidate>
-        <label for="money-player">Player</label>
+        <label for="money-player">Give to</label>
         <input id="money-player" value="self">
+        <div class="presets who" data-for="money-player"></div>
         <div class="coins">
           <div><label for="money-gold">Gold</label><input id="money-gold" type="number" min="0" max="1000" step="1"></div>
           <div><label for="money-silver">Silver</label><input id="money-silver" type="number" min="0" step="1"></div>
@@ -113,6 +129,48 @@
         <p id="money-result" class="small" role="status"></p>
         <p class="muted small">A purse holds 1,000 gold at most. Anything past that is not added.</p>
       </form>
+    </section>
+
+    <section id="view-progression" class="view" hidden>
+      <h2>Progression</h2>
+      <form id="prog-form" class="row prog-row">
+        <input id="prog-player" value="self" aria-label="Player">
+        <button class="primary" type="submit">Show</button>
+        <button id="prog-heal" type="button">Heal</button>
+      </form>
+      <p id="prog-note" class="notice" hidden></p>
+      <div id="prog-tabs" class="presets tabs" role="group" aria-label="Category"></div>
+      <div class="split prog">
+        <div id="prog-table" class="scroll"></div>
+        <form id="prog-card" class="card sticky" novalidate></form>
+      </div>
+    </section>
+
+    <section id="view-map" class="view map-view" hidden>
+      <div class="map-bar">
+        <h2>Map</h2>
+        <span id="map-status" class="pill" role="status">Not live</span>
+        <span id="map-counts" class="muted small"></span>
+        <span class="spacer"></span>
+        <div id="map-layers" class="presets" role="group" aria-label="Layers"></div>
+        <button id="map-fit" type="button" title="Show the whole world">Fit</button>
+        <button id="map-rotate" type="button" title="Turn the map a quarter">Rotate</button>
+      </div>
+      <div class="map-wrap">
+        <div class="map-stage">
+          <canvas id="map-canvas" aria-label="Live map of the world"></canvas>
+          <div id="map-tip" class="map-tip" hidden></div>
+          <p class="map-help muted small">Drag to pan, scroll to zoom, click a dot. Shift+click the ground to teleport yourself there.</p>
+        </div>
+        <aside class="map-side">
+          <div id="map-panel" class="card" hidden></div>
+          <h3 class="muted small">Players online</h3>
+          <input id="map-filter" type="search" placeholder="Find a player" aria-label="Find a player on the map">
+          <ul id="map-players" class="map-list"></ul>
+          <h3 class="muted small">Nodes</h3>
+          <ul id="map-nodes" class="map-list"></ul>
+        </aside>
+      </div>
     </section>
 
     <section id="view-find" class="view" hidden>
