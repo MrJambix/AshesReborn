@@ -341,6 +341,11 @@ Delivery CombatWorld::apply_hit_to_player(uint64_t target, uint64_t attacker, co
         const stats::StatValue* max = r.mods[i].stat_guid == content::kGuidHealth ? s.find(content::kGuidMaxHealth) : r.mods[i].stat_guid == content::kGuidMana ? s.find(content::kGuidMaxMana) : nullptr;
         d.effective[i] = cur && max && r.mods[i].value > 0 ? std::clamp(r.mods[i].value, 0.0, std::max(0.0, static_cast<double>(max->value) - cur->value)) : r.mods[i].value;
     }
+    double healed = 0;
+    for (size_t i = 0; i < r.mods.size(); ++i) {
+        if (r.mods[i].stat_guid == content::kGuidHealth && d.effective[i] > 0) healed += d.effective[i];
+    }
+    if (healed > 0) heal_threat(attacker, target, healed, now);   // the creatures fighting him notice his healer
     p->receive_hit(in, now);
     return d;
 }
@@ -594,6 +599,21 @@ double CombatWorld::shield_of(uint64_t npc_actor, double now) const {
         if (s.amount > 0 && (s.until <= 0 || s.until > now)) total += s.amount;
     }
     return total;
+}
+
+void CombatWorld::heal_threat(uint64_t healer, uint64_t healed, double amount, double now) {
+    if (!(amount > 0) || !std::isfinite(amount) || healer == 0) return;
+    double tg = 1.0;
+    if (data().ids().threat_generation) {
+        if (Fighter* f = fighter_of(healer)) {
+            if (const stats::StatValue* v = f->stats().find(data().ids().threat_generation); v && v->value > 0) tg = v->value;
+        }
+    }
+    const double threat = amount * kHealThreatShare * tg;
+    for (auto& [id, n] : npcs_) {
+        if (!n || n->dead || is_pet(id) || !n->ai.threat().has(healed)) continue;
+        n->ai.notice(healer, threat, now);
+    }
 }
 
 void CombatWorld::add_threat(uint64_t npc_actor, uint64_t attacker, double amount, double now) {

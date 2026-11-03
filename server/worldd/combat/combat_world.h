@@ -391,6 +391,11 @@ public:
     std::string next_attack_name(uint64_t actor_id) const;
     /// Gives an NPC combatant a hand: threat from outside (a test, a pet).
     void add_threat(uint64_t npc_actor, uint64_t attacker, double amount, double now);
+    /// The share of an effective heal that becomes threat (modelled: the data names no heal threat; 3 of 2,390 hits have a threat formula, none a heal).
+    static constexpr double kHealThreatShare = 0.5;
+    /// `healer` healed `healed` by `amount` (the Health that took effect): every living creature that holds `healed` on its threat table notices the healer by
+    /// kHealThreatShare of it, times the healer's ThreatGeneration (as damage's threat is).  A creature fighting no one the heal reached hears nothing.
+    void heal_threat(uint64_t healer, uint64_t healed, double amount, double now);
 // C O A - Cyb
 
     /// A shield on an NPC (an effect's TempHealth amount): damage takes from the oldest first; it ends at `now + seconds` (0: when used up).

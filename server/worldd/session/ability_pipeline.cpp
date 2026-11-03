@@ -1383,7 +1383,8 @@ void AbilityPipeline::apply_hit_on_targets(AbilityChange& c, const HitDef& hit, 
             auto after = tf->stats().evaluation(tf->worn(), after_err, true);
             std::vector<combat::LandedEffect> landed;
             combat_->resolver().effects_with(*evaluation_, host, after ? after.get() : target_eval.get(), ti.surface_distance_cm, hostile, ti.relation == combat::Relation::Neutral, hit, meta, landed);
-            for (const combat::LandedEffect& e : landed) {
+            for (combat::LandedEffect& e : landed) {
+                if (e.seconds < 0 && others_endless_seconds_ >= 0) e.seconds = others_endless_seconds_;   // (a placed zone's endless effect on another: land_placed_zone_hits)
                 if (e.shield > 0) combat_->shield(id, e.shield, std::max(0.0, e.seconds), t);
                 combat_->effect(id, e, t);
             }
@@ -1719,6 +1720,10 @@ void AbilityPipeline::apply_hit_here(AbilityChange& c, const HitDef& hit, double
         outs.push_back({m.stat_mod_guid, static_cast<float>(amount), static_cast<float>(effective)});
         event.mods[m.stat_guid] += amount;
         event.effective[m.stat_guid] += effective;
+    }
+    if (combat_) {
+        const auto healed = event.effective.find(content::kGuidHealth);
+        if (healed != event.effective.end() && healed->second > 0) combat_->healed_self(healed->second, t);   // (modelled: a heal's threat, combat_world.h)
     }
     drop_evaluation();
     // [R: 6,955 requests of the retail captures] a hit the client asked for is confirmed when it has stat mods (the client draws their numbers), an
@@ -2417,7 +2422,8 @@ void AbilityPipeline::land_placed_zone_hits(AbilityChange& c, PlacedZone& z, con
     for (const int64_t guid : hits->second) {
         const HitDef* hit = catalog_->hit(guid);
         if (!hit) continue;
-        // an effect with no end stays only on the caster, whose runtime this zone can take it off: nothing tells another player's when the zone ends
+        // an effect with no end (Divine Flare's Shielding) stays on the caster until the zone ends, when its runtime takes it off; on the others the zone reaches it lands
+        // for what is left of the zone's life (modelled: nothing would end an endless effect on another actor, and the record has no OnEndOverlap hits)
         bool endless = false;
         for (const content::HitEffectRow& row : hit->effects) {
             const EffectDef* e = catalog_->effect(row.effect_guid);
@@ -2427,8 +2433,10 @@ void AbilityPipeline::land_placed_zone_hits(AbilityChange& c, PlacedZone& z, con
             }
         }
         std::vector<uint64_t> targets = enemies;
-        if (!endless) targets.insert(targets.end(), allies.begin(), allies.end());
+        targets.insert(targets.end(), allies.begin(), allies.end());
+        if (endless) others_endless_seconds_ = std::max(0.05, z.end_at - t);
         if (!targets.empty() && (hit->row.applicable_targets & (2 | 4 | 8 | 16)) != 0) apply_hit_on_targets(c, *hit, targets, t, src, nullptr);
+        others_endless_seconds_ = -1;
         if (caster_lands) apply_hit(c, *hit, t, true, src);
     }
     if (overlap) {

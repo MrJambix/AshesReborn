@@ -39,6 +39,8 @@ public:
     virtual void npc_effect_hit(uint64_t /*npc*/, int64_t /*hit_guid*/, int64_t /*effect_guid*/, double /*now*/) {}
     /// A Resurrect landed on a dead player.
     virtual void resurrect(uint64_t /*target_actor*/, double /*now*/) {}
+    /// The character healed itself by `amount` (the Health that took effect): the creatures fighting it notice the heal (CombatWorld::heal_threat).
+    virtual void healed_self(double /*amount*/, double /*now*/) {}
     /// The player's pet in the world (0: none).
     virtual uint64_t own_pet() const { return 0; }
     /// Seconds left of an effect record on the target (0: it is not on): what GetEffectRemainingDuration(GetTarget(), effect) reads.
@@ -92,6 +94,7 @@ public:
         else world_.apply_effect_to_npc(target_actor, e, self_.id(), world_time(now));
     }
     void resurrect(uint64_t target_actor, double now) override { world_.resurrect_player(target_actor, self_.id(), world_time(now)); }
+    void healed_self(double amount, double now) override { world_.heal_threat(self_.id(), self_.id(), amount, world_time(now)); }
     void remove_effects(uint64_t target_actor, const abilities::HitDef& hit, double now) override { world_.remove_effects_from_npc(target_actor, hit, world_time(now)); }
     void remove_effect(uint64_t target_actor, int64_t effect_guid, double now) override { world_.remove_npc_effect(target_actor, effect_guid, world_time(now)); }
     void npc_effect_hit(uint64_t npc, int64_t hit_guid, int64_t effect_guid, double now) override { world_.npc_effect_hit(npc, self_.id(), hit_guid, effect_guid, world_time(now)); }

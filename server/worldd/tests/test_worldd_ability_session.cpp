@@ -4127,6 +4127,107 @@ static void test_e1_cleric_helps_player() {
     CHECK(!a.h.s->abilities_failed() && !b.h.s->abilities_failed(), "(nothing failed)");
 }
 
+/// Communal Restoration (Self and Party in its mask): one request naming the caster, a party member and a stranger heals the caster and the member, not the stranger.
+static void test_e1_cleric_communal_restoration_party() {
+    std::printf("Communal Restoration reaches the Cleric's party, not a player outside it %s\n", kAftermathNote);
+    svc::Character cleric = bard25_bagged();
+    cleric.class_id = 3;
+    svc::Character member_rec = bard25_bagged();
+    member_rec.id = "bbec5c86eb101fe5f38c87f0fa22e7d1";
+    member_rec.name = "AshesPartyMember";
+    svc::Character stranger_rec = bard25_bagged();
+    stranger_rec.id = "cbec5c86eb101fe5f38c87f0fa22e7d2";
+    stranger_rec.name = "AshesStranger";
+    std::vector<uint64_t> wolves;
+    uint64_t far_wolf = 0, next_actor_id = 5000000;
+    bool ground = false;
+    auto prepare = [&](PlayerWorld& w) { spawn_wolves(w, wolves, far_wolf, 2, 24, 800, ground, next_actor_id); };
+    Run a(0, true, &cleric, prepare);
+    CHECK(ground && a.h.fx.world->combat(), "(a world with fights)");
+    if (!ground || !a.h.fx.world->combat()) return;
+    Run b(0, true, &member_rec, {}, a.h.fx.world.get());
+    Run c(0, true, &stranger_rec, {}, a.h.fx.world.get());
+    PlayerWorld& world = *a.h.fx.world;
+    combat::CombatWorld& cw = *world.combat();
+    const auto all = [&](double seconds) {
+        for (int i = 0; i < static_cast<int>(std::llround(seconds * 10)); ++i) {
+            a.play(0.1, false);
+            b.play(0.1, false);
+            c.play(0.1, false);
+            world.tick_world(a.now());
+        }
+    };
+    a.play(0.5, false);
+    b.play(0.5, false);
+    c.play(0.5, false);
+    phase_in(a);
+    phase_in(b);
+    phase_in(c);
+    all(1.0);
+    const bs::PlayerSetup sa = a.h.s->bootstrap().setup(), sb = b.h.s->bootstrap().setup(), sc = c.h.s->bootstrap().setup();
+    // the Cleric and the member form a party (the book's own rules: an invitation, then its acceptance)
+    const auto book = a.h.s->group_book_for_test();
+    CHECK(book != nullptr, "(parties are on)");
+    if (!book) return;
+    // (the book's own ends for the two characters, as a session's connect makes them: the masks read the book by character guid)
+    auto lead = book->connect(cleric.name, sa.character_guid, 3), joiner = book->connect(member_rec.name, sb.character_guid, 2);
+    const std::string asked = book->invite(*lead, member_rec.name, a.now());
+    const std::string joined = joiner->invitation ? book->accept(*joiner, joiner->invitation->group) : std::string("no invitation");
+    CHECKF(book->same_squad(sa.character_guid, sb.character_guid) && !book->same_group(sa.character_guid, sc.character_guid), "the Cleric and the member share a party, the stranger is in none (%s / %s)",
+           asked.c_str(), joined.c_str());
+    all(0.5);
+    const abilities::AbilityDef* cr = world.ability_catalog()->ability_named("Cleric_CommunalRestoration");
+    CHECK(cr != nullptr && !cr->hits.empty(), "(Communal Restoration is in the tables)");
+    if (!cr || cr->hits.empty()) return;
+    a.h.s->teach_ability(cr->row.guid);
+    int64_t hit = 0, targeting = 0;
+    if (const abilities::HitDef* first = world.ability_catalog()->hit_named("Cleric_CommunalRestoration_1")) hit = first->row.guid;
+    if (!hit) hit = cr->hits[0].hit_guid;
+    for (const content::TargetingRow& t : cr->targetings) {
+        for (const auto& h : cr->hits) {
+            if (h.hit_guid == hit && t.key == h.key) targeting = t.guid;
+        }
+    }
+    // both others wounded
+    const double max_b = b.m.stats[content::kGuidMaxHealth], max_c = c.m.stats[content::kGuidMaxHealth];
+    for (auto [who, max_hp] : {std::pair{&sb, max_b}, std::pair{&sc, max_c}}) {
+        combat::IncomingHit wound;
+        wound.instigator = wolves[0];
+        wound.hit_guid = 1;
+        wound.mods.push_back({1, content::kGuidHealth, -max_hp * 0.5});
+        wound.at = a.now();
+        if (combat::PlayerPort* p = cw.find_player(who->guids.pawn.ObjectId)) p->receive_hit(wound, a.now());
+    }
+    all(0.3);
+    const double hurt_b = b.m.stats[content::kGuidHealth], hurt_c = c.m.stats[content::kGuidHealth];
+    CHECK(hurt_b < max_b * 0.6 && hurt_c < max_c * 0.6, "(both are wounded)");
+    const int32_t id = a.next_id++;
+    a.send_trigger(cr->row.guid, id);
+    all(0.3);
+    const schema::RpcSchema* rpc = class_named("UAoCAbilityComponent").rpc("RequestHitVerification_Server");
+    repl::HitRequest req;
+    for (const emit::FIntrepidNetworkGUID& o : {sa.guids.collision_cylinder, sb.guids.collision_cylinder, sc.guids.collision_cylinder}) {
+        repl::HitComponentRef ref;
+        ref.object = o;
+        ref.server_timestamp = 1.0f;
+        req.components.push_back(ref);
+    }
+    req.ability_guid = cr->row.guid;
+    req.targeting_guid = targeting;
+    req.hit_guid = hit;
+    const auto params = rpc ? repl::hit_request_params(*rpc, req) : std::nullopt;
+    CHECK(params.has_value(), "(the request's parameters fit)");
+    if (!params) return;
+    a.send_reliable(ability_rpc(sa.guids.ability, "RequestHitVerification_Server", *params));
+    all(6.0);
+    const abilities::EffectDef* restoration = world.ability_catalog()->effect_named("Cleric_CommunalRestoration_Effect1");
+    const double gain_b = b.m.stats[content::kGuidHealth] - hurt_b, gain_c = c.m.stats[content::kGuidHealth] - hurt_c;
+    CHECKF(gain_b > gain_c + 1, "the party member's Health rises by more than the stranger's own regeneration (%.1f against %.1f)", gain_b, gain_c);
+    CHECK(restoration && b.m.has_effect(restoration->row.guid), "the party member holds Communal Restoration's effect");
+    CHECK(restoration && !c.m.has_effect(restoration->row.guid), "the stranger does not");
+    CHECK(!a.h.s->abilities_failed() && !b.h.s->abilities_failed() && !c.h.s->abilities_failed(), "(nothing failed)");
+}
+
 static void test_e1_cleric_zones() {
     std::printf("Chains of Restraint and Divine Flare: the server lands the hits of the zones they spawn %s\n", kAftermathNote);
     svc::Character rec = bard25_bagged();
@@ -4242,6 +4343,70 @@ static void test_e1_cleric_flare() {
     CHECK(from_zone == 1, "by three it has, once, with the zone as the source");
     CHECKF(r.m.stats[content::kGuidHealth] > before + 10, "and the Cleric standing in it is healed (%.0f to %.0f)", before, r.m.stats[content::kGuidHealth]);
     CHECK(!r.h.s->dead() && !r.h.s->abilities_failed(), "(nothing failed)");
+}
+
+/// Divine Flare's Shielding (an effect with no end) reaches another player who stands in the zone too, and leaves him when the zone ends, as it leaves the caster.
+static void test_e1_cleric_flare_ally() {
+    std::printf("Divine Flare's Shielding goes on another player in the zone for the zone's life %s\n", kAftermathNote);
+    svc::Character rec = bard25_bagged();
+    rec.class_id = 3;
+    // Shielding asks for the talent Cleric_Passive_DivineFlare_Shielding (the hit's requirement: GetSkillPurchased of the Instigator, the caster)
+    constexpr int64_t kClericTree = 107281871623853ll, kShieldingRank = 6064630700948848677ll;
+    rec.skill_ranks.push_back({kClericTree, {kShieldingRank}});
+    svc::Character ally_rec = bard25_bagged();
+    ally_rec.id = "dbec5c86eb101fe5f38c87f0fa22e7d3";
+    ally_rec.name = "AshesFlareAlly";
+    std::vector<uint64_t> wolves;
+    uint64_t far_wolf = 0, next_actor_id = 5000000;
+    bool ground = false;
+    auto prepare = [&](PlayerWorld& w) { spawn_wolves(w, wolves, far_wolf, 2, 5, 1, ground, next_actor_id); };
+    Run a(0, true, &rec, prepare);
+    CHECK(ground && a.h.fx.world->combat(), "(a world with fights)");
+    if (!ground || !a.h.fx.world->combat()) return;
+    Run b(0, true, &ally_rec, {}, a.h.fx.world.get());
+    PlayerWorld& world = *a.h.fx.world;
+    const auto both = [&](double seconds) {
+        for (int i = 0; i < static_cast<int>(std::llround(seconds * 10)); ++i) {
+            a.play(0.1, false);
+            b.play(0.1, false);
+            world.tick_world(a.now());
+        }
+    };
+    a.play(0.5, false);
+    b.play(0.5, false);
+    phase_in(a);
+    phase_in(b);
+    both(1.0);
+    const bs::PlayerSetup setup = a.h.s->bootstrap().setup();
+    const abilities::Catalog& cat = *world.ability_catalog();
+    const abilities::AbilityDef* def = cat.ability_named("Cleric_DivineFlare");
+    const abilities::EffectDef* shielding = cat.effect_named("Cleric_DivineFlare_Shielding");
+    CHECK(def && shielding && shielding->row.infinite_duration, "(the skill, and its Shielding has no end)");
+    if (!def || !shielding) return;
+    a.h.s->teach_ability(def->row.guid);
+    int64_t hit = 0, targeting = 0;
+    for (const auto& h : def->hits) {
+        const abilities::HitDef* hd = cat.hit(h.hit_guid);
+        if (!hd || hd->row.name != "Cleric_DivineFlare_SpawnLinger") continue;
+        hit = h.hit_guid;
+        for (const content::TargetingRow& t : def->targetings) {
+            if (t.key == h.key) targeting = t.guid;
+        }
+    }
+    a.send_trigger(def->row.guid, a.next_id++);
+    both(0.2);
+    a.send_reliable(hit_request_bunch(setup, def->row.guid, targeting, hit, /*with_component=*/false));
+    bool caster_had = false, ally_had = false;
+    for (int i = 0; i < 30; ++i) {   // (the zone lives 3.15 s: Shielding is on while it stands)
+        both(0.1);
+        caster_had = caster_had || a.m.has_effect(shielding->row.guid);
+        ally_had = ally_had || b.m.has_effect(shielding->row.guid);
+    }
+    CHECK(caster_had, "the Cleric in the zone has Shielding");
+    CHECK(ally_had, "the other player standing in it has it too");
+    both(4.0);
+    CHECK(!a.m.has_effect(shielding->row.guid) && !b.m.has_effect(shielding->row.guid), "once the zone is over neither holds it");
+    CHECK(!a.h.s->abilities_failed() && !b.h.s->abilities_failed(), "(nothing failed)");
 }
 
 static void test_e1_death_without_loss() {
@@ -4677,8 +4842,10 @@ int main() {
         test_e1_player_death();
         test_e1_resurrect();
         test_e1_cleric_helps_player();
+        test_e1_cleric_communal_restoration_party();
         test_e1_cleric_zones();
         test_e1_cleric_flare();
+        test_e1_cleric_flare_ally();
         test_e1_death_without_loss();
     } else {
         std::printf("no content.db at %s: the plan D2 session tests are skipped\n", ability_rig::real_db_path().c_str());

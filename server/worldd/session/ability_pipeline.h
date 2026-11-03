@@ -972,6 +972,7 @@ private:
         std::vector<int64_t>    held_by_caster;     // the infinite effects those left on the caster: they end with the zone
     };
     std::vector<PlacedZone>   placed_zones_;
+    double                    others_endless_seconds_ = -1;   // while a placed zone lands a hit with an endless effect: how long it lasts on the others it reaches (< 0: as the record says)
     /// A projectile that rolls on over the ground, hitting what is near it as it goes (kBalls: Ball Lightning).
     struct RollingBall {
         const abilities::HitDef*     hit = nullptr;
