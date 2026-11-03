@@ -366,7 +366,11 @@ void PlayerSession::on_item_activated(Connection& conn, const repl::ItemUse& use
     // weapon XP: each worn line takes the scroll's Weapon experience on top of its total (it stops at the top); the levels it crosses are applied before any reply is built
     std::vector<weaponxp::Change> weapon_changes;
     for (const int64_t type : worn_lines) {
-        const weaponxp::Change c = weapon_.add_xp(type, plan.weapon_xp);
+        int64_t delta = plan.weapon_xp;
+        // a level scroll lifts the line to at least the level it names (item_use.h: Plan::weapon_level): its own curve alone stops one level short
+        if (plan.weapon_level > 0 && weapon_.lines())
+            delta = std::max(delta, weapon_.lines()->xp_for(std::min(plan.weapon_level, weapon_.lines()->max_level())) - weapon_.xp(type));
+        const weaponxp::Change c = weapon_.add_xp(type, delta);
         if (c.changed()) weapon_changes.push_back(c);
     }
     bool weapons_leveled = false;

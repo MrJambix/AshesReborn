@@ -360,6 +360,17 @@ static void test_real() {
         all = all && p.ok && p.consume && p.adventuring_xp == want[i];
     }
     CHECK(all, "the four level scrolls at level 1: 418,410, 1,853,010, 6,146,410 and 14,295,410 XP, consumed");
+    {
+        // the scrolls' Weapon reward: its own curve (Weapon_LevelUpCurve) runs under the lines' (146,970 XP where level 10 needs 167,360), so the plan also names the scroll's
+        // level, and the session lifts each worn line to at least it
+        const int want_level[] = {10, 15, 20, 25};
+        bool levels = true;
+        for (int i = 0; i < 4; ++i) {
+            const use::Plan p = use::plan_use(*db, scrolls[i], bard);
+            levels = levels && p.weapon_xp > 0 && p.weapon_level == want_level[i];
+        }
+        CHECK(levels, "the four level scrolls' Weapon reward names their level (10, 15, 20, 25) beside its XP");
+    }
     const use::Plan gear = use::plan_use(*db, gm::kGear01, bard);
     CHECK(gear.ok && gear.items.size() == 19 && gear.consume, "the starter gear scroll: 19 items");
     const use::Plan tank = use::plan_use(*db, gm::kClassTank, bard);

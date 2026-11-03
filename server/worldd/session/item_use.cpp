@@ -132,6 +132,7 @@ Plan plan_use(const content::ContentDb& db, int64_t item_record, const Context& 
         plan.items.clear();
         plan.adventuring_xp = 0;
         plan.weapon_xp = 0;
+        plan.weapon_level = 0;
         plan.set_class.reset();
         plan.professions_after = professions::Professions();
         plan.profession_changes.clear();
@@ -287,6 +288,8 @@ Plan plan_use(const content::ContentDb& db, int64_t item_record, const Context& 
                     }
                     const double v = *at_target - *at_level + formula->margin;
                     if (std::isfinite(v) && v >= 1.0) plan.weapon_xp += static_cast<int64_t>(std::min(std::floor(v), 1.0e12));
+                    if (std::isfinite(formula->target) && formula->target >= 1.0 && formula->target <= 1000.0)
+                        plan.weapon_level = std::max(plan.weapon_level, static_cast<int>(std::lround(formula->target)));
                     continue;
                 }
                 if (x.experience_type != "Adventuring") {

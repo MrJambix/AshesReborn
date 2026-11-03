@@ -62,6 +62,10 @@ struct Plan {
     int64_t                  adventuring_xp = 0;
     /// Weapon XP: what each weapon line of what is worn gets (the level scrolls' Weapon experience reward: 0 when the use has none or its formula was not read).
     int64_t                  weapon_xp = 0;
+    /// The level the level scrolls name (their formula's target level: 10, 15, 20, 25; 0: none).  The scrolls' own curve (Weapon_LevelUpCurve) runs a little under the lines' curve
+    /// (146,960 against 167,360 at level 10, 2,280,360 against 2,458,560 at 20), so the XP alone left a line one level short of the scroll's name: the session lifts each worn line to at
+    /// least this level as well (modelled: the item's text promises the level).
+    int                      weapon_level = 0;
     std::optional<int>       set_class;       // ECharacterClass (1 Ranger ... 8 Mage)
     /// Gathering stage 2: what the character holds in its professions after the use (valid() only when the context had professions), and each profession that
     /// differs from before (before and after, in profession order). A use that moves no level and no tier leaves the professions as they were.
