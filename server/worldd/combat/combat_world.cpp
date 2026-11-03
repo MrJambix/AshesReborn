@@ -1601,7 +1601,24 @@ Delivery CombatWorld::apply_hit_to_npc(uint64_t npc_actor, uint64_t attacker, co
     d.applied = true;
     d.flags = r.flags;
     d.effective.assign(r.mods.size(), 0.0);
-    n->attackers.insert(attacker);
+    // Whether the hit provokes a fight: it harms (takes Health or Mana, its record names threat, or it is aimed at enemies with no heal in it), and the creature is not on the
+    // attacker's side.  A heal or a buff that lands on a creature (a Mend cast at the vendor in the player's target slot, a town person in a heal's area) used to start a fight
+    // with a threat of 1: every NPC of a town turned on the player who healed near it (reported live on 2 November).
+    bool harms = r.threat > 0;
+    bool heals = false;
+    for (const ResolvedMod& m : r.mods) {
+        if (m.stat_guid != data_.ids().health && m.stat_guid != data_.ids().mana) continue;
+        if (m.value < 0) harms = true;
+        if (m.value > 0) heals = true;
+    }
+    if (!harms && !heals && origin && origin->hit && (origin->hit->row.applicable_targets & 2) != 0) harms = true;   // (Enemy in its mask: a stun, a root, a debuff)
+    bool provokes = harms;
+    if (provokes) {
+        PlayerPort* by = player(attacker);   // (a player, or a pet: what it fights for)
+        const Fighter* f = by ? &by->fighter() : fighter_of(attacker);
+        if (f && data_.relation(f->alignments(), n->aligns) == Relation::Friendly) provokes = false;
+    }
+    if (provokes) n->attackers.insert(attacker);
     ++stats_.player_hits;
     const double health_before = n->health();
     const double taken_mult = incoming_mult(*n, origin, attacker);
@@ -1688,16 +1705,17 @@ Delivery CombatWorld::apply_hit_to_npc(uint64_t npc_actor, uint64_t attacker, co
     }
     spdlog::log(origin && origin->source_type == content::kSourceTypeEffect ? spdlog::level::debug : spdlog::level::info, "[combat] player {} hit {} ({}, level {}): {}Health {:.1f} -> {:.1f}, threat {:.1f}", attacker, n->leaf, npc_actor, n->lvl, r.miss() ? "a miss, " : "", health_before, n->health(),
                  std::max(threat, 1.0));
-    if (!lethal) {
+    if (!lethal && provokes) {
         n->ai.notice(threat_to != 0 ? threat_to : attacker, std::max(threat, 1.0), now);
         if (threat_to != 0) n->ai.notice(attacker, 0.01, now);
     }
-    player_exchange(attacker, now);
+    if (provokes) player_exchange(attacker, now);
     if (lethal) {
+        n->attackers.insert(attacker);   // (the kill is the attacker's, whatever the hit was)
         d.lethal = true;
         d.flags |= stats::kHitLethal;
         kill(*n, attacker, now);
-    } else {
+    } else if (provokes) {
         think(*n, now);   // the fight starts in this step: the flags go up with the first exchange
     }
     holder_reacts(npc_actor, event, now);
