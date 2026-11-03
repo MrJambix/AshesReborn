@@ -9,6 +9,8 @@
 #include "spawns/region_data.h"
 
 #include <algorithm>
+#include <map>
+#include <mutex>
 #include <string_view>
 
 namespace aoc::worldd::spawns {
@@ -182,13 +184,40 @@ Why SpawnFilter::asset(const content::PopulationData& data, const content::NpcWo
     if (override_guid != 0) {
         if (const auto it = data.filters.find(override_guid); it != data.filters.end()) f = &it->second;
     }
+    const std::set<std::string> tags = npc_tags_of(data, set, instance, asset_set, asset);
+    if (const Why w = filter(*f, tags, zoi); w != Why::Spawns) return w;
+    if (std::find(asset.tags.begin(), asset.tags.end(), "npc.type.prop") != asset.tags.end()) return Why::Prop;
+    return visuals(asset);
+}
+
+std::set<std::string> npc_tags_of(const content::PopulationData& data, const content::NpcSetRow& set, const content::NpcInstanceRow& instance, int64_t asset_set,
+                                  const content::NpcAssetRow& asset) {
     std::set<std::string> tags(instance.tags.begin(), instance.tags.end());
     tags.insert(set.tags.begin(), set.tags.end());
     tags.insert(asset.tags.begin(), asset.tags.end());
     if (const auto it = data.asset_set_tags.find(asset_set); it != data.asset_set_tags.end()) tags.insert(it->second.begin(), it->second.end());
-    if (const Why w = filter(*f, tags, zoi); w != Why::Spawns) return w;
-    if (std::find(asset.tags.begin(), asset.tags.end(), "npc.type.prop") != asset.tags.end()) return Why::Prop;
-    return visuals(asset);
+    return tags;
+}
+
+std::shared_ptr<const content::TagSet> intern_tag_set(const std::vector<std::string>& tags) {
+    content::TagSet set = content::tag_set_with_parents(tags);
+    if (set.empty()) return nullptr;
+    // a few hundred distinct lists in the whole world: they are kept for the process's life
+    static std::mutex                                                      mutex;
+    static std::map<content::TagSet, std::shared_ptr<const content::TagSet>> interned;
+    const std::lock_guard<std::mutex> lock(mutex);
+    auto it = interned.find(set);
+    if (it == interned.end()) {
+        auto shared = std::make_shared<const content::TagSet>(set);
+        it = interned.emplace(std::move(set), std::move(shared)).first;
+    }
+    return it->second;
+}
+
+std::shared_ptr<const content::TagSet> npc_tag_set(const content::PopulationData& data, const content::NpcSetRow& set, const content::NpcInstanceRow& instance, int64_t asset_set,
+                                                   const content::NpcAssetRow& asset) {
+    const std::set<std::string> tags = npc_tags_of(data, set, instance, asset_set, asset);
+    return intern_tag_set(std::vector<std::string>(tags.begin(), tags.end()));
 }
 
 }  // namespace aoc::worldd::spawns

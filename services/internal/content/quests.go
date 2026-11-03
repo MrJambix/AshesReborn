@@ -33,9 +33,11 @@ import (
 //
 //	quest.detail            {"ok": [actions run when the quest is completed], "fail": [...], "tick": [...], "to": timeout in seconds, "so": 1 when the timeout completes the quest}
 //	quest_objective.detail  {"sd": 1 when finishing it shows the completion dialogue, "to": timeout, "so": 1, "ar": its activation rule (a requirement), "rw": [reward tables],
-//	                         "on": {"start": [actions], "tick": [...], "ok": [...], "fail": [...]}, "qi": [{"t": reward table, "inst": [...], "sets": [...], "tq": 1}] (quest items the
+//	                         "on": {"start": [actions], "tick": [...], "ok": [...], "fail": [...]}, "qi": [{"t": reward table, "inst": [...], "sets": [...], "tq": tag query}] (quest items the
 //	                         listed creatures drop while the objective is active), "d": what the objective's kind needs:
-//	                         Kill {"sets": [...], "inst": [...], "elite": n, "adv": 1, "owner": 1, "ctx": 1, "tq": 1 when a tag query is set},
+//	                         Kill {"sets": [...], "inst": [...], "elite": n, "adv": 1, "owner": 1, "ctx": 1, "tq": tag query},
+//	                         where a tag query (version 43; NPCTagQuery, TagQuery) is {"tok": [the token stream], "tags": [the tag dictionary]} as vendor_sell_filter.filter
+//	                         holds one, or 1 for one whose stream does not read (and in a file older than version 43 for every query: only that one was set),
 //	                         Dialogue {"src": [{"k": kind, "i": population instance, "n": node, "x": interactable, "it": item}]},
 //	                         Interact {"comp": [...], "actor": [...]}, Collect {"cty": type, "items": [...], "tags": [...], "rar": [...]},
 //	                         GoTo {"loc": [{"x", "y", "z", "r", "done": 1, "hid": 1, "id": location id}], "area": 1},

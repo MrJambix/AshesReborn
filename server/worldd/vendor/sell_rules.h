@@ -27,6 +27,7 @@
 #pragma once
 
 #include "content/content_db.h"
+#include "content/tag_query.h"
 #include "vendor/town_shops.h"
 
 #include <algorithm>
@@ -46,50 +47,6 @@ inline constexpr int64_t kSellBit = 2;
 inline constexpr int64_t kRepairBit = 4;
 
 namespace detail {
-
-/// Evaluates a tag query's token stream: version, a non-empty flag, then the tree -- an expression kind and a count; kinds 1 to 3 hold any, all or none of the tags that follow
-/// (indexes into the dictionary), kinds 4 to 6 any, all or none of the sub-expressions that follow.
-struct TagEval {
-    const content::TagQuery&     q;
-    const std::set<std::string>& have;
-    size_t                       pos = 2;
-
-    bool has(int64_t i) const { return i >= 0 && static_cast<size_t>(i) < q.tags.size() && have.count(q.tags[static_cast<size_t>(i)]) != 0; }
-
-    bool expr(bool& good) {
-        if (pos + 1 >= q.tok.size()) {
-            good = false;
-            return false;
-        }
-        const int64_t kind = q.tok[pos], n = q.tok[pos + 1];
-        pos += 2;
-        if (kind >= 1 && kind <= 3) {
-            if (n < 0 || pos + static_cast<size_t>(n) > q.tok.size()) {
-                good = false;
-                return false;
-            }
-            bool any = false, all = true;
-            for (int64_t i = 0; i < n; ++i) {
-                if (has(q.tok[pos + static_cast<size_t>(i)])) any = true;
-                else all = false;
-            }
-            pos += static_cast<size_t>(n);
-            return kind == 1 ? any : kind == 2 ? all : !any;
-        }
-        if (kind >= 4 && kind <= 6) {
-            bool any = false, all = true;
-            for (int64_t i = 0; i < n; ++i) {
-                const bool r = expr(good);
-                if (!good) return false;
-                if (r) any = true;
-                else all = false;
-            }
-            return kind == 4 ? any : kind == 5 ? all : !any;
-        }
-        good = false;
-        return false;
-    }
-};
 
 /// A text that is one plain decimal number.
 inline bool literal_number(const std::string& text, double& out) {
@@ -138,14 +95,8 @@ inline bool curve_at(const std::vector<content::VendorModifier::Key>& keys, doub
 
 }  // namespace detail
 
-/// Whether a tag query holds for a set of lower-case tags (each tag with its parents).  A query that is not there, or whose stream does not read, matches nothing.
-inline bool tag_query_matches(const content::TagQuery& q, const std::set<std::string>& have) {
-    if (!q.present) return false;
-    detail::TagEval e{q, have};
-    bool            good = true;
-    const bool      r = e.expr(good);
-    return r && good;
-}
+/// Whether a tag query holds for a set of lower-case tags (each tag with its parents): content/tag_query.h, shared with the quests' Kill objectives.
+using content::tag_query_matches;
 
 /// What a price modifier may read of the item and the character.
 struct PriceFacts {

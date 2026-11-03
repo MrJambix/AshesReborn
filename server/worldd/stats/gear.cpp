@@ -52,4 +52,32 @@ GearInputs gear_inputs(const GearCatalog& catalog, std::span<const WornItem> wor
     return out;
 }
 
+std::vector<WornSetEffect> worn_set_effects(const GearCatalog& catalog, std::span<const WornItem> worn) {
+    std::map<int64_t, std::vector<int>> set_rarities;
+    for (const WornItem& w : worn) {
+        const ItemGear* item = catalog.item(w.record);
+        if (!item) continue;
+        const int rarity = item->rarity_of(static_cast<double>(w.quality));
+        for (const int64_t set : item->sets) set_rarities[set].push_back(rarity);
+    }
+    std::vector<WornSetEffect> out;
+    for (const auto& [guid, rarities] : set_rarities) {
+        const SetBonus* set = catalog.set(guid);
+        if (!set || set->effects.empty()) continue;
+        int low = rarities[0];
+        for (const int r : rarities) low = r < low ? r : low;
+        for (const SetEffect& e : set->effects) {
+            if (e.effect == 0 || e.pieces > static_cast<int>(rarities.size()) || low < e.min_rarity || low > e.max_rarity) continue;
+            bool merged = false;
+            for (WornSetEffect& have : out) {
+                if (have.effect != e.effect) continue;
+                have.stacks = have.stacks > e.stacks ? have.stacks : e.stacks;
+                merged = true;
+            }
+            if (!merged) out.push_back({guid, e.effect, e.stacks > 0 ? e.stacks : 1});
+        }
+    }
+    return out;
+}
+
 }  // namespace aoc::worldd::stats

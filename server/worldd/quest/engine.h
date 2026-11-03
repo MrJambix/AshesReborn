@@ -184,10 +184,14 @@ public:
         return finish_event(true);
     }
 
-    /// The character killed the creature `instance` (a population instance) of elite rank `elite`.
-    bool kill(int64_t instance, int elite) {
+    /// The character killed the creature `instance` (a population instance; 0: none) of elite rank `elite` whose gameplay tags are `tags` (the union of its asset's,
+    /// instance's, asset set's and set's, lower case with every parent: content/tag_query.h; null: none known).  An objective (or a quest item's drop) counts the kill when it
+    /// names the creature's instance, one of the sets it stands in, or by its tag query matches the creature's tags.
+    bool kill(int64_t instance, int elite, const content::TagSet* tags = nullptr) {
         bool any = false;
-        const std::vector<int64_t>& sets = book_.kill_sets(instance);
+        static const std::vector<int64_t> kNoSets;
+        const std::vector<int64_t>& sets = instance != 0 ? book_.kill_sets(instance) : kNoSets;
+        const auto by_tags = [&](const content::TagQuery& q) { return tags && !tags->empty() && q.present && content::tag_query_matches(q, *tags); };
         // the quest items the creature drops for an active objective of the character's quests (before the kill counts: the kill may finish the objective)
         for (QuestInstance& q : log_.instances_for_wire()) {
             if (q.status != Status::Active) continue;
@@ -197,8 +201,9 @@ public:
                 const ObjectiveState& o = q.objectives[i];
                 if (!o.active || o.completed || o.failed) continue;
                 for (const content::QuestObjectiveRow::ItemReward& ir : d->objectives[i].item_rewards) {
-                    bool match = std::find(ir.instances.begin(), ir.instances.end(), instance) != ir.instances.end();
+                    bool match = instance != 0 && std::find(ir.instances.begin(), ir.instances.end(), instance) != ir.instances.end();
                     for (size_t k = 0; k < sets.size() && !match; ++k) match = std::find(ir.sets.begin(), ir.sets.end(), sets[k]) != ir.sets.end();
+                    if (!match) match = by_tags(ir.tags);
                     if (!match || ir.table == 0) continue;
                     Effect e;
                     e.kind = Effect::Kind::GrantTable;
@@ -212,10 +217,12 @@ public:
         each_active("Kill", [&](QuestInstance& q, size_t i, const content::QuestObjectiveRow& r) {
             if (r.kill_owner || r.use_context) return;   // quest-owner kills and quest-spawned creatures are not modelled
             if (r.advanced && elite < r.elite) return;
-            bool match = std::find(r.kill_instances.begin(), r.kill_instances.end(), instance) != r.kill_instances.end();
+            bool match = instance != 0 && std::find(r.kill_instances.begin(), r.kill_instances.end(), instance) != r.kill_instances.end();
             for (size_t k = 0; k < sets.size() && !match; ++k) match = std::find(r.kill_sets.begin(), r.kill_sets.end(), sets[k]) != r.kill_sets.end();
-            // a Destiny objective names creatures by a tag query (any enemy); no other objective changes
-            if (!match) match = std::find(std::begin(destiny::kAnyKill), std::end(destiny::kAnyKill), r.guid) != std::end(destiny::kAnyKill);
+            // the creatures its tag query names (contentc version 43: a goblin of the starting areas, Anklebiters' grems, a Harbinger lobby's named one)
+            if (!match) match = by_tags(r.kill_tags);
+            // a Destiny objective names creatures by a tag query (any creature, "Character"): any kill counts, the creature's tags known or not (a captured one has none)
+            if (!match) match = is_any_kill(r);
             if (!match) return;
             update_objective(q, i, r, 1);
             any = true;
@@ -426,6 +433,10 @@ private:
                 fn(q, i, d->objectives[i]);
             }
         }
+    }
+
+    static bool is_any_kill(const content::QuestObjectiveRow& r) {
+        return std::find(std::begin(destiny::kAnyKill), std::end(destiny::kAnyKill), r.guid) != std::end(destiny::kAnyKill);
     }
 
     void told(const std::string& what) {
@@ -753,7 +764,10 @@ private:
                         any = true;
                     }
                 }
-                if (r.type == "Kill" && r.tag_query && r.kill_sets.empty() && r.kill_instances.empty()) told("a kill objective by tag query is not done yet");
+                // a Kill objective that names its creatures by a tag query only, and whose query this content.db does not hold (a file older than contentc version 43): no kill counts
+                if (r.type == "Kill" && r.tag_query && !r.kill_tags.present && r.kill_sets.empty() && r.kill_instances.empty() && !is_any_kill(r)) {
+                    told("a kill objective names its creatures by a tag query this content.db does not hold (rebuild it with contentc version 43 or later): no kill counts for it");
+                }
                 done = o.count >= r.count;
             }
             if (done && complete_objective(q, i)) any = true;

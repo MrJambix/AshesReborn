@@ -279,6 +279,42 @@ void PlayerSession::run_cargo(Connection& conn, Clock::time_point now) {
     }
 }
 
+void PlayerSession::run_set_effects(Connection& conn, Clock::time_point now) {
+    (void)conn;   // (the runtime's events carry the change: take_ability_events stages it in the pawn, flush_abilities sends it)
+    if (!set_effects_dirty_ || !pipeline_ || !world_ || finished_ || failed_ || abilities_failed_ || !phase_in_done_ || !join_.empty()) return;
+    const stats::GearCatalog* gear = world_->stat_context().gear;
+    if (!gear) return;
+    set_effects_dirty_ = false;
+    std::map<int64_t, int> wanted;
+    for (const stats::WornSetEffect& e : stats::worn_set_effects(*gear, bootstrap::worn_items_of(inventory_))) wanted[e.effect] = e.stacks;
+    if (wanted.empty() && set_effects_.empty()) return;
+    const double sec = ability_seconds(now);
+    size_t added = 0, removed = 0;
+    // what goes: a set no longer worn (or below its tier, or of another rarity now), and what the runtime lost on its own (a class change takes every effect off): put on again below
+    for (auto it = set_effects_.begin(); it != set_effects_.end();) {
+        const auto w = wanted.find(it->first);
+        if (w != wanted.end() && w->second == it->second && pipeline_->stacks_of(it->first) > 0) {
+            ++it;
+            continue;
+        }
+        if (pipeline_->remove_effect(it->first, sec)) ++removed;
+        it = set_effects_.erase(it);
+    }
+    for (const auto& [effect, stacks] : wanted) {
+        if (set_effects_.count(effect) || set_effects_refused_.count(effect)) continue;
+        if (!pipeline_->grant_effect(effect, stacks, sec)) {
+            set_effects_refused_.insert(effect);
+            spdlog::warn("[session] {}: the worn set's effect {} is not in the ability tables (content.db older than contentc version 43?): the set gives nothing there", name(), effect);
+            continue;
+        }
+        set_effects_[effect] = stacks;
+        ++added;
+    }
+    if (added == 0 && removed == 0) return;
+    take_ability_events();
+    spdlog::info("[session] {}: the worn sets: {} effect(s) put on, {} taken off ({} on now)", name(), added, removed, set_effects_.size());
+}
+
 void PlayerSession::drop_crate(Connection& conn, Clock::time_point now) {
     const svc::InventoryItem* crate = inventory_.at(svc::ItemContainer::Equipment, items::equip::CargoHold);
     if (!crate || dead_ || !room_for(8)) return;

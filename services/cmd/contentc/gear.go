@@ -104,7 +104,7 @@ func buildGear(w *writer, src *source, opt *Options, meta map[string]string) err
 
 	// Set bonuses.
 	sets := map[int64]bool{}
-	nbonus := 0
+	nbonus, neffects := 0, 0
 	for _, r := range src.rows["SetBonusRecordBase"] {
 		f := newFields(fmt.Sprintf("SetBonus %s (%d)", r.Name, r.Guid), r.Fields)
 		for ti, tp := range f.pairs("SetStatBonuses") {
@@ -172,6 +172,12 @@ func buildGear(w *writer, src *source, opt *Options, meta map[string]string) err
 		if f.err != nil {
 			return f.err
 		}
+		// the effects of the set (version 43): what the ArmorType sets give (their SetStatBonuses are empty), and the T3 sets' procs
+		n, err := writeSetEffects(w, r, f)
+		if err != nil {
+			return err
+		}
+		neffects += n
 		sets[r.Guid] = true
 	}
 
@@ -210,16 +216,83 @@ func buildGear(w *writer, src *source, opt *Options, meta map[string]string) err
 	}
 	opt.logf("gear: %d stat keys are no StatTypeDef row (kept)", len(unknownBlockStats))
 	meta["typed.stat_block_unknown_stats"] = fmt.Sprint(len(unknownBlockStats))
-	opt.logf("gear: %d quality curves, %d stat blocks with %d stats, %d set bonuses with %d bonuses, %d item sets, %d item tags",
-		len(curves), len(blocks), nstats, len(sets), nbonus, nitemSets, ntags)
+	opt.logf("gear: %d quality curves, %d stat blocks with %d stats, %d set bonuses with %d bonuses and %d effects, %d item sets, %d item tags",
+		len(curves), len(blocks), nstats, len(sets), nbonus, neffects, nitemSets, ntags)
 	meta["typed.quality_curve"] = fmt.Sprint(len(curves))
 	meta["typed.stat_block_stat"] = fmt.Sprint(nstats)
 	meta["typed.set_bonus"] = fmt.Sprint(nbonus)
+	meta["typed.set_effect_bonus"] = fmt.Sprint(neffects)
 	meta["typed.item_tag"] = fmt.Sprint(ntags)
 	return nil
 }
 
 // C-O-A : C.Y.B
+
+// setEffectEntries reads a SetBonus record's SetEffectBonuses: per tier (the pieces), the effects with their rarity range and stacks, in the record's order. An entry
+// that names no effect is left out.
+type setEffectEntry struct {
+	tier, pieces, ord int
+	effect            int64
+	lo, hi            int
+	stacks            int64
+}
+
+func setEffectEntries(f *fields) ([]setEffectEntry, error) {
+	var out []setEffectEntry
+	if _, ok := f.get("SetEffectBonuses"); !ok {
+		return nil, nil
+	}
+	for ti, tp := range f.pairs("SetEffectBonuses") {
+		pieces, ok := tp.Key.(int64)
+		ts, sok := tp.Value.(designdb.Struct)
+		if !ok || !sok {
+			return nil, fmt.Errorf("%s: SetEffectBonuses[%d] is a %T to a %T", f.where, ti, tp.Key, tp.Value)
+		}
+		if pieces < 1 || pieces > 83 {
+			return nil, fmt.Errorf("%s: SetEffectBonuses[%d] is a tier of %d pieces", f.where, ti, pieces)
+		}
+		tf := newFields(fmt.Sprintf("%s: effect tier %d", f.where, pieces), ts)
+		for bi, bv := range tf.list("EffectBonuses") {
+			bs, ok := bv.(designdb.Struct)
+			if !ok {
+				return nil, fmt.Errorf("%s: EffectBonuses[%d] is a %T", tf.where, bi, bv)
+			}
+			ef := newFields(fmt.Sprintf("%s: EffectBonuses[%d]", tf.where, bi), bs)
+			effect, _ := ef.id("Effect")
+			lo, hi := rarityIndex(enumValue(ef.str("MinimumRarity"))), rarityIndex(enumValue(ef.str("MaximumRarity")))
+			stacks := ef.int("Stacks")
+			if err := firstErr(tf, ef); err != nil {
+				return nil, err
+			}
+			if effect == 0 {
+				continue
+			}
+			if stacks < 1 {
+				stacks = 1
+			}
+			out = append(out, setEffectEntry{tier: ti, pieces: int(pieces), ord: bi, effect: effect, lo: lo, hi: hi, stacks: stacks})
+		}
+		if tf.err != nil {
+			return nil, tf.err
+		}
+	}
+	return out, f.err
+}
+
+// writeSetEffects writes the set_effect_bonus rows of one SetBonus record; how many.
+func writeSetEffects(w *writer, r designdb.Row, f *fields) (int, error) {
+	entries, err := setEffectEntries(f)
+	if err != nil {
+		return 0, err
+	}
+	for _, e := range entries {
+		if err := w.exec(`INSERT INTO set_effect_bonus (set_guid, tier_ord, pieces, ord, effect_guid, min_rarity, max_rarity, stacks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.Guid, e.tier, e.pieces, e.ord, e.effect, e.lo, e.hi, e.stacks); err != nil {
+			return 0, err
+		}
+	}
+	return len(entries), nil
+}
 
 func finite(xs ...float64) bool {
 	for _, x := range xs {

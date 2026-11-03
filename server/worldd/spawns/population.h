@@ -36,6 +36,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -70,6 +71,7 @@ struct DataSpawn {
     int64_t                      key = 0;
     uint64_t                     seed = 0;        // the point's hash
     uint64_t                     zoi = 0;         // the guid of the zone of influence the point stands in (G1: the Riverlands' grid; 0: the area has none)
+    std::shared_ptr<const content::TagSet> tags;  // the creature's gameplay tags, for the quests (spawn_filter.h npc_tag_set; null: none)
 };
 
 /// What the selection found, for the report.

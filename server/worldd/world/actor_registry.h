@@ -27,6 +27,7 @@
 // ============================================================================
 #pragma once
 
+#include "content/tag_query.h"
 #include "protocol/repl/replicator.h"
 #include "session/view_worker.h"
 
@@ -116,6 +117,9 @@ struct NpcInfo {
     bool        snaps_to_ground = false;
     /// ... and one of them that flies (a bird, a bat, a gryphon, a dragon) is only lifted out of the ground, never pulled down out of the air.
     bool        flies = false;
+    /// Its gameplay tags (contentc version 43's Kill objectives by tag query read them): the union of its asset's, instance's, asset set's and set's npc tags, lower case with
+    /// every parent (content/tag_query.h).  Shared: the NPCs of one asset, instance and sets hold the same list (spawns::npc_tags interns them); null for none (a captured NPC).
+    std::shared_ptr<const content::TagSet> tags;
 };
 
 /// What a town's replicator (ActorKind::NodeLayout) is to the server: which node it shows, at which level, and what its LayoutAssetSetGuids holds (the log and the tests).

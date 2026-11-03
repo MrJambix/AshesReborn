@@ -76,6 +76,7 @@ std::vector<std::string> PlayerSession::weapon_tags() const {
 }
 
 void PlayerSession::apply_gear_stats(const char* what) {
+    set_effects_dirty_ = true;   // the worn sets' effects follow the gear (and come back after a class change took them off): run_set_effects, next tick
     if (!stats_ || !stats_->started()) return;
     refresh_rank_mods();   // plan D1, stage 2: the ranks the character has (and the weapon line in hand) are an input like the gear
     // plan D2: a class change takes the old class's effects off and resolves the new class's resource rule (its own stat changes go out with it)

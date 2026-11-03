@@ -1199,6 +1199,12 @@ private:
     void sync_cargo(Connection& conn, Clock::time_point when);
     /// Called every tick: the first sync after the join (a crate may stand in the cargo slot from the last session) and the drop that waits for its montage's notify.
     void run_cargo(Connection& conn, Clock::time_point now);
+    /// contentc version 43: the effects the worn sets give (stats::worn_set_effects: ArmorType_Heavy's PhysicalMitigation +0.1 for five Common pieces of heavy armour, Finesse's share
+    /// of Dexterity and Wisdom) stand on the character through the generic ability runtime while the pieces are worn, and go when they are not: the runtime works out their stat
+    /// mods (constants or formulas) into the stats and the client shows their icons.  Called every tick; it works only when something may have changed (set_effects_dirty_: the
+    /// join, a change of the gear, the level, the class or the ranks, apply_gear_stats) and only once the runtime is up and the phase-in is done.  An effect the runtime does not
+    /// have (a content.db older than version 43) is asked for once and then left out.
+    void run_set_effects(Connection& conn, Clock::time_point now);
     /// General_DropCrate's notify: the crate leaves the cargo slot.  Nothing when none is carried, the character is dead, mounted or not on the ground.  It lies on the ground for others to pick
     /// up (lay_crate_down); when the world takes no crate it goes into the item bag, as a crate taken off does, and the character is told when there is no room.
     void drop_crate(Connection& conn, Clock::time_point now);
@@ -1516,6 +1522,9 @@ private:
     std::map<int64_t, int64_t>   rank_effects_;             // rank guid -> the CurrentEffects key of the item the session added for it
     std::map<int64_t, int64_t>   cargo_effects_;            // effect record -> the CurrentEffects key of the item the session added for the crate on the back
     bool                         cargo_synced_ = false;     // sync_cargo ran once for the crate (or the empty slot) the character joined with
+    bool                         set_effects_dirty_ = true; // run_set_effects has something to look at (the join, a change of the gear)
+    std::map<int64_t, int>       set_effects_;              // effect record -> the stacks the session put on the character for the worn sets
+    std::set<int64_t>            set_effects_refused_;      // ... the effects the runtime does not have (asked once)
     std::optional<Clock::time_point> crate_drop_due_;       // General_DropCrate was accepted: the crate leaves the back at this time
     int32_t                      crate_drop_instance_ = 0;  // ... and the ClientInstanceId of that cast: a cancel of it (Esc, bMayEscCancel) keeps the crate
     struct Marker {

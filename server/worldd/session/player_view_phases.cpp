@@ -41,6 +41,7 @@ PlayerSession::TickPlan PlayerSession::tick_logic(Connection& conn, Clock::time_
     run_crafting(conn, now);
     run_quick_make(conn, now);
     run_cargo(conn, now);
+    run_set_effects(conn, now);     // the effects of the worn sets (contentc version 43)
     run_ground_crates(conn, now);   // the crates on the ground: a pick-up that takes time, and one's own crates coming back
     run_nodes(conn);
     sync_item_abilities(conn);

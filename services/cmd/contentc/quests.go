@@ -333,6 +333,20 @@ func sourceJSON(v designdb.Value) []map[string]any {
 	return out
 }
 
+// tagQueryJSON is what an objective's detail holds of a GameplayTagQuery (version 43): the query itself, {"tok": [the token stream], "tags": [the dictionary]}, as
+// vendor_sell_filter.filter holds one; 1 for a query with tags whose token stream does not read (worldd matches nothing by it); nil when the record sets none. A query
+// whose dictionary names no tag is none: 57 Kill objectives hold an empty AllTags expression ([0 1 2 0]), which as a query would match every creature, beside the
+// sets and instances that name their creatures (CaravanAttackObjective, GBL_EVT_HAR_SEG_P2_KillBadBoys).
+func tagQueryJSON(v designdb.Value) any {
+	if len(tagNames(v)) == 0 {
+		return nil
+	}
+	if q := readTagQuery(v); q != nil {
+		return q
+	}
+	return 1
+}
+
 // tagNames reads the tag names of a GameplayTagQuery's dictionary.
 func tagNames(v designdb.Value) []string {
 	var out []string
@@ -467,8 +481,8 @@ func objectiveDetail(w *writer, orow designdb.Row) (string, error) {
 			if ids := idsOf(q["PopulationSetQueries"]); len(ids) > 0 {
 				m["sets"] = ids
 			}
-			if len(tagNames(q["NPCTagQuery"])) > 0 {
-				m["tq"] = 1
+			if tq := tagQueryJSON(q["NPCTagQuery"]); tq != nil {
+				m["tq"] = tq
 			}
 			d.QuestItems = append(d.QuestItems, m)
 		}
@@ -493,8 +507,8 @@ func objectiveDetail(w *writer, orow designdb.Row) (string, error) {
 		if boolOf(k["bUseQuestContext"]) {
 			data["ctx"] = 1
 		}
-		if len(tagNames(k["TagQuery"])) > 0 {
-			data["tq"] = 1
+		if tq := tagQueryJSON(k["TagQuery"]); tq != nil {
+			data["tq"] = tq
 		}
 	case "Dialogue":
 		if src := sourceJSON(structOf(f["DialogueData"])["DialogueSources"]); len(src) > 0 {

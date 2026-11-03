@@ -90,6 +90,7 @@ std::optional<world::WorldActor> make_data_actor(const DataSpawn& s, const Minte
     w->npc.ground_by_terrain = s.from_area;
     w->npc.asset_guid = p.pop_asset;
     w->npc.instance_guid = p.pop_instance;
+    w->npc.tags = s.tags;   // its gameplay tags (a Kill objective by tag query reads them); a respawn copies them with the rest of the recipe's NpcInfo
     w->npc.vendor_guid = s.instance ? s.instance->vendor : 0;
     // its conversation: the instance's own root, else its asset's
     w->npc.dialogue_root = (s.instance && s.instance->dialogue_root != 0) ? s.instance->dialogue_root : (s.asset ? s.asset->dialogue_root : 0);

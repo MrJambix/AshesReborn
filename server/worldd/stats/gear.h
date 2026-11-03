@@ -18,6 +18,8 @@
 //      RarityMin. With Rounding::HalfUp each value is made floor(v + 0.5) first (the game client rounds a stat half up), except the value of a stat the client shows as a percentage.
 //    - A SetBonus adds, for each tier (the pieces of the set that must be worn), stat bonuses by rarity:
 //      every tier up to the worn count applies, at the lowest rarity among the worn pieces of the set.
+//      Its effects (SetEffectBonuses, contentc version 43) follow the same rule, but are not stat mods of the gear: worn_set_effects
+//      lists them and the session puts them on the character through the ability runtime, whose effects change the stats.
 //    - Every gameplay tag of an item is given under the name of the slot it is worn in.
 //
 //  The sums are per stat, in double, in the order Gear.Mods adds them: the items in the order given, then
@@ -62,8 +64,18 @@ struct SetTier {
     std::vector<SetEntry>  entries;
 };
 
+/// (contentc version 43, set_effect_bonus) One effect of a set's SetEffectBonuses: the EffectRecord the set puts on its wearer while `pieces` of it are worn and the lowest rarity
+/// among them is `min_rarity` to `max_rarity` (Common 0 ... Artifact 6), with `stacks` stacks.  The ability runtime applies it (its stat mods change the stats there, not here).
+struct SetEffect {
+    int     pieces = 0;
+    int64_t effect = 0;
+    int     min_rarity = 0, max_rarity = kRarities - 1;
+    int     stacks = 1;
+};
+
 struct SetBonus {
-    std::vector<SetTier> tiers;
+    std::vector<SetTier>   tiers;
+    std::vector<SetEffect> effects;   // in the record's order (tiers, then entries)
 };
 
 /// What the stat engine needs of one ItemRecord.  The quality curve (has_curve, bands) and the item's RarityMin..RarityMax are the rarity rule's facts (items/rarity.h).
@@ -104,5 +116,15 @@ struct GearInputs {
 };
 
 GearInputs gear_inputs(const GearCatalog& catalog, std::span<const WornItem> worn, Rounding rounding);
+
+/// An effect the worn sets put on the character (SetBonus::effects whose tier the worn pieces reach, at the lowest rarity among them: the rule of the stat bonuses).
+struct WornSetEffect {
+    int64_t set = 0;
+    int64_t effect = 0;
+    int     stacks = 1;
+};
+/// The effects of the worn sets, by ascending set guid, each effect once (the most stacks any entry gives it).  ArmorType_Heavy's PhysicalMitigation effect for five Common
+/// pieces of heavy armour; nothing for four.
+std::vector<WornSetEffect> worn_set_effects(const GearCatalog& catalog, std::span<const WornItem> worn);
 
 }  // namespace aoc::worldd::stats

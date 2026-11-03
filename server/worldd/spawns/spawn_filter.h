@@ -48,6 +48,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 // ~ C-O-A & C-Y-B ~
@@ -153,5 +154,17 @@ private:
 
 /// The class name of an archetype path or class ("Wolf" of ".../Wolf.Default__Wolf_C").
 std::string archetype_leaf(const std::string& archetype_path);
+
+/// The gameplay tags a spawned creature carries, as the data spells them: its instance's, its set's, its asset's and the asset set's (npc_instance.tags, npc_set.tags,
+/// npc_asset.tags, npc_asset_set.tags) -- what the spawn filter's RequiredTags read.  `asset_set` is the AssetSet the instance drew the asset from (0: none).
+std::set<std::string> npc_tags_of(const content::PopulationData& data, const content::NpcSetRow& set, const content::NpcInstanceRow& instance, int64_t asset_set,
+                                  const content::NpcAssetRow& asset);
+
+/// ... as a Kill objective's tag query reads them (world::NpcInfo::tags): lower case, every tag with all its parents (content/tag_query.h).  The lists are interned: every
+/// creature with the same tags holds the same one, so thousands of NPCs cost a pointer each.  Null when the creature has no tag.  Thread safe.
+std::shared_ptr<const content::TagSet> npc_tag_set(const content::PopulationData& data, const content::NpcSetRow& set, const content::NpcInstanceRow& instance, int64_t asset_set,
+                                                   const content::NpcAssetRow& asset);
+/// The interned TagSet of `tags` (any case; null for none).  Thread safe.
+std::shared_ptr<const content::TagSet> intern_tag_set(const std::vector<std::string>& tags);
 
 }  // namespace aoc::worldd::spawns

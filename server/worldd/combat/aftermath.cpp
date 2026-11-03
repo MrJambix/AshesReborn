@@ -231,6 +231,7 @@ void Aftermath::on_death(const DeathEvent& d) {
                 kr.blueprint = d.blueprint;
                 kr.level = d.level;
                 kr.instance = d.info ? d.info->instance_guid : 0;
+                if (d.info) kr.tags = d.info->tags;
                 kr.elite = d.elite;
                 for (const RolledXp& x : rolled.xp) {
                     const int64_t amount = book_->xp_for(x.amount, ctx);

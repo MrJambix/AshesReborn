@@ -101,6 +101,8 @@ constexpr const char* kItemTagSql = "SELECT tag FROM item_tag WHERE item_guid = 
 constexpr const char* kSetBonusSql =
     "SELECT tier_ord, pieces, stat_guid, common, uncommon, rare, heroic, epic, legendary, artifact FROM set_bonus WHERE set_guid = ?1 "
     "ORDER BY tier_ord, bonus_ord";
+// contentc version 43: a set's effects.  Not among the statements every file must answer: an older file has none (its ArmorType sets add nothing).
+constexpr const char* kSetEffectSql = "SELECT pieces, effect_guid, min_rarity, max_rarity, stacks FROM set_effect_bonus WHERE set_guid = ?1 ORDER BY tier_ord, ord";
 constexpr const char* kEquipSlotSql = "SELECT slot, name FROM equip_slot";
 // plan D1 (contentc version 5): schema.go's item_use, item_action, action_response, action_reward, reward_table, reward_item, reward_xp,
 // leveling_type, leveling_curve, skill_auto_grant and skill_rank_stat_mod
@@ -902,7 +904,36 @@ std::optional<stats::SetBonus> ContentDb::set_bonus(int64_t guid, std::string& e
         error = "content.db set bonus query failed: " + db_message(db_);
         return std::nullopt;
     }
-    if (out.tiers.empty()) return std::nullopt;   // a set with no bonus rows is no set to the engine
+    if (Stmt e(db_, kSetEffectSql); e.ok()) {   // (a file older than version 43 has no such table: the set has no effects)
+        sqlite3_bind_int64(e.get(), 1, guid);
+        while ((step = sqlite3_step(e.get())) == SQLITE_ROW) {
+            sqlite3_stmt* s = e.get();
+            for (int c = 0; c < 5; ++c) {
+                if (!column_is_int(s, c)) {
+                    error = "content.db's set " + std::to_string(guid) + " has an effect row with a column that is not an integer";
+                    return std::nullopt;
+                }
+            }
+            const int64_t pieces = sqlite3_column_int64(s, 0), lo = sqlite3_column_int64(s, 2), hi = sqlite3_column_int64(s, 3), stacks = sqlite3_column_int64(s, 4);
+            if (pieces < 1 || pieces > 83 || lo < 0 || hi >= stats::kRarities || lo > hi || stacks < 1 || stacks > 1000) {
+                error = "content.db's set " + std::to_string(guid) + " has an effect row out of range (" + std::to_string(pieces) + " pieces, rarities " + std::to_string(lo) + " to " +
+                        std::to_string(hi) + ", " + std::to_string(stacks) + " stacks)";
+                return std::nullopt;
+            }
+            stats::SetEffect fx;
+            fx.pieces = static_cast<int>(pieces);
+            fx.effect = sqlite3_column_int64(s, 1);
+            fx.min_rarity = static_cast<int>(lo);
+            fx.max_rarity = static_cast<int>(hi);
+            fx.stacks = static_cast<int>(stacks);
+            out.effects.push_back(fx);
+        }
+        if (step != SQLITE_DONE) {
+            error = "content.db set effect query failed: " + db_message(db_);
+            return std::nullopt;
+        }
+    }
+    if (out.tiers.empty() && out.effects.empty()) return std::nullopt;   // a set with no bonus rows is no set to the engine
     return out;
 }
 
@@ -2727,12 +2758,11 @@ std::string lower_case(std::string s) {
     return s;
 }
 
-/// A tag query of vendor_modifier.filter or vendor_sell_filter.filter ({"tok": [..], "tags": [..]}); `present` stays false for '' and for text that is no query.
-TagQuery parse_tag_query(const std::string& text) {
+/// A tag query as content.db holds one ({"tok": [..], "tags": [..]}, the dictionary made lower case); `present` stays false for anything that is no query (an older
+/// objective's flag 1).
+TagQuery tag_query_of(const nlohmann::json& j) {
     TagQuery q;
-    if (text.empty()) return q;
-    const nlohmann::json j = nlohmann::json::parse(text, nullptr, false);
-    if (j.is_discarded() || !j.is_object()) return q;
+    if (!j.is_object()) return q;
     q.tok = int_list(j, "tok");
     const auto it = j.find("tags");
     if (it != j.end() && it->is_array()) {
@@ -2740,6 +2770,26 @@ TagQuery parse_tag_query(const std::string& text) {
     }
     q.present = q.tok.size() >= 2 && q.tok[1] != 0;
     return q;
+}
+
+/// A tag query of vendor_modifier.filter or vendor_sell_filter.filter; `present` stays false for '' and for text that is no query.
+TagQuery parse_tag_query(const std::string& text) {
+    if (text.empty()) return TagQuery{};
+    const nlohmann::json j = nlohmann::json::parse(text, nullptr, false);
+    if (j.is_discarded()) return TagQuery{};
+    return tag_query_of(j);
+}
+
+/// An objective's "tq" (contentc version 43: the query; before it 1, the record sets one): whether there is one, and the query when it reads.
+bool objective_tag_query(const nlohmann::json& o, TagQuery& out) {
+    out = TagQuery{};
+    const auto it = o.find("tq");
+    if (it == o.end() || it->is_null()) return false;
+    if (it->is_object()) {
+        out = tag_query_of(*it);
+        return true;
+    }
+    return it->is_number() && it->get<double>() != 0;
 }
 
 /// A JSON array of integers (the text of a column); empty for anything else.
@@ -3295,7 +3345,7 @@ bool parse_objective_detail(const std::string& text, QuestObjectiveRow& o) {
             if (!e.is_object()) return false;
             QuestObjectiveRow::ItemReward r;
             r.table = json_int(e, "t");
-            r.tag_query = json_flag(e, "tq");
+            r.tag_query = objective_tag_query(e, r.tags);
             if (!json_ints(e, "inst", r.instances) || !json_ints(e, "sets", r.sets)) return false;
             o.item_rewards.push_back(std::move(r));
         }
@@ -3328,7 +3378,7 @@ bool parse_objective_detail(const std::string& text, QuestObjectiveRow& o) {
     o.elite = static_cast<int>(json_int(*d, "elite"));
     o.kill_owner = json_flag(*d, "owner");
     o.use_context = json_flag(*d, "ctx");
-    o.tag_query = json_flag(*d, "tq");
+    o.tag_query = objective_tag_query(*d, o.kill_tags);
     if (!json_sources(*d, "src", o.sources)) return false;
     o.any_source = json_flag(*d, "any");
     if (!json_ints(*d, "comp", o.components) || !json_ints(*d, "actor", o.actors)) return false;
