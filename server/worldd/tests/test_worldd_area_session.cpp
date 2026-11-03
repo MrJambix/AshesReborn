@@ -151,8 +151,14 @@ static double world_time_at(Clock::time_point t) { return std::chrono::duration<
 
 struct RecordingSink : PositionSink {
     std::vector<std::vector<svc::InventoryItem>> inventories;
+    std::vector<std::vector<svc::MarketRow>> market;   // the marketplace: the rows of each save that carried some, with its inventory in `inventories`
     void save(const std::string&, const svc::Position&) override {}
     void save_inventory(const std::string&, std::vector<svc::InventoryItem> items) override { inventories.push_back(std::move(items)); }
+    void save_inventory(const std::string& id, std::vector<svc::InventoryItem> items, std::vector<svc::WalletEntry>, std::vector<svc::ProcessingJob>, std::vector<int64_t>,
+                        std::vector<svc::WarehouseItem>, std::vector<svc::MarketRow> rows) override {
+        market.push_back(std::move(rows));
+        save_inventory(id, std::move(items));
+    }
     void save_progress(const std::string&, svc::Progress) override {}
 };
 

@@ -300,6 +300,8 @@ add_library(worldd_core STATIC
     spawns/spawn_filter.cpp
     spawns/spawn_filter.h
     spawns/spawn_util.h
+    market/market_book.cpp
+    market/market_book.h
     vendor/gm_vendor.cpp
     vendor/gm_vendor.h
     vendor/node_tax.cpp
@@ -461,6 +463,7 @@ target_compile_definitions(test_worldd_gather_session PRIVATE
 worldd_add_test(test_worldd_warehouse)
 worldd_add_test(test_worldd_group)
 worldd_add_test(test_worldd_guild)
+worldd_add_test(test_worldd_market)
 worldd_add_test(test_worldd_resource)
 target_compile_definitions(test_worldd_resource PRIVATE
     RESOURCE_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")

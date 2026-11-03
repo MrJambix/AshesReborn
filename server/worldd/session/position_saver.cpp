@@ -79,9 +79,26 @@ void CharacterSaver::save_inventory(const std::string& character_id, std::vector
     save_inventory_entry(character_id, std::move(items), std::move(wallet), std::move(jobs), std::move(known_recipes), std::move(warehouse));
 }
 
+void CharacterSaver::save_inventory(const std::string& character_id, std::vector<svc::InventoryItem> items, std::vector<svc::WalletEntry> wallet, std::vector<svc::ProcessingJob> jobs,
+                                    std::vector<int64_t> known_recipes, std::vector<svc::WarehouseItem> warehouse, std::vector<svc::MarketRow> market) {
+    save_inventory_entry(character_id, std::move(items), std::move(wallet), std::move(jobs), std::move(known_recipes), std::move(warehouse), std::move(market));
+}
+
+namespace {
+
+/// The marketplace's rows of a save merged into what waits: by id, the higher revision kept.
+void merge_market(std::map<std::string, svc::MarketRow>& into, std::vector<svc::MarketRow> rows) {
+    for (svc::MarketRow& r : rows) {
+        auto [it, added] = into.try_emplace(r.id, r);
+        if (!added && it->second.revision < r.revision) it->second = std::move(r);
+    }
+}
+
+}  // namespace
+
 void CharacterSaver::save_inventory_entry(const std::string& character_id, std::vector<svc::InventoryItem> items, std::optional<std::vector<svc::WalletEntry>> wallet,
                                           std::optional<std::vector<svc::ProcessingJob>> jobs, std::optional<std::vector<int64_t>> known_recipes,
-                                          std::optional<std::vector<svc::WarehouseItem>> warehouse) {
+                                          std::optional<std::vector<svc::WarehouseItem>> warehouse, std::vector<svc::MarketRow> market) {
     {
         std::lock_guard<std::mutex> lock(mu_);
         if (stop_) return;
@@ -93,6 +110,7 @@ void CharacterSaver::save_inventory_entry(const std::string& character_id, std::
             it->second.jobs = std::move(jobs);
             it->second.known_recipes = std::move(known_recipes);
             it->second.warehouse = std::move(warehouse);
+            merge_market(it->second.market, std::move(market));
             it->second.inventory_attempts = 0;
         } else {
             if (entries_.size() >= config_.max_queued) {
@@ -109,6 +127,7 @@ void CharacterSaver::save_inventory_entry(const std::string& character_id, std::
             e.jobs = std::move(jobs);
             e.known_recipes = std::move(known_recipes);
             e.warehouse = std::move(warehouse);
+            merge_market(e.market, std::move(market));
             entries_.emplace(character_id, std::move(e));
         }
     }
@@ -187,7 +206,11 @@ void CharacterSaver::run() {
         if (entry.inventory) {
             inventory_status = svc::CallStatus::Failed;
             try {
-                inventory_status = entry.wallet && entry.jobs && entry.known_recipes && entry.warehouse ? api_.save_inventory(id, *entry.inventory, *entry.wallet, *entry.jobs, *entry.known_recipes, *entry.warehouse)
+                std::vector<svc::MarketRow> market;
+                for (const auto& [row_id, row] : entry.market) market.push_back(row);
+                inventory_status = entry.wallet && entry.jobs && entry.known_recipes && entry.warehouse && !market.empty()
+                                       ? api_.save_inventory(id, *entry.inventory, *entry.wallet, *entry.jobs, *entry.known_recipes, *entry.warehouse, market)
+                                   : entry.wallet && entry.jobs && entry.known_recipes && entry.warehouse ? api_.save_inventory(id, *entry.inventory, *entry.wallet, *entry.jobs, *entry.known_recipes, *entry.warehouse)
                                    : entry.wallet && entry.jobs && entry.known_recipes ? api_.save_inventory(id, *entry.inventory, *entry.wallet, *entry.jobs, *entry.known_recipes)
                                    : entry.wallet && entry.jobs   ? api_.save_inventory(id, *entry.inventory, *entry.wallet, *entry.jobs)
                                    : entry.wallet              ? api_.save_inventory(id, *entry.inventory, *entry.wallet)
@@ -258,8 +281,8 @@ void CharacterSaver::run() {
                     [[fallthrough]];
                 default:
                     ++failed_;
-                    spdlog::error("[saver] {}: the inventory ({} items) could not be saved ({}): given up", id, entry.inventory->size(),
-                                  svc::call_status_name(inventory_status));
+                    spdlog::error("[saver] {}: the inventory ({} items{}) could not be saved ({}): given up", id, entry.inventory->size(),
+                                  entry.market.empty() ? std::string() : ", " + std::to_string(entry.market.size()) + " marketplace row(s)", svc::call_status_name(inventory_status));
                     break;
             }
         }
@@ -280,6 +303,7 @@ void CharacterSaver::run() {
                     again.jobs = std::move(entry.jobs);                  // (a retried save keeps everything its call carried)
                     again.known_recipes = std::move(entry.known_recipes);
                     again.warehouse = std::move(entry.warehouse);
+                    again.market = std::move(entry.market);
                     again.inventory_attempts = entry.inventory_attempts;
                 }
                 if (retry_progress) {
@@ -302,6 +326,11 @@ void CharacterSaver::run() {
                         newer->second.known_recipes = std::move(again.known_recipes);
                         newer->second.warehouse = std::move(again.warehouse);
                         newer->second.inventory_attempts = again.inventory_attempts;
+                    }
+                    if (!again.market.empty()) {   // a newer save carries only its own rows: the retried ones go with it
+                        std::vector<svc::MarketRow> rows;
+                        for (auto& [row_id, row] : again.market) rows.push_back(std::move(row));
+                        merge_market(newer->second.market, std::move(rows));
                     }
                     if (!newer->second.progress && again.progress) {
                         newer->second.progress = std::move(again.progress);

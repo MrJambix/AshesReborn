@@ -32,6 +32,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -76,6 +77,12 @@ public:
         (void)warehouse;
         save_inventory(character_id, std::move(items), std::move(wallet), std::move(jobs), std::move(known_recipes));
     }
+    /// The marketplace: the same with the market rows the character's act changed (market/market_book.h), stored in the same call.  A sink that does not keep the market saves the rest.
+    virtual void save_inventory(const std::string& character_id, std::vector<svc::InventoryItem> items, std::vector<svc::WalletEntry> wallet, std::vector<svc::ProcessingJob> jobs,
+                                std::vector<int64_t> known_recipes, std::vector<svc::WarehouseItem> warehouse, std::vector<svc::MarketRow> market) {
+        (void)market;
+        save_inventory(character_id, std::move(items), std::move(wallet), std::move(jobs), std::move(known_recipes), std::move(warehouse));
+    }
     /// Plan D1: queues the character's progress (SaveProgress: level, class, XP rows). Never blocks on the network.
     virtual void save_progress(const std::string& character_id, svc::Progress progress) {
         (void)character_id;
@@ -105,6 +112,8 @@ public:
                         std::vector<int64_t> known_recipes) override;
     void save_inventory(const std::string& character_id, std::vector<svc::InventoryItem> items, std::vector<svc::WalletEntry> wallet, std::vector<svc::ProcessingJob> jobs,
                         std::vector<int64_t> known_recipes, std::vector<svc::WarehouseItem> warehouse) override;
+    void save_inventory(const std::string& character_id, std::vector<svc::InventoryItem> items, std::vector<svc::WalletEntry> wallet, std::vector<svc::ProcessingJob> jobs,
+                        std::vector<int64_t> known_recipes, std::vector<svc::WarehouseItem> warehouse, std::vector<svc::MarketRow> market) override;
     void save_progress(const std::string& character_id, svc::Progress progress) override;
 
     /// Waits until the queue is empty and no call is running, at most `max_wait`; true when it was.
@@ -131,6 +140,9 @@ private:
         std::optional<std::vector<int64_t>>            known_recipes;   // crafting, step 3: saved in the inventory's call when set
         std::optional<std::vector<svc::WarehouseItem>> warehouse;       // storage, step 0: saved in the inventory's call when set
         std::optional<svc::Progress>                   progress;   // plan D1: saved between the position and the inventory
+        /// The marketplace: the rows saved in the inventory's call.  Unlike the rest these are not replaced by a newer save but merged with it, by id, the higher revision
+        /// kept: each save carries only the rows its own act changed.
+        std::map<std::string, svc::MarketRow>          market;
         int                                            position_attempts = 0;
         int                                            inventory_attempts = 0;
         int                                            progress_attempts = 0;
@@ -139,7 +151,7 @@ private:
     void run();
     void save_inventory_entry(const std::string& character_id, std::vector<svc::InventoryItem> items, std::optional<std::vector<svc::WalletEntry>> wallet,
                               std::optional<std::vector<svc::ProcessingJob>> jobs = std::nullopt, std::optional<std::vector<int64_t>> known_recipes = std::nullopt,
-                              std::optional<std::vector<svc::WarehouseItem>> warehouse = std::nullopt);
+                              std::optional<std::vector<svc::WarehouseItem>> warehouse = std::nullopt, std::vector<svc::MarketRow> market = {});
 
     svc::CharacterApi&   api_;
     const Config         config_;

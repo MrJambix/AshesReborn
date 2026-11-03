@@ -33,6 +33,7 @@ const (
 	CharacterService_ListGuilds_FullMethodName         = "/aoc.character.v1.CharacterService/ListGuilds"
 	CharacterService_SaveGuild_FullMethodName          = "/aoc.character.v1.CharacterService/SaveGuild"
 	CharacterService_DeleteGuild_FullMethodName        = "/aoc.character.v1.CharacterService/DeleteGuild"
+	CharacterService_ListMarketplace_FullMethodName    = "/aoc.character.v1.CharacterService/ListMarketplace"
 )
 
 // CharacterServiceClient is the client API for CharacterService service.
@@ -84,6 +85,9 @@ type CharacterServiceClient interface {
 	SaveGuild(ctx context.Context, in *SaveGuildRequest, opts ...grpc.CallOption) (*SaveGuildResponse, error)
 	// InvalidArgument for a malformed guid. A guild that is not there is no error.
 	DeleteGuild(ctx context.Context, in *DeleteGuildRequest, opts ...grpc.CallOption) (*DeleteGuildResponse, error)
+	// The player marketplace, which worldd holds while it runs: every row, once at its start. The rows a removal left behind
+	// (tombstones) are deleted first and not returned. Rows are written with SaveInventory (SaveInventoryRequest.marketplace_rows).
+	ListMarketplace(ctx context.Context, in *ListMarketplaceRequest, opts ...grpc.CallOption) (*ListMarketplaceResponse, error)
 }
 
 type characterServiceClient struct {
@@ -194,6 +198,16 @@ func (c *characterServiceClient) DeleteGuild(ctx context.Context, in *DeleteGuil
 	return out, nil
 }
 
+func (c *characterServiceClient) ListMarketplace(ctx context.Context, in *ListMarketplaceRequest, opts ...grpc.CallOption) (*ListMarketplaceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListMarketplaceResponse)
+	err := c.cc.Invoke(ctx, CharacterService_ListMarketplace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CharacterServiceServer is the server API for CharacterService service.
 // All implementations must embed UnimplementedCharacterServiceServer
 // for forward compatibility.
@@ -243,6 +257,9 @@ type CharacterServiceServer interface {
 	SaveGuild(context.Context, *SaveGuildRequest) (*SaveGuildResponse, error)
 	// InvalidArgument for a malformed guid. A guild that is not there is no error.
 	DeleteGuild(context.Context, *DeleteGuildRequest) (*DeleteGuildResponse, error)
+	// The player marketplace, which worldd holds while it runs: every row, once at its start. The rows a removal left behind
+	// (tombstones) are deleted first and not returned. Rows are written with SaveInventory (SaveInventoryRequest.marketplace_rows).
+	ListMarketplace(context.Context, *ListMarketplaceRequest) (*ListMarketplaceResponse, error)
 	mustEmbedUnimplementedCharacterServiceServer()
 }
 
@@ -282,6 +299,9 @@ func (UnimplementedCharacterServiceServer) SaveGuild(context.Context, *SaveGuild
 }
 func (UnimplementedCharacterServiceServer) DeleteGuild(context.Context, *DeleteGuildRequest) (*DeleteGuildResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DeleteGuild not implemented")
+}
+func (UnimplementedCharacterServiceServer) ListMarketplace(context.Context, *ListMarketplaceRequest) (*ListMarketplaceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListMarketplace not implemented")
 }
 func (UnimplementedCharacterServiceServer) mustEmbedUnimplementedCharacterServiceServer() {}
 func (UnimplementedCharacterServiceServer) testEmbeddedByValue()                          {}
@@ -484,6 +504,24 @@ func _CharacterService_DeleteGuild_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CharacterService_ListMarketplace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListMarketplaceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CharacterServiceServer).ListMarketplace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CharacterService_ListMarketplace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CharacterServiceServer).ListMarketplace(ctx, req.(*ListMarketplaceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CharacterService_ServiceDesc is the grpc.ServiceDesc for CharacterService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -530,6 +568,10 @@ var CharacterService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteGuild",
 			Handler:    _CharacterService_DeleteGuild_Handler,
+		},
+		{
+			MethodName: "ListMarketplace",
+			Handler:    _CharacterService_ListMarketplace_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

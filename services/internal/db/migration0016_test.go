@@ -33,7 +33,7 @@ func before16(t *testing.T) *pgxpool.Pool {
 // is not recorded): what 0016 must not change.
 func schemaWithoutQuests(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
-	const skip = `'character_quests', 'character_quests_completed', 'character_quest_variables', 'character_quest_commands', 'guilds', 'character_warehouse_items', 'character_warehouse_containers', 'character_attunements', 'character_home_attunement', 'account_combat_settings', 'gm_accounts', 'character_processing_jobs'`
+	const skip = `'character_quests', 'character_quests_completed', 'character_quest_variables', 'character_quest_commands', 'guilds', 'marketplace_rows', 'character_warehouse_items', 'character_warehouse_containers', 'character_attunements', 'character_home_attunement', 'account_combat_settings', 'gm_accounts', 'character_processing_jobs'`
 	var out []string
 	for _, q := range []string{
 		`SELECT table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '-') FROM information_schema.columns

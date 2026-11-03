@@ -9,3 +9,4 @@
 #include "area_session_gm_vendor_tests.inc"
 #include "area_session_craft_tests.inc"
 #include "area_session_ground_crate_tests.inc"
+#include "area_session_market_tests.inc"

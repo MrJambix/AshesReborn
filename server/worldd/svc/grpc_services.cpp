@@ -310,6 +310,18 @@ CallStatus GrpcServices::list_guilds(std::vector<SavedGuild>& out) {
     return status;
 }
 
+CallStatus GrpcServices::list_marketplace(std::vector<MarketRow>& out) {
+    out.clear();
+    grpc::ClientContext ctx;
+    prepare(ctx, timeout_);
+    characterv1::ListMarketplaceRequest req;
+    characterv1::ListMarketplaceResponse resp;
+    const CallStatus status = map_grpc_status(stubs_->character->ListMarketplace(&ctx, req, &resp));
+    if (status != CallStatus::Ok) return status;
+    for (const auto& r : resp.rows()) out.push_back({r.id(), r.revision(), r.gone(), r.data()});
+    return status;
+}
+
 CallStatus GrpcServices::save_guild(const std::string& guid, const std::string& name, const std::string& data) {
     grpc::ClientContext ctx;
     prepare(ctx, save_timeout_);
@@ -364,12 +376,26 @@ CallStatus GrpcServices::save_inventory(const std::string& id, const std::vector
     return save_inventory(id, items, wallet, /*with_wallet=*/true, &jobs, &known_recipes, &warehouse);
 }
 
+CallStatus GrpcServices::save_inventory(const std::string& id, const std::vector<InventoryItem>& items, const std::vector<WalletEntry>& wallet, const std::vector<ProcessingJob>& jobs,
+                                        const std::vector<int64_t>& known_recipes, const std::vector<WarehouseItem>& warehouse, const std::vector<MarketRow>& market) {
+    return save_inventory(id, items, wallet, /*with_wallet=*/true, &jobs, &known_recipes, &warehouse, &market);
+}
+
 CallStatus GrpcServices::save_inventory(const std::string& id, const std::vector<InventoryItem>& items, const std::vector<WalletEntry>& wallet, bool with_wallet, const std::vector<ProcessingJob>* jobs,
-                                        const std::vector<int64_t>* known_recipes, const std::vector<WarehouseItem>* warehouse) {
+                                        const std::vector<int64_t>* known_recipes, const std::vector<WarehouseItem>* warehouse, const std::vector<MarketRow>* market) {
     grpc::ClientContext ctx;
     prepare(ctx, save_timeout_);
     characterv1::SaveInventoryRequest req;
     req.set_id(id);
+    if (market) {
+        for (const MarketRow& m : *market) {
+            auto* r = req.add_marketplace_rows();
+            r->set_id(m.id);
+            r->set_revision(m.revision);
+            r->set_gone(m.gone);
+            r->set_data(m.data);
+        }
+    }
     if (warehouse) {
         req.set_replace_warehouse(true);
         for (const WarehouseItem& w : *warehouse) {

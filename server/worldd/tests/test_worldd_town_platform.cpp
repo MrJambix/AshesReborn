@@ -243,19 +243,25 @@ static double percentile(std::vector<double> v, double p) {
 static void test_real_platforms() {
     std::string err;
     std::vector<world::PlatformLayout> layouts;
-    if (!world::read_town_platforms(TOWN_PLATFORMS_PATH, &layouts, &err)) {
+    // AOC_TEST_TOWN_PLATFORMS: a file made elsewhere (mapc town-floors --out-dir), checked before it replaces dist/content's
+    const char* other = std::getenv("AOC_TEST_TOWN_PLATFORMS");
+    const std::string path = other && *other ? other : TOWN_PLATFORMS_PATH;
+    if (!world::read_town_platforms(path, &layouts, &err)) {
         std::printf("the real platforms: [skip] %s (run: dotnet tools/mapc/bin/Release/net8.0/mapc.dll town-floors)\n", err.c_str());
         return;
     }
-    std::printf("the real platforms (%s)\n", TOWN_PLATFORMS_PATH);
-    CHECK(layouts.size() == 2 && layouts[0].name == "Layout_Flat_D" && layouts[1].name == "Layout_River_C", "two layouts: Flat_D (Winstead, Joeva, New Aela) and River_C (Halcyon, Miraleth)");
+    std::printf("the real platforms (%s)\n", path.c_str());
+    CHECK(layouts.size() == 4 && layouts[0].name == "Layout_Flat_D" && layouts[1].name == "Layout_River_C" && layouts[2].name == "Layout_Flat_D_TabletopMountains" &&
+              layouts[3].name == "Layout_Coastal_Flat_A_Anvils",
+          "four layouts: Flat_D (Winstead, Joeva, New Aela), River_C (Halcyon, Miraleth, Vhalgadim), Flat_D's TabletopMountains variant (Vexhelm, Duunhold, Dhurgrum) and "
+          "Coastal_Flat_A's Anvils variant (Kal Torhum)");
     for (const world::PlatformLayout& l : layouts) {
         const world::PlatformGrid& g = l.grid;
         char msg[300];
         std::snprintf(msg, sizeof msg, "%s: %u x %u vertices at %.0f cm, %zu holes (%.1f %%), reach %.0f m", l.name.c_str(), g.nx, g.ny, g.step_x, g.holes(), 100.0 * g.holes() / g.z.size(), g.reach / 100.0);
         std::printf("    %s\n", msg);
         CHECK(g.nx == 1009 && g.ny == 1009 && g.step_x == 100.0 && g.step_y == 100.0, "a lattice of 1,009 x 1,009 vertices at 100 cm (256 components of 64 x 64 sharing their border rows)");
-        CHECK(g.holes() > 253000 && g.holes() < 254500, "about a quarter of it is hole (253,873 and 253,869 vertices)");
+        CHECK(g.holes() > 253000 && g.holes() < 254500, "about a quarter of it is hole (253,873, 253,869 and 254,402 vertices)");
         double nearest = 1e18;
         for (uint32_t iy = 0; iy < g.ny; ++iy) {
             for (uint32_t ix = 0; ix < g.nx; ++ix) {
@@ -325,7 +331,7 @@ static void test_real_platforms() {
         aoc::protocol::ServerGuidAllocator guids{60, 0x6ee87ee4u};
         PlayerWorld world(&*db, "", bootstrap::GameStateMode::Tier3, 60, guids);
         world.set_city_nodes(nodes.get());
-        CHECK(world.load_town_platforms(TOWN_PLATFORMS_PATH, err) && world.town_platforms() && world.town_platforms()->nodes() == std::size(world::kTownBowls), "PlayerWorld::load_town_platforms places the bowls at the registry's records");
+        CHECK(world.load_town_platforms(path, err) && world.town_platforms() && world.town_platforms()->nodes() == std::size(world::kTownBowls), "PlayerWorld::load_town_platforms places the bowls at the registry's records");
         const world::CityNodeInfo* joeva = nodes->by_guid(world::kTownBowls[1].node);
         const double mx = -1087417.6, my = 503591.5;   // Joeva's market square
         const auto square = world.bowl_floor_at(mx, my);

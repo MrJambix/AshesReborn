@@ -115,7 +115,7 @@ enum class S {
     Unknown, Vec3, Vec2, Ticks, Rotator, Quantized, Normal, RepMovement, LoadTracker, UniqueId, Tag, TagContainer,
     StatInt32, Quat, GuidToBool, Alignment, AppearanceId, Customization, ItemInstance, ItemStorageEvent, HitConfirmations,
     MovementInput, VendorPurchase, VendorTransaction, EmptyMap, NodeTax, LocalizedMessage, ChannelingData, CraftState, RewardInstance, HashedVariable,
-    WarehouseEntry, CraftTags, GuildData,
+    WarehouseEntry, CraftTags, GuildData, Currency,
 };
 
 S find_struct(std::string_view n) {
@@ -152,6 +152,7 @@ S find_struct(std::string_view n) {
     if (n == "FWarehouseItemChunkSummary" || n == "FWarehouseMaterialTabSummary") return S::WarehouseEntry;
     if (n == "FCraftingResourceTagCostSelection") return S::CraftTags;
     if (n == "FGuildData") return S::GuildData;
+    if (n == "FCurrencyContainer") return S::Currency;
     return S::Unknown;
 }
 
@@ -748,6 +749,34 @@ bool write_guild_data(BunchWriter& out, const GuildDataWire& g) {
     return true;
 }
 
+/// The most pairs an FCurrencyContainer carries here: a price names one tier, a trade or a mail a few; a bad count must not allocate the world.
+constexpr size_t kMaxCurrencyEntries = 64;
+
+bool write_currency_container(BunchWriter& out, const CurrencyContainer& c) {
+    if (c.values.size() > kMaxCurrencyEntries) return false;
+    out.write_uint32(static_cast<uint32_t>(c.values.size()));
+    for (const CurrencyContainer::Entry& e : c.values) {
+        out.write_uint64(static_cast<uint64_t>(e.tier));
+        out.write_uint64(static_cast<uint64_t>(e.type_id));
+        out.write_uint64(e.amount);
+    }
+    return true;
+}
+
+std::optional<CurrencyContainer> read_currency_container(wire::PacketReader& r) {
+    const uint32_t n = r.read_uint32();
+    if (overran(r) || n > kMaxCurrencyEntries) return std::nullopt;   // the exe refuses a negative count; a large one is refused here
+    CurrencyContainer c;
+    c.values.resize(n);
+    for (CurrencyContainer::Entry& e : c.values) {
+        e.tier = static_cast<int64_t>(r.read_uint64());
+        e.type_id = static_cast<int64_t>(r.read_uint64());
+        e.amount = r.read_uint64();
+    }
+    if (overran(r)) return std::nullopt;
+    return c;
+}
+
 std::optional<GuildDataWire> read_guild_data(wire::PacketReader& r) {
     constexpr uint32_t kMaxListed = 4096;   // far beyond any guild: a bad count must not allocate the world
     const auto read_guid = [&] {
@@ -1259,6 +1288,10 @@ bool struct_accepts(std::string_view struct_name, const Value& v) {
         }
         case S::GuildData:
             return v.get_if<GuildDataWire>() != nullptr;
+        case S::Currency: {
+            const auto* c = v.get_if<CurrencyContainer>();
+            return c && c->values.size() <= kMaxCurrencyEntries;
+        }
         case S::Unknown:     break;
     }
     return false;
@@ -1471,6 +1504,11 @@ std::optional<Value> read_struct(std::string_view struct_name, PacketReader& r, 
             if (!g) return std::nullopt;
             return Value(std::move(*g));
         }
+        case S::Currency: {
+            auto c = read_currency_container(r);
+            if (!c) return std::nullopt;
+            return Value(std::move(*c));
+        }
         case S::Unknown:
             break;
     }
@@ -1587,6 +1625,8 @@ bool write_struct(std::string_view struct_name, const Value& v, BunchWriter& out
             return write_craft_tag_selection(out, *v.get_if<CraftTagSelection>());
         case S::GuildData:
             return write_guild_data(out, *v.get_if<GuildDataWire>());
+        case S::Currency:
+            return write_currency_container(out, *v.get_if<CurrencyContainer>());
         case S::Unknown:
             break;
     }

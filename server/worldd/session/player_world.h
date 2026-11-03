@@ -39,6 +39,7 @@
 #include "session/chat.h"
 #include "session/group.h"
 #include "session/guild.h"
+#include "market/market_book.h"
 
 #include "bootstrap/bootstrap.h"
 #include "bootstrap/character_setup.h"
@@ -115,6 +116,11 @@ public:
     std::shared_ptr<chat::Room> chat_room() const { return chat_room_; }
     std::shared_ptr<group::Book> group_book() const { return group_book_; }
     std::shared_ptr<guild::Book> guild_book() const { return guild_book_; }
+    /// The player marketplace (market/market_book.h): every node's listings, loaded once at the start (main.cpp).
+    std::shared_ptr<market::Book> market_book() const { return market_book_; }
+    /// On only when the character service answered ListMarketplace at the start: an older service would drop the rows a listing saves (the item would leave the bags for nowhere).
+    bool market_enabled() const { return market_enabled_; }
+    void set_market_enabled(bool on) { market_enabled_ = on; }
     bool guilds_enabled() const { return guilds_enabled_; }
     void set_guilds_enabled(bool on) { guilds_enabled_ = on; }
     /// Crates on the ground (items/ground_crates.h).  Off (--no-ground-crates): Drop Crate puts the crate in the item bag, as before.
@@ -529,6 +535,8 @@ private:
     std::shared_ptr<chat::Room> chat_room_ = std::make_shared<chat::Room>();
     std::shared_ptr<group::Book> group_book_ = std::make_shared<group::Book>(group::mint_guid);
     std::shared_ptr<guild::Book> guild_book_ = std::make_shared<guild::Book>();
+    std::shared_ptr<market::Book> market_book_ = std::make_shared<market::Book>();
+    bool market_enabled_ = false;
     bool guilds_enabled_ = true;
     bool ground_crates_enabled_ = true;
     mutable items::GroundCrates ground_crates_;   // (the sessions lay and take crates through their const world, as they use quest objects)

@@ -27,3 +27,4 @@
 #include "session/members/ground_crate.inc"
 #include "session/members/based_move.inc"
 #include "session/members/view_phases.inc"
+#include "session/members/market.inc"

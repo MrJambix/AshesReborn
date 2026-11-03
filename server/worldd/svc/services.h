@@ -343,6 +343,16 @@ public:
                                        uint32_t server_id) = 0;
 };
 
+/// The player marketplace: one row of the marketplace table (market/market_book.h has what `data` holds).  `id` is "l<guid>" for a listing, "s<node>:<seller>" for a
+/// storefront; the store keeps the row with the higher `revision`; `gone` is a tombstone (the row was removed; the store drops tombstones when worldd lists the rows).
+struct MarketRow {
+    std::string id;
+    int64_t     revision = 0;
+    bool        gone = false;
+    std::string data;
+    bool operator==(const MarketRow&) const = default;
+};
+
 /// A row of the guilds table: `data` is session/guild_saver.h's.
 struct SavedGuild {
     std::string guid, name, data;
@@ -364,6 +374,11 @@ public:
     }
     virtual CallStatus delete_guild(const std::string& guid) {
         (void)guid;
+        return CallStatus::Failed;
+    }
+    /// The marketplace: every row, once at worldd's start (the store drops its tombstones then).  An older service answers Failed.
+    virtual CallStatus list_marketplace(std::vector<MarketRow>& out) {
+        out.clear();
         return CallStatus::Failed;
     }
     virtual CharacterResult get_character(const std::string& id) = 0;
@@ -403,6 +418,13 @@ public:
                                       const std::vector<int64_t>& known_recipes, const std::vector<WarehouseItem>& warehouse) {
         (void)warehouse;
         return save_inventory(id, items, wallet, jobs, known_recipes);
+    }
+    /// The marketplace: the same that also writes the market rows the character's act changed (market/market_book.h), in the same transaction, each kept only where the
+    /// store's row has a lower revision.  A fake that does not care saves the rest.
+    virtual CallStatus save_inventory(const std::string& id, const std::vector<InventoryItem>& items, const std::vector<WalletEntry>& wallet, const std::vector<ProcessingJob>& jobs,
+                                      const std::vector<int64_t>& known_recipes, const std::vector<WarehouseItem>& warehouse, const std::vector<MarketRow>& market) {
+        (void)market;
+        return save_inventory(id, items, wallet, jobs, known_recipes, warehouse);
     }
     /// Plan D1: SaveProgress: the level, the class and the XP rows, in one transaction (the latest save wins). Refused: a level
     /// outside 1-25, a class outside 1-8, a leveling type of 0, a negative XP or debt; NotFound: no such character.

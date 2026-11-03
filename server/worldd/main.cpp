@@ -559,6 +559,19 @@ int main(int argc, char** argv) {
         players.guild_book()->set_store({[&guild_saver](const guild::Guild& g) { guild_saver.save(g); }, [&guild_saver](const guild::Guid& g) { guild_saver.remove(g); },
                                          [&guild_saver](const std::map<guild::Guid, double>& c) { guild_saver.save_cooldowns(c); }});
     }
+    {
+        // the player marketplace (market/market_book.h): on only when the service lists it; an older service would drop the rows a listing saves with the seller's items
+        std::vector<svc::MarketRow> rows;
+        const svc::CallStatus listed = services.list_marketplace(rows);
+        if (listed != svc::CallStatus::Ok) {
+            spdlog::error("[market] the marketplace could not be read (status {}): it is OFF until worldd starts with a character service that keeps it", static_cast<int>(listed));
+        } else {
+            const size_t skipped = players.market_book()->load(rows);
+            players.set_market_enabled(true);
+            spdlog::info("[market] {} listing(s) from {} row(s){}", players.market_book()->listings(), rows.size(),
+                         skipped ? " (" + std::to_string(skipped) + " do not read and are left out)" : std::string());
+        }
+    }
     players.set_experience_rate(exp_rate);
     players.set_guilds_enabled(!no_guilds);
     if (no_guilds) spdlog::warn("[guild] OFF (--no-guilds)");

@@ -52,6 +52,7 @@ target_sources(worldd_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_fall.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_ground_crate.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_pets.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/session/player_market.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor/player_currency.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/quest/session_destiny.cpp
 )

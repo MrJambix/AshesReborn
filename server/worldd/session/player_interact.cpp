@@ -121,6 +121,8 @@ void PlayerSession::on_interact(Connection& conn, const repl::ClientRpc& rpc, Cl
     const GoodPosition at = checker_.good();
     const double distance = std::hypot(a->x - at.x, a->y - at.y);
     if (distance > kInteractRangeCm) return ignore("the actor is " + std::to_string(static_cast<int>(distance / 100.0)) + " m away");
+    // the player marketplace: its NPC's use opens the marketplace window (EActionResponse::OpenMarketplaceWindow), not a shop
+    if (is_marketplace(*a)) return open_marketplace(conn, *a, now);
     // Gathering stage 3, "Hunting": the interactable of a huntable creature starts its hunt, alive as it stands (or dead, if it was killed some other way), not a loot window
     if (a->kind == world::ActorKind::Npc && a->npc.interact_def != 0 && npc_world_ && npc_world_->gathering() && npc_world_->gathering()->hunt_kind(a->npc.interact_def)) {
         return on_hunt_interact(conn, *a, now);

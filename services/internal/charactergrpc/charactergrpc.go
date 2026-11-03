@@ -92,6 +92,16 @@ type AttunementStore interface {
 
 var _ AttunementStore = (*character.Store)(nil)
 
+// MarketplaceStore is the part of character.Store that keeps the player marketplace (migration 0024). A store without it keeps none: ListMarketplace answers Unimplemented and a save
+// that carries marketplace rows is refused.
+type MarketplaceStore interface {
+	ListMarketplace(ctx context.Context) ([]character.MarketplaceRow, error)
+	SaveInventoryWithMarketplace(ctx context.Context, id string, items []character.Item, wallet []character.WalletEntry, replaceWallet bool, jobs []character.ProcessingJob, replaceJobs bool,
+		known []int64, replaceKnown bool, warehouse []character.WarehouseItem, replaceWarehouse bool, containers []character.WarehouseContainer, market []character.MarketplaceRow) error
+}
+
+var _ MarketplaceStore = (*character.Store)(nil)
+
 // Checker judges a new character before it is stored (plan B1:
 // customization.Rules, which reads content.db). Check returns nil to accept it,
 // an error wrapping ErrUnavailable when there is nothing to judge by, and any
@@ -362,6 +372,23 @@ func (s *Server) ListGuilds(ctx context.Context, _ *characterv1.ListGuildsReques
 	return resp, nil
 }
 
+// ListMarketplace implements CharacterService.ListMarketplace.
+func (s *Server) ListMarketplace(ctx context.Context, _ *characterv1.ListMarketplaceRequest) (*characterv1.ListMarketplaceResponse, error) {
+	ms, ok := s.store.(MarketplaceStore)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "this character store keeps no marketplace")
+	}
+	rows, err := ms.ListMarketplace(ctx)
+	if err != nil {
+		return nil, toStatus(ctx, err)
+	}
+	resp := &characterv1.ListMarketplaceResponse{}
+	for _, r := range rows {
+		resp.Rows = append(resp.Rows, &characterv1.MarketplaceRow{Id: r.ID, Revision: r.Revision, Gone: r.Gone, Data: r.Data})
+	}
+	return resp, nil
+}
+
 // SaveGuild implements CharacterService.SaveGuild.
 func (s *Server) SaveGuild(ctx context.Context, r *characterv1.SaveGuildRequest) (*characterv1.SaveGuildResponse, error) {
 	g := r.GetGuild()
@@ -546,11 +573,29 @@ func (s *Server) SaveInventory(ctx context.Context, r *characterv1.SaveInventory
 		for _, c := range r.GetWarehouseContainers() {
 			bought = append(bought, character.WarehouseContainer{Area: c.GetArea(), NodeGUID: c.GetNodeGuid(), ContainerGUID: c.GetContainerGuid()})
 		}
+		if len(r.GetMarketplaceRows()) > 0 {
+			ms, ok := s.store.(MarketplaceStore)
+			if !ok {
+				return nil, status.Error(codes.Unimplemented, "this character store keeps no marketplace")
+			}
+			market := make([]character.MarketplaceRow, 0, len(r.GetMarketplaceRows()))
+			for _, m := range r.GetMarketplaceRows() {
+				market = append(market, character.MarketplaceRow{ID: m.GetId(), Revision: m.GetRevision(), Gone: m.GetGone(), Data: m.GetData()})
+			}
+			if err := ms.SaveInventoryWithMarketplace(ctx, r.GetId(), items, wallet, r.GetReplaceWallet(), fromProtoJobs(r.GetProcessingJobs()), r.GetReplaceProcessingJobs(),
+				r.GetKnownRecipes(), r.GetReplaceKnownRecipes(), stored, true, bought, market); err != nil {
+				return nil, toStatus(ctx, err)
+			}
+			return &characterv1.SaveInventoryResponse{Saved: int32(len(items))}, nil
+		}
 		if err := ws.SaveInventoryEverything(ctx, r.GetId(), items, wallet, r.GetReplaceWallet(), fromProtoJobs(r.GetProcessingJobs()), r.GetReplaceProcessingJobs(), r.GetKnownRecipes(),
 			r.GetReplaceKnownRecipes(), stored, true, bought); err != nil {
 			return nil, toStatus(ctx, err)
 		}
 		return &characterv1.SaveInventoryResponse{Saved: int32(len(items))}, nil
+	}
+	if len(r.GetMarketplaceRows()) > 0 {
+		return nil, status.Error(codes.InvalidArgument, "marketplace rows are saved only with the whole inventory (replace_warehouse)")
 	}
 	if r.GetReplaceProcessingJobs() || r.GetReplaceKnownRecipes() {
 		js, ok := s.store.(JobStore)

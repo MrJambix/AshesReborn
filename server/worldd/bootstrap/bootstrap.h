@@ -75,6 +75,7 @@
 #include <array>
 #include <map>
 #include <set>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -472,6 +473,9 @@ public:
     std::optional<Send> guild_reply(const guild::Reply& reply);
     std::optional<Send> guild_list(const std::vector<std::pair<std::string, guild::Guid>>& guilds);
     std::optional<Send> open_create_guild_panel();
+    /// The player marketplace (bootstrap/bootstrap_market.inc): one call of the PlayerController's (ClientOpenMarketplaceUI, ClientReceiveMarketplaceHeaders ...), its parameters
+    /// built by `build` from the call's schema entry (protocol/repl/marketplace_rpc.h).  nullopt when the controller has no such call or the parameters do not build.
+    std::optional<Send> market_call(const char* rpc, const std::function<std::optional<repl::RpcParams>(const protocol::schema::RpcSchema&)>& build);
     /// ClientReceiveTaxDetails: the answer to ServerGetTaxDetails.
     std::optional<Send> tax_details(const protocol::repl::StationTax& tax);
     /// The stats component's CrowdControlState (session/crowd_state.h), times on the synchronized clock.  Nothing goes out until ability_update().  False when the pawn does not take it.

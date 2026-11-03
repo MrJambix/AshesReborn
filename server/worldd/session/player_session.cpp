@@ -701,7 +701,12 @@ void PlayerSession::hand_over_inventory(const char* why, bool periodic) {
     if (!sink_) return;
     std::vector<svc::InventoryItem> items = inventory_.items();
     const size_t n = items.size();
-    sink_->save_inventory(character_id_, std::move(items), wallet_.entries(), jobs_, taught_, wh_storage_.rows());
+    if (!market_rows_.empty()) {   // the marketplace: the rows this player's act changed go in the same call (session/player_market.cpp)
+        sink_->save_inventory(character_id_, std::move(items), wallet_.entries(), jobs_, taught_, wh_storage_.rows(), std::move(market_rows_));
+        market_rows_.clear();
+    } else {
+        sink_->save_inventory(character_id_, std::move(items), wallet_.entries(), jobs_, taught_, wh_storage_.rows());
+    }
     ++inventories_handed_over_;
     spdlog::log(periodic ? level_for(item_periodic_logged_) : spdlog::level::info, "[session] {}: saving the inventory ({} items) ({})", name(), n, why);
 }

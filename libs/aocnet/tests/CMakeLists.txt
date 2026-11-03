@@ -55,6 +55,7 @@ foreach(t
     test_repl_npc
     test_repl_send_ledger
     test_repl_vendor
+    test_repl_marketplace
     test_repl_loot
     test_repl_mount
     test_repl_nodes

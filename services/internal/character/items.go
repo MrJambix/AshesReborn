@@ -231,13 +231,13 @@ func (s *Store) Inventory(ctx context.Context, characterID string) ([]Item, erro
 // (not in part 1 of the complete character), so an empty save is a bug in the caller, and it would erase the character's
 // kit.
 func (s *Store) SaveInventory(ctx context.Context, characterID string, items []Item) error {
-	return s.saveInventory(ctx, characterID, items, nil, nil, false, nil, false, nil, false, nil)
+	return s.saveInventory(ctx, characterID, items, nil, nil, false, nil, false, nil, false, nil, nil)
 }
 
 // saveInventory is SaveInventory and, when wallet is not nil, the wallet's entries stored in the same transaction (SaveInventoryAndWallet) and, when replaceJobs, the character's
 // processing jobs made exactly jobs (SaveInventoryAll) and, when replaceWarehouse, the character's warehouse made exactly warehouse (SaveInventoryEverything).
 func (s *Store) saveInventory(ctx context.Context, characterID string, items []Item, wallet []WalletEntry, jobs []ProcessingJob, replaceJobs bool, known []int64, replaceKnown bool,
-	warehouse []WarehouseItem, replaceWarehouse bool, containers []WarehouseContainer) error {
+	warehouse []WarehouseItem, replaceWarehouse bool, containers []WarehouseContainer, market []MarketplaceRow) error {
 	if !idPattern.MatchString(characterID) {
 		return ErrNotFound
 	}
@@ -286,6 +286,9 @@ func (s *Store) saveInventory(ctx context.Context, characterID string, items []I
 		if err := addWarehouseContainers(ctx, tx, characterID, containers); err != nil {
 			return err
 		}
+	}
+	if err := upsertMarketplace(ctx, tx, market); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

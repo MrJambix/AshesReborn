@@ -50,6 +50,9 @@ public:
                               const std::vector<int64_t>& known_recipes) override;
     CallStatus save_inventory(const std::string& id, const std::vector<InventoryItem>& items, const std::vector<WalletEntry>& wallet, const std::vector<ProcessingJob>& jobs,
                               const std::vector<int64_t>& known_recipes, const std::vector<WarehouseItem>& warehouse) override;
+    CallStatus save_inventory(const std::string& id, const std::vector<InventoryItem>& items, const std::vector<WalletEntry>& wallet, const std::vector<ProcessingJob>& jobs,
+                              const std::vector<int64_t>& known_recipes, const std::vector<WarehouseItem>& warehouse, const std::vector<MarketRow>& market) override;
+    CallStatus list_marketplace(std::vector<MarketRow>& out) override;
     CallStatus save_progress(const std::string& id, const Progress& progress) override;
     CallStatus list_guilds(std::vector<SavedGuild>& out) override;
     CallStatus save_guild(const std::string& guid, const std::string& name, const std::string& data) override;
@@ -61,7 +64,8 @@ public:
 private:
     struct Stubs;
     CallStatus save_inventory(const std::string& id, const std::vector<InventoryItem>& items, const std::vector<WalletEntry>& wallet, bool with_wallet, const std::vector<ProcessingJob>* jobs = nullptr,
-                              const std::vector<int64_t>* known_recipes = nullptr, const std::vector<WarehouseItem>* warehouse = nullptr);
+                              const std::vector<int64_t>* known_recipes = nullptr, const std::vector<WarehouseItem>* warehouse = nullptr,
+                              const std::vector<MarketRow>* market = nullptr);
     void prepare(grpc::ClientContext& ctx, std::chrono::milliseconds timeout) const;
     void prepare(grpc::ClientContext& ctx) const { prepare(ctx, timeout_); }
 

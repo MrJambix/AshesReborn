@@ -694,6 +694,20 @@ struct GuildDataWire {
     bool operator==(const GuildDataWire&) const = default;
 };
 
+/// FCurrencyContainer (the marketplace: a listing's PricePerUnit; also a trade's and a mail's money): one TMap Values of FCurrencyTierDefId to an amount.  Its NetSerialize
+/// (TCppStructOps slot 10, 0x145c9a770) is the map's archive form (0x145b22490): an int32 count, then per pair the key as an FDesignDataObjectId (0x1413df110: its Guid and its
+/// TypeId, 8 bytes each; the name is not written) and the amount as a uint64.  The money tier is Guid 6064629127873626112 (Money), TypeId 456318420933392641, in copper.
+struct CurrencyContainer {
+    struct Entry {
+        int64_t  tier = 0;
+        int64_t  type_id = 0;
+        uint64_t amount = 0;
+        bool operator==(const Entry&) const = default;
+    };
+    std::vector<Entry> values;
+    bool operator==(const CurrencyContainer&) const = default;
+};
+
 struct CraftTagSelection {
     std::vector<CraftResource> resources;
     std::vector<std::string>   tags;
@@ -783,7 +797,7 @@ public:
         GameplayTag, GameplayTagContainer, StatInt32Inst,
         Quat, GuidToBoolWrapper, AlignmentContainer, AppearanceId, CharacterCustomization, ItemInstance, InlineObject,
         EventBox, HitConfirmations, PlayerMovementInput, VendorPurchaseCart, VendorTransactionCart, NodeTaxDetails, LocalizedMessage, ChannelingData, CraftItemState,
-        RewardInstance, HashedVariable, WarehouseSummaryEntry, CraftTagSelection, GuildDataWire>;
+        RewardInstance, HashedVariable, WarehouseSummaryEntry, CraftTagSelection, GuildDataWire, CurrencyContainer>;
 
     Value() = default;
 // built by C | Y | B with C | O | A

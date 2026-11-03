@@ -279,6 +279,8 @@
 #include "protocol/repl/item_rpc.h"
 #include "protocol/repl/node_rpc.h"
 #include "protocol/repl/vendor_rpc.h"
+#include "protocol/repl/marketplace_rpc.h"
+#include "market/market_book.h"
 #include "session/fall_damage.h"
 #include "session/summoner_pets.h"
 #include "session/abilities.h"

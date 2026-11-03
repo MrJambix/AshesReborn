@@ -606,6 +606,20 @@ DELETE FROM schema_migrations WHERE version = 22;
 COMMIT;
 ```
 
+**Rolling back migration 0024.** Migration 0024 (the player marketplace) adds one table, `marketplace_rows`, and writes to nothing else. worldd writes its rows inside
+the `SaveInventory` of the character who acts (`marketplace_rows`, field 23), in the same transaction as that character's items and wallet, and reads them once at its
+start (`ListMarketplace`, which first deletes the rows marked `gone`). Rolling it back loses every listing, **with the items held in them** (a listed item is in the
+market, not in its seller's bags), and the proceeds not yet collected; nothing else. Ask sellers to take their listings back first. Stop worldd first: a running
+worldd's market saves would then fail with the character's inventory, which is not saved either until the next save without market rows.
+
+```sql
+-- rollback of migration 0024 (the player marketplace)
+BEGIN;
+DROP TABLE marketplace_rows;
+DELETE FROM schema_migrations WHERE version = 24;
+COMMIT;
+```
+
 **Rolling back migration 0023.** Migration 0023 (guilds) adds one table, `guilds`, and writes to nothing else. Rolling it back loses every guild and nothing else; a worldd with guilds still running logs that its saves fail.
 
 ```sql

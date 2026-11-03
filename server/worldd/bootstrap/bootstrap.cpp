@@ -2939,6 +2939,7 @@ std::optional<Send> PlayerBootstrap::correction(float time_stamp, const repl::Ve
 #include "respawn/bootstrap_embersprings.inc"
 #include "bootstrap/bootstrap_group.inc"
 #include "bootstrap/bootstrap_guild.inc"
+#include "bootstrap/bootstrap_market.inc"
 #include "quest/bootstrap_objects.inc"
 
 }  // namespace aoc::worldd::bootstrap
