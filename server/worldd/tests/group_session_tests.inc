@@ -328,6 +328,41 @@ static void test_party_loot_session() {
 }
 
 AOC_REGISTER_TEST(test_ignore_list);
+
+/// The ignore list survives a restart (migration 0025): a record's saved names come back at the join, and a change is saved with the progress at once.
+static void test_ignore_list_is_saved() {
+    std::printf("the chat ignore list is saved with the progress and comes back at the join\n");
+    struct ProgressSink : PositionSink {
+        std::vector<svc::Progress> progress;
+        void save(const std::string&, const svc::Position&) override {}
+        void save_progress(const std::string&, svc::Progress p) override { progress.push_back(std::move(p)); }
+    } sink;
+    Harness a;
+    a.fx.world->set_position_sink(&sink);
+    svc::Character rec = cyb_record();
+    rec.ignored_names = {"Spammer", "Griefer"};
+    CHECK(a.join(rec), "joined with a saved ignore list");
+    if (!a.s) return;
+    a.settle();
+    const auto room = a.fx.world->chat_room();
+    CHECK(room && room->ignores(rec.name, "spammer") && room->ignores(rec.name, "GRIEFER"), "the saved names are ignored again after the join");
+    const auto& cls = class_named("AoCPlayerControllerBP_C");
+    repl::RpcParams p;
+    repl::set_rpc_param(*cls.rpc("ServerIgnore"), p, "PlayerName", repl::Value::str("Newcomer"));
+    const size_t saves = sink.progress.size();
+    a.t += seconds(1);
+    a.client_sends({a.client.actor(a.s->channel_of(bs::Role::PlayerController), client_rpc(cls, "ServerIgnore", p), true)});
+    a.s->tick(a.conn, a.t);
+    a.settle();
+    CHECK(sink.progress.size() > saves, "ignoring someone saves the progress at once");
+    if (sink.progress.size() > saves) {
+        const svc::Progress& last = sink.progress.back();
+        const auto has = [&](const char* n) { return std::find(last.ignored_names.begin(), last.ignored_names.end(), n) != last.ignored_names.end(); };
+        CHECK(last.replace_ignored_names && last.ignored_names.size() == 3 && has("Spammer") && has("Griefer") && has("Newcomer"), "with the whole list, the new name included");
+    }
+    a.fx.world->set_position_sink(nullptr);
+}
+AOC_REGISTER_TEST(test_ignore_list_is_saved);
 AOC_REGISTER_TEST(test_crowd_state);
 AOC_REGISTER_TEST(test_party_masks);
 AOC_REGISTER_TEST(test_party_loot_session);

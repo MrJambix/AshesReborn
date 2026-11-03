@@ -384,7 +384,11 @@ std::unique_ptr<PlayerSession> PlayerSession::join(Connection& conn, PlayerWorld
         p->chat_peer_ = p->chat_room_->connect(p->name());
         const auto at = p->checker_.good();
         p->chat_peer_->x = at.x; p->chat_peer_->y = at.y; p->chat_peer_->z = at.z;
-        if (!p->chat_room_->ignored_by(*p->chat_peer_).empty()) p->show_ignore_list(conn);   // (who the character ignored before, while this worldd runs)
+        // the ignore list the character service saved (migration 0025), unless this worldd already holds one for the character (what it holds is newer)
+        if (p->chat_room_->ignored_by(*p->chat_peer_).empty()) {
+            for (const std::string& n : character.ignored_names) p->chat_room_->ignore(*p->chat_peer_, n);
+        }
+        if (!p->chat_room_->ignored_by(*p->chat_peer_).empty()) p->show_ignore_list(conn);   // (who the character ignored before)
         p->connect_group(world);
         p->connect_guild(world);
     }
@@ -690,6 +694,15 @@ void PlayerSession::hand_over_progress(const char* why) {
     p.home_last_used_ms = attunements_.home_last_used_ms;
     p.replace_completed_ftues = true;   // missing systems, step 0: the finished tutorials go whole with every hand-over (what the session holds is what the character has)
     p.completed_ftues = completed_ftues_;
+    if (chat_room_ && chat_peer_) {
+        // the chat ignore list goes whole too, with only the names the character service takes (1 to 64 bytes, 200 at most: a refused name would refuse the whole save)
+        p.replace_ignored_names = true;
+        for (std::string& n : chat_room_->ignored_by(*chat_peer_)) {
+            if (n.empty() || n.size() > 64 || p.ignored_names.size() >= 200) continue;
+            if (std::any_of(n.begin(), n.end(), [](unsigned char ch) { return ch < 0x20 || ch == 0x7f; })) continue;
+            p.ignored_names.push_back(std::move(n));
+        }
+    }
     sink_->save_progress(character_id_, std::move(p));
     ++progress_handed_over_;
     spdlog::info("[session] {}: saving the progress (level {}, class {}, Adventuring {} XP, debt {}) ({})", name(), progress_.level, class_id_, progress_.xp,

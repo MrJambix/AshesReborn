@@ -75,10 +75,10 @@ func schemaWithoutRatings(t *testing.T, pool *pgxpool.Pool) []string {
 	var out []string
 	for _, q := range []string{
 		`SELECT table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable || ' ' || coalesce(column_default, '-') FROM information_schema.columns
-			WHERE table_schema = current_schema() AND table_name NOT IN ('character_warehouse_containers', 'guilds', 'marketplace_rows') AND NOT (table_name = 'character_processing_jobs' AND column_name IN ('rating_xp', 'rating_quantity', 'rating_rarity')) ORDER BY 1`,
+			WHERE table_schema = current_schema() AND table_name NOT IN ('character_warehouse_containers', 'guilds', 'marketplace_rows', 'character_ignored_names') AND NOT (table_name = 'character_processing_jobs' AND column_name IN ('rating_xp', 'rating_quantity', 'rating_rarity')) ORDER BY 1`,
 		`SELECT conrelid::regclass::text || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint
-			WHERE connamespace = current_schema()::regnamespace AND conrelid::regclass::text NOT IN ('character_warehouse_containers', 'guilds', 'marketplace_rows') AND conname NOT IN ('character_processing_jobs_rating_xp', 'character_processing_jobs_rating_quantity', 'character_processing_jobs_rating_rarity') ORDER BY 1`,
-		`SELECT 'table ' || table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name NOT IN ('character_warehouse_containers', 'guilds', 'marketplace_rows') ORDER BY 1`,
+			WHERE connamespace = current_schema()::regnamespace AND conrelid::regclass::text NOT IN ('character_warehouse_containers', 'guilds', 'marketplace_rows', 'character_ignored_names') AND conname NOT IN ('character_processing_jobs_rating_xp', 'character_processing_jobs_rating_quantity', 'character_processing_jobs_rating_rarity') ORDER BY 1`,
+		`SELECT 'table ' || table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name NOT IN ('character_warehouse_containers', 'guilds', 'marketplace_rows', 'character_ignored_names') ORDER BY 1`,
 	} {
 		r, err := pool.Query(context.Background(), q)
 		if err != nil {

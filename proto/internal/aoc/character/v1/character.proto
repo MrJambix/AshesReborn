@@ -167,6 +167,8 @@ message Character {
   int32 gm_level = 32;
   // Storage clerks, buying room (migration 0022): the item chunks and tabs the character bought, with the items (include_items). The free ones are not listed.
   repeated WarehouseContainer warehouse_containers = 33;
+  // The chat ignore list (migration 0025): the names the character ignores, in the order they were added, with the items (include_items). A character that ignores no one has none.
+  repeated string ignored_names = 34;
 }
 
 // A container of the warehouse a character bought: area and node_guid as in WarehouseItem, container_guid the WarehouseStorageItemChunk or WarehouseStorageMaterialTab record.
@@ -426,6 +428,10 @@ message SaveProgressRequest {
   int64 home_last_used_ms = 15;
   // Patch the owning account's auto attack options. Empty leaves them unchanged.
   map<string, bool> auto_attack_settings = 16;
+  // The chat ignore list: with replace_ignored_names the names the character ignores become exactly `ignored_names`, in this order; without it they are left alone. InvalidArgument, with
+  // nothing changed, for a name that is empty, longer than 64 characters or holds a control character, one given twice (without regard to case), or more than 200.
+  bool replace_ignored_names = 17;
+  repeated string ignored_names = 18;
 }
 
 message SaveProgressResponse {

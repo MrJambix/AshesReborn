@@ -165,6 +165,7 @@ CharacterResult GrpcServices::get_character(const std::string& id) {
     }
     for (const int64_t recipe : c.known_recipes()) r.character.known_recipes.push_back(recipe);
     for (const int64_t id : c.completed_ftues()) r.character.completed_ftues.push_back(id);
+    for (const std::string& n : c.ignored_names()) r.character.ignored_names.push_back(n);
     for (const auto& w : c.warehouse_items()) {
         WarehouseItem wi;
         wi.area = w.area();
@@ -289,6 +290,8 @@ CallStatus GrpcServices::save_progress(const std::string& id, const Progress& pr
     }
     req.set_replace_completed_ftues(progress.replace_completed_ftues);
     for (const int64_t id : progress.completed_ftues) req.add_completed_ftues(id);
+    req.set_replace_ignored_names(progress.replace_ignored_names);
+    for (const std::string& n : progress.ignored_names) req.add_ignored_names(n);
     req.set_replace_attunements(progress.replace_attunements);
     for (const int32_t n : progress.attunements) req.add_attunements(n);
     req.set_home_attunement(progress.home_attunement);

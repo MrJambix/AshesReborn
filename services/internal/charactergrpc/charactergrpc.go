@@ -74,6 +74,13 @@ type FTUEStore interface {
 
 var _ FTUEStore = (*character.Store)(nil)
 
+// IgnoreStore is the part of character.Store that keeps the names a character ignores in chat. A store without it keeps none: GetCharacter sends none.
+type IgnoreStore interface {
+	IgnoredNames(ctx context.Context, id string) ([]string, error)
+}
+
+var _ IgnoreStore = (*character.Store)(nil)
+
 // WarehouseStore is the part of character.Store that keeps a character's warehouse (the storage milestone, step 0). A store without it keeps none: GetCharacter sends none and a save that
 // replaces the warehouse is refused.
 type WarehouseStore interface {
@@ -329,6 +336,13 @@ func (s *Server) GetCharacter(ctx context.Context, r *characterv1.GetCharacterRe
 			}
 			out.CompletedFtues = done
 		}
+		if is, ok := s.store.(IgnoreStore); ok {
+			names, err := is.IgnoredNames(ctx, c.ID)
+			if err != nil {
+				return nil, toStatus(ctx, err)
+			}
+			out.IgnoredNames = names
+		}
 		if ws, ok := s.store.(WarehouseStore); ok {
 			stored, err := ws.WarehouseItems(ctx, c.ID)
 			if err != nil {
@@ -409,6 +423,7 @@ func (s *Server) DeleteGuild(ctx context.Context, r *characterv1.DeleteGuildRequ
 func (s *Server) SaveProgress(ctx context.Context, r *characterv1.SaveProgressRequest) (*characterv1.SaveProgressResponse, error) {
 	p := character.Progress{Level: r.GetLevel(), ClassID: r.GetClassId(), ReplaceSkillRanks: r.GetReplaceSkillRanks(), ReplaceActionBar: r.GetReplaceActionBar(),
 		ReplaceCompletedFTUEs: r.GetReplaceCompletedFtues(), CompletedFTUEs: r.GetCompletedFtues(),
+		ReplaceIgnoredNames: r.GetReplaceIgnoredNames(), IgnoredNames: r.GetIgnoredNames(),
 		ReplaceAttunements: r.GetReplaceAttunements(), Attunements: character.Attunements{Discovered: r.GetAttunements(), Home: r.GetHomeAttunement(), HomeLastUsedMs: r.GetHomeLastUsedMs()}}
 	p.AutoAttackSettings = r.GetAutoAttackSettings()
 	for _, e := range r.GetExperience() {

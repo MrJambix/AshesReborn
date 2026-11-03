@@ -606,6 +606,18 @@ DELETE FROM schema_migrations WHERE version = 22;
 COMMIT;
 ```
 
+**Rolling back migration 0025.** Migration 0025 (the chat ignore list) adds one table, `character_ignored_names`, and writes to nothing else. worldd saves a character's ignore
+list with its progress (`SaveProgress` with `replace_ignored_names`) and reads it at the join (`GetCharacter`, `ignored_names`). Rolling it back loses every saved ignore list and
+nothing else; stop worldd first, or its progress saves fail until it runs a build without the list.
+
+```sql
+-- rollback of migration 0025 (the chat ignore list)
+BEGIN;
+DROP TABLE character_ignored_names;
+DELETE FROM schema_migrations WHERE version = 25;
+COMMIT;
+```
+
 **Rolling back migration 0024.** Migration 0024 (the player marketplace) adds one table, `marketplace_rows`, and writes to nothing else. worldd writes its rows inside
 the `SaveInventory` of the character who acts (`marketplace_rows`, field 23), in the same transaction as that character's items and wallet, and reads them once at its
 start (`ListMarketplace`, which first deletes the rows marked `gone`). Rolling it back loses every listing, **with the items held in them** (a listed item is in the

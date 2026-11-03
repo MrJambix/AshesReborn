@@ -272,6 +272,8 @@ struct Character {
     std::vector<int64_t> known_recipes;
     /// Missing systems, step 0: the tutorials the character finished (FirstTimeEvent Guids, in the order they were finished; with the items).  A service of an older version sends none.
     std::vector<int64_t> completed_ftues;
+    /// The chat ignore list: the names the character ignores, in the order they were added (with the items).  A service of an older version sends none.
+    std::vector<std::string> ignored_names;
     /// Embersprings: the places the character discovered (their numbers in the master list, in the order they were discovered), the one that is its home (0: none) and when its home
     /// respawn was last used (Unix milliseconds on the server's wall clock; 0: never).  A service of an older version sends none.
     std::vector<int32_t> attunements;
@@ -306,6 +308,10 @@ struct Progress {
     /// service refuses an id of 0 or less, one twice, and more than 1,024).
     bool                         replace_completed_ftues = false;
     std::vector<int64_t>         completed_ftues;
+    /// The chat ignore list: with replace_ignored_names the names the character ignores become exactly `ignored_names`, in this order; without it they are left alone (the character
+    /// service refuses an empty name, one over 64 characters or with a control character, one twice and more than 200).
+    bool                         replace_ignored_names = false;
+    std::vector<std::string>     ignored_names;
     /// Embersprings: with replace_attunements the character's discovered places, home and last use of the home respawn become exactly these (the character service refuses a number outside
     /// 1 to 255, one twice, a home outside 0 to 255 and a negative time).
     bool                         replace_attunements = false;
@@ -320,7 +326,8 @@ struct Progress {
         }
         return replace_skill_ranks == o.replace_skill_ranks && skill_ranks == o.skill_ranks && replace_action_bar == o.replace_action_bar &&
                action_bar == o.action_bar && professions == o.professions && replace_completed_ftues == o.replace_completed_ftues && completed_ftues == o.completed_ftues &&
-               replace_attunements == o.replace_attunements && attunements == o.attunements && home_attunement == o.home_attunement && home_last_used_ms == o.home_last_used_ms;
+               replace_attunements == o.replace_attunements && attunements == o.attunements && home_attunement == o.home_attunement && home_last_used_ms == o.home_last_used_ms &&
+               replace_ignored_names == o.replace_ignored_names && ignored_names == o.ignored_names;
     }
 };
 // [C:Y:B :: C O A]

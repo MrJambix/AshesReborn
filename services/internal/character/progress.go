@@ -46,6 +46,9 @@ type Progress struct {
 	// Missing systems, step 0: with ReplaceCompletedFTUEs the character's finished tutorials become exactly CompletedFTUEs, in this order (completed_ftues.go); without it they are left alone.
 	ReplaceCompletedFTUEs bool
 	CompletedFTUEs        []int64
+	// The chat ignore list: with ReplaceIgnoredNames the names the character ignores become exactly IgnoredNames, in this order (ignored_names.go); without it they are left alone.
+	ReplaceIgnoredNames bool
+	IgnoredNames        []string
 	// Embersprings: with ReplaceAttunements the character's discovered places, home and last use of the home respawn become exactly Attunements (attunements.go); without it they are left alone.
 	ReplaceAttunements bool
 	Attunements        Attunements
@@ -113,6 +116,13 @@ func (p Progress) Validate() error {
 		}
 	} else if len(p.CompletedFTUEs) > 0 {
 		return fmt.Errorf("%w: completed tutorials are given without replace_completed_ftues", ErrInvalid)
+	}
+	if p.ReplaceIgnoredNames {
+		if err := ValidateIgnoredNames(p.IgnoredNames); err != nil {
+			return err
+		}
+	} else if len(p.IgnoredNames) > 0 {
+		return fmt.Errorf("%w: ignored names are given without replace_ignored_names", ErrInvalid)
 	}
 	if p.ReplaceAttunements {
 		if err := ValidateAttunements(p.Attunements); err != nil {
@@ -218,6 +228,11 @@ func (s *Store) SaveProgress(ctx context.Context, characterID string, p Progress
 	}
 	if p.ReplaceCompletedFTUEs {
 		if err := replaceCompletedFTUEs(ctx, tx, characterID, p.CompletedFTUEs); err != nil {
+			return Character{}, itemsError(err)
+		}
+	}
+	if p.ReplaceIgnoredNames {
+		if err := replaceIgnoredNames(ctx, tx, characterID, p.IgnoredNames); err != nil {
 			return Character{}, itemsError(err)
 		}
 	}

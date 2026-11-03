@@ -106,6 +106,8 @@ bool PlayerSession::on_group_rpc(Connection& conn, const repl::ClientRpc& rpc, s
             if (refusal.empty()) {
                 me.status.push_back("You now ignore " + who + ".");
                 show_ignore_list(conn);
+                progress_changed_ = true;   // the list is saved with the progress, at once
+                hand_over_progress("the ignore list");
             }
             break;
         }
@@ -114,7 +116,11 @@ bool PlayerSession::on_group_rpc(Connection& conn, const repl::ClientRpc& rpc, s
             if (chat_room_ && chat_peer_) {
                 const bool was = chat_room_->unignore(*chat_peer_, who);
                 me.status.push_back(was ? "You no longer ignore " + who + "." : who + " is not on your ignore list.");
-                if (was) show_ignore_list(conn);
+                if (was) {
+                    show_ignore_list(conn);
+                    progress_changed_ = true;
+                    hand_over_progress("the ignore list");
+                }
             }
             break;
         }

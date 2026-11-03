@@ -673,8 +673,10 @@ type Character struct {
 	GmLevel int32 `protobuf:"varint,32,opt,name=gm_level,json=gmLevel,proto3" json:"gm_level,omitempty"`
 	// Storage clerks, buying room (migration 0022): the item chunks and tabs the character bought, with the items (include_items). The free ones are not listed.
 	WarehouseContainers []*WarehouseContainer `protobuf:"bytes,33,rep,name=warehouse_containers,json=warehouseContainers,proto3" json:"warehouse_containers,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// The chat ignore list (migration 0025): the names the character ignores, in the order they were added, with the items (include_items). A character that ignores no one has none.
+	IgnoredNames  []string `protobuf:"bytes,34,rep,name=ignored_names,json=ignoredNames,proto3" json:"ignored_names,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Character) Reset() {
@@ -913,6 +915,13 @@ func (x *Character) GetGmLevel() int32 {
 func (x *Character) GetWarehouseContainers() []*WarehouseContainer {
 	if x != nil {
 		return x.WarehouseContainers
+	}
+	return nil
+}
+
+func (x *Character) GetIgnoredNames() []string {
+	if x != nil {
+		return x.IgnoredNames
 	}
 	return nil
 }
@@ -2654,8 +2663,12 @@ type SaveProgressRequest struct {
 	HomeLastUsedMs     int64   `protobuf:"varint,15,opt,name=home_last_used_ms,json=homeLastUsedMs,proto3" json:"home_last_used_ms,omitempty"`
 	// Patch the owning account's auto attack options. Empty leaves them unchanged.
 	AutoAttackSettings map[string]bool `protobuf:"bytes,16,rep,name=auto_attack_settings,json=autoAttackSettings,proto3" json:"auto_attack_settings,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// The chat ignore list: with replace_ignored_names the names the character ignores become exactly `ignored_names`, in this order; without it they are left alone. InvalidArgument, with
+	// nothing changed, for a name that is empty, longer than 64 characters or holds a control character, one given twice (without regard to case), or more than 200.
+	ReplaceIgnoredNames bool     `protobuf:"varint,17,opt,name=replace_ignored_names,json=replaceIgnoredNames,proto3" json:"replace_ignored_names,omitempty"`
+	IgnoredNames        []string `protobuf:"bytes,18,rep,name=ignored_names,json=ignoredNames,proto3" json:"ignored_names,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *SaveProgressRequest) Reset() {
@@ -2800,6 +2813,20 @@ func (x *SaveProgressRequest) GetAutoAttackSettings() map[string]bool {
 	return nil
 }
 
+func (x *SaveProgressRequest) GetReplaceIgnoredNames() bool {
+	if x != nil {
+		return x.ReplaceIgnoredNames
+	}
+	return false
+}
+
+func (x *SaveProgressRequest) GetIgnoredNames() []string {
+	if x != nil {
+		return x.IgnoredNames
+	}
+	return nil
+}
+
 type SaveProgressResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Character     *Character             `protobuf:"bytes,1,opt,name=character,proto3" json:"character,omitempty"` // with its experience rows
@@ -2874,7 +2901,7 @@ const file_aoc_character_v1_character_proto_rawDesc = "" +
 	"\x01x\x18\x01 \x01(\x01R\x01x\x12\f\n" +
 	"\x01y\x18\x02 \x01(\x01R\x01y\x12\f\n" +
 	"\x01z\x18\x03 \x01(\x01R\x01z\x12\x10\n" +
-	"\x03yaw\x18\x04 \x01(\x02R\x03yaw\"\x9e\v\n" +
+	"\x03yaw\x18\x04 \x01(\x02R\x03yaw\"\xc3\v\n" +
 	"\tCharacter\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -2914,7 +2941,8 @@ const file_aoc_character_v1_character_proto_rawDesc = "" +
 	"\x0fwarehouse_items\x18\x1e \x03(\v2\x1f.aoc.character.v1.WarehouseItemR\x0ewarehouseItems\x12e\n" +
 	"\x14auto_attack_settings\x18\x1f \x03(\v23.aoc.character.v1.Character.AutoAttackSettingsEntryR\x12autoAttackSettings\x12\x19\n" +
 	"\bgm_level\x18  \x01(\x05R\agmLevel\x12W\n" +
-	"\x14warehouse_containers\x18! \x03(\v2$.aoc.character.v1.WarehouseContainerR\x13warehouseContainers\x1aE\n" +
+	"\x14warehouse_containers\x18! \x03(\v2$.aoc.character.v1.WarehouseContainerR\x13warehouseContainers\x12#\n" +
+	"\rignored_names\x18\" \x03(\tR\fignoredNames\x1aE\n" +
 	"\x17AutoAttackSettingsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\bR\x05value:\x028\x01\"l\n" +
@@ -3077,7 +3105,7 @@ const file_aoc_character_v1_character_proto_rawDesc = "" +
 	"\x14warehouse_containers\x18\x16 \x03(\v2$.aoc.character.v1.WarehouseContainerR\x13warehouseContainers\x12K\n" +
 	"\x10marketplace_rows\x18\x17 \x03(\v2 .aoc.character.v1.MarketplaceRowR\x0fmarketplaceRows\"-\n" +
 	"\x15SaveInventoryResponse\x12\x14\n" +
-	"\x05saved\x18\x01 \x01(\x05R\x05saved\"\xf5\x06\n" +
+	"\x05saved\x18\x01 \x01(\x05R\x05saved\"\xce\a\n" +
 	"\x13SaveProgressRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05level\x18\x02 \x01(\x05R\x05level\x12\x19\n" +
@@ -3099,7 +3127,9 @@ const file_aoc_character_v1_character_proto_rawDesc = "" +
 	"\vattunements\x18\r \x03(\x05R\vattunements\x12'\n" +
 	"\x0fhome_attunement\x18\x0e \x01(\x05R\x0ehomeAttunement\x12)\n" +
 	"\x11home_last_used_ms\x18\x0f \x01(\x03R\x0ehomeLastUsedMs\x12o\n" +
-	"\x14auto_attack_settings\x18\x10 \x03(\v2=.aoc.character.v1.SaveProgressRequest.AutoAttackSettingsEntryR\x12autoAttackSettings\x1aE\n" +
+	"\x14auto_attack_settings\x18\x10 \x03(\v2=.aoc.character.v1.SaveProgressRequest.AutoAttackSettingsEntryR\x12autoAttackSettings\x122\n" +
+	"\x15replace_ignored_names\x18\x11 \x01(\bR\x13replaceIgnoredNames\x12#\n" +
+	"\rignored_names\x18\x12 \x03(\tR\fignoredNames\x1aE\n" +
 	"\x17AutoAttackSettingsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\bR\x05value:\x028\x01\"Q\n" +
