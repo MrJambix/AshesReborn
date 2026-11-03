@@ -1,5 +1,10 @@
 # Patch notes
 
+## 2026-11-02: Game master tools
+
+### Improved
+- Game masters have more tools on their web panel: a live map of the world with every player and node, items at a chosen quality, experience and levels for adventuring, professions and weapons, and healing.
+
 ## 2026-11-02: Essence Infusion, crates that stay put, and gorillas that wait their turn
 
 ### Fixed
