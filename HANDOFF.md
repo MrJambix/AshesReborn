@@ -92,7 +92,7 @@ The whole uncommitted working tree went out together: stamina/Guard fix, summone
 | Package | `D:\AshesReborn\SandalCoreDeploy\sandalcore-package-creature-effects.tar`, `7443B7B81CF48A7B07B45125A6EA33048D8427ED4A65EA5B5F2901218478EEC6` |
 | Go services | Rebuilt on 1 November before packaging |
 | Commit | `3af6ed7` plus the uncommitted tree: what runs is not fully committed |
-| Not deployed | The launcher, including `GmOverlay.cs` in `C:\Users\mrjam\AshesRebornLauncher` |
+| Not deployed | The launcher, including `GmOverlay.cs` in `D:\AshesReborn\AshesRebornLauncher` |
 
 ## Open work, most important first
 
