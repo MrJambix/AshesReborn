@@ -36,6 +36,7 @@
 #include "protocol/repl/storage_rpc.h"
 #include "protocol/repl/vendor_rpc.h"
 #include "protocol/schema/generated/index.h"
+#include "quest/registry_points.h"
 #include "session/player_session.h"
 #include "spawns/captured_spawns.h"
 #include "vendor/gm_vendor.h"

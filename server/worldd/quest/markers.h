@@ -55,6 +55,8 @@ public:
     virtual void npc_places(int64_t instance, std::vector<MarkerPoint>& out) = 0;
     /// The spawn points of the creatures of the population `instances` and `sets` (a creature counts when it is one of the instances or stands in one of the sets), appended to `out`.
     virtual void creature_places(const std::vector<int64_t>& instances, const std::vector<int64_t>& sets, std::vector<MarkerPoint>& out) = 0;
+    /// The spawn points of the world's creatures whose tags the query matches (a Kill objective named by tags: contentc version 43), appended to `out`.  None by default.
+    virtual void tagged_creature_places(const content::TagQuery& /*query*/, std::vector<MarkerPoint>& /*out*/) {}
 };
 
 namespace markers_detail {
@@ -181,9 +183,11 @@ inline void dbscan(const std::vector<MarkerPoint>& pts, double epsilon, int min_
 /// The places of a Kill objective: its creatures' spawn points, clustered.
 inline void kill_places(const content::QuestObjectiveRow& o, PointSource& src, std::vector<MarkerLocation>& out) {
     if (o.no_dynamic_markers) return;
-    if (o.kill_sets.empty() && o.kill_instances.empty()) return;   // (a kill named by tags only is not modelled)
+    const bool by_tags = o.kill_tags.present;
+    if (o.kill_sets.empty() && o.kill_instances.empty() && !by_tags) return;
     std::vector<MarkerPoint> pts;
     src.creature_places(o.kill_instances, o.kill_sets, pts);
+    if (pts.empty() && by_tags) src.tagged_creature_places(o.kill_tags, pts);   // (a kill named by tags only: the creatures of the world that carry them)
     if (pts.empty()) return;
     const content::QuestObjectiveRow::Cluster& cl = o.cluster;
     std::vector<std::vector<size_t>> clusters;

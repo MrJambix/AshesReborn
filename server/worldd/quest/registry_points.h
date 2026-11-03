@@ -51,6 +51,26 @@ public:
         sort_from(out, first);
     }
 
+    /// The most points a query by tags gives the clustering (a broad query, "character.humanoid.goblin", matches hundreds of creatures): beyond it every n-th of the sorted points is kept.
+    static constexpr size_t kMaxTaggedPoints = 1500;
+
+    void tagged_creature_places(const content::TagQuery& query, std::vector<MarkerPoint>& out) override {
+        if (!query.present) return;
+        std::vector<MarkerPoint> pts;
+        registry_.for_each([&](const world::WorldActor& a) {
+            if (a.kind != world::ActorKind::Npc || !a.npc.tags || a.npc.tags->empty()) return;
+            if (content::tag_query_matches(query, *a.npc.tags)) pts.push_back({a.npc.home_x, a.npc.home_y, a.z});   // (where it spawned, as build_live does)
+        });
+        sort_from(pts, 0);
+        if (pts.size() > kMaxTaggedPoints) {
+            const size_t step = (pts.size() + kMaxTaggedPoints - 1) / kMaxTaggedPoints;
+            std::vector<MarkerPoint> kept;
+            for (size_t i = 0; i < pts.size(); i += step) kept.push_back(pts[i]);
+            pts.swap(kept);
+        }
+        out.insert(out.end(), pts.begin(), pts.end());
+    }
+
 private:
     static void sort_from(std::vector<MarkerPoint>& pts, size_t first) {
         std::sort(pts.begin() + static_cast<std::ptrdiff_t>(first), pts.end(), [](const MarkerPoint& a, const MarkerPoint& b) {
