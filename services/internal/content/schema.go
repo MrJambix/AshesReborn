@@ -40,7 +40,8 @@
 //	item_set, set_bonus, item_tag,
 //	stat_program         plan B3 (contentc version 4): what an item adds to the stats (its stat block at each rarity,
 //	                     the quality bands, the set bonuses, the gameplay tags) and the compiled stat formula graph
-//	                     (package statprog) that worldd runs
+//	                     (package statprog) that worldd runs; set_effect_bonus (contentc version 43) the effects a set puts on
+//	                     its wearer (SetEffectBonuses: the ArmorType sets' mitigation and attribute effects)
 //	item_use, item_action, action_response, action_reward,
 //	reward_table, reward_item, reward_xp,
 //	leveling_type, leveling_curve,
@@ -506,6 +507,21 @@ CREATE TABLE set_bonus (
     stat_guid INTEGER NOT NULL,
     common    REAL, uncommon REAL, rare REAL, heroic REAL, epic REAL, legendary REAL, artifact REAL,
     PRIMARY KEY (set_guid, tier_ord, bonus_ord)
+) WITHOUT ROWID;
+-- (contentc version 43) A SetBonus's SetEffectBonuses: per tier (the pieces of the set that must be worn; tier_ord: the record's
+-- order), per entry (ord), the EffectRecord the set puts on its wearer while that many pieces are worn and the lowest rarity
+-- among them is min_rarity to max_rarity (the rarity ordinal, Common 0 ... Artifact 6), with its stacks. The effects are in
+-- ab_effect (the ability runtime applies them: their stat mods change the stats). A set may have only these and no set_bonus row.
+CREATE TABLE set_effect_bonus (
+    set_guid    INTEGER NOT NULL,
+    tier_ord    INTEGER NOT NULL,
+    pieces      INTEGER NOT NULL,
+    ord         INTEGER NOT NULL,
+    effect_guid INTEGER NOT NULL,
+    min_rarity  INTEGER NOT NULL,
+    max_rarity  INTEGER NOT NULL,
+    stacks      INTEGER NOT NULL,
+    PRIMARY KEY (set_guid, tier_ord, ord)
 ) WITHOUT ROWID;
 -- The GameplayTags of an item, in the record's order (the stat formulas ask EquippedItemInSlotHasTag).
 CREATE TABLE item_tag (

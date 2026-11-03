@@ -395,6 +395,25 @@ func buildAbilities(w *writer, src *source, opt *Options, meta map[string]string
 			abilitySeed[cast] = true
 		}
 	}
+	// ... and the effects the sets put on their wearers (version 43, set_effect_bonus): worldd applies them through the ability runtime, which needs their rows and stat mods
+	setEffects := 0
+	for _, r := range src.rows["SetBonusRecordBase"] {
+		entries, err := setEffectEntries(newFields(fmt.Sprintf("SetBonus %s (%d)", r.Name, r.Guid), r.Fields))
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if b.effects[e.effect] == nil {
+				opt.logf("warning: set %s names effect %d, which is no row: the set gives no effect there", r.Name, e.effect)
+				continue
+			}
+			if !effectSeed[e.effect] {
+				setEffects++
+			}
+			effectSeed[e.effect] = true
+		}
+	}
+	opt.logf("set bonuses: %d more effects", setEffects)
 	opt.logf("skill_rank: %d distinct ability/effect pairs, %d abilities, %d effects granted by ranks (and the always-on ones)", nranks, len(abilitySeed), len(effectSeed))
 
 	// ---- the closure ----

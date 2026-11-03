@@ -101,6 +101,8 @@ constexpr const char* kItemTagSql = "SELECT tag FROM item_tag WHERE item_guid = 
 constexpr const char* kSetBonusSql =
     "SELECT tier_ord, pieces, stat_guid, common, uncommon, rare, heroic, epic, legendary, artifact FROM set_bonus WHERE set_guid = ?1 "
     "ORDER BY tier_ord, bonus_ord";
+// contentc version 43: a set's effects.  Not among the statements every file must answer: an older file has none (its ArmorType sets add nothing).
+constexpr const char* kSetEffectSql = "SELECT pieces, effect_guid, min_rarity, max_rarity, stacks FROM set_effect_bonus WHERE set_guid = ?1 ORDER BY tier_ord, ord";
 constexpr const char* kEquipSlotSql = "SELECT slot, name FROM equip_slot";
 // plan D1 (contentc version 5): schema.go's item_use, item_action, action_response, action_reward, reward_table, reward_item, reward_xp,
 // leveling_type, leveling_curve, skill_auto_grant and skill_rank_stat_mod
@@ -902,7 +904,36 @@ std::optional<stats::SetBonus> ContentDb::set_bonus(int64_t guid, std::string& e
         error = "content.db set bonus query failed: " + db_message(db_);
         return std::nullopt;
     }
-    if (out.tiers.empty()) return std::nullopt;   // a set with no bonus rows is no set to the engine
+    if (Stmt e(db_, kSetEffectSql); e.ok()) {   // (a file older than version 43 has no such table: the set has no effects)
+        sqlite3_bind_int64(e.get(), 1, guid);
+        while ((step = sqlite3_step(e.get())) == SQLITE_ROW) {
+            sqlite3_stmt* s = e.get();
+            for (int c = 0; c < 5; ++c) {
+                if (!column_is_int(s, c)) {
+                    error = "content.db's set " + std::to_string(guid) + " has an effect row with a column that is not an integer";
+                    return std::nullopt;
+                }
+            }
+            const int64_t pieces = sqlite3_column_int64(s, 0), lo = sqlite3_column_int64(s, 2), hi = sqlite3_column_int64(s, 3), stacks = sqlite3_column_int64(s, 4);
+            if (pieces < 1 || pieces > 83 || lo < 0 || hi >= stats::kRarities || lo > hi || stacks < 1 || stacks > 1000) {
+                error = "content.db's set " + std::to_string(guid) + " has an effect row out of range (" + std::to_string(pieces) + " pieces, rarities " + std::to_string(lo) + " to " +
+                        std::to_string(hi) + ", " + std::to_string(stacks) + " stacks)";
+                return std::nullopt;
+            }
+            stats::SetEffect fx;
+            fx.pieces = static_cast<int>(pieces);
+            fx.effect = sqlite3_column_int64(s, 1);
+            fx.min_rarity = static_cast<int>(lo);
+            fx.max_rarity = static_cast<int>(hi);
+            fx.stacks = static_cast<int>(stacks);
+            out.effects.push_back(fx);
+        }
+        if (step != SQLITE_DONE) {
+            error = "content.db set effect query failed: " + db_message(db_);
+            return std::nullopt;
+        }
+    }
+    if (out.tiers.empty() && out.effects.empty()) return std::nullopt;   // a set with no bonus rows is no set to the engine
     return out;
 }
 
