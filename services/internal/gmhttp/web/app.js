@@ -66,10 +66,13 @@ function el(tag, props = {}, ...children) {
 const cm = (v) => Math.round(Number(v) || 0).toLocaleString();
 const num = (v, digits = 0) => (Number(v) || 0).toLocaleString(undefined, { maximumFractionDigits: digits });
 const quote = (v) => '"' + String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
-const verbOf = (line) => {
+const wordsOf = (line) => {
   const words = line.trim().split(/\s+/);
-  return (words[0].toLowerCase() === ".gm" ? words[1] || "" : words[0]).toLowerCase();
+  return words[0].toLowerCase() === ".gm" ? words.slice(1) : words;
 };
+const verbOf = (line) => (wordsOf(line)[0] || "").toLowerCase();
+// whether a command runs for every player online ("*" as its player)
+const forEveryone = (line) => EVERYONE.has(verbOf(line)) && /^"?\*"?$/.test(wordsOf(line)[1] || "");
 const inWorld = () => state.gm !== null;
 const gmOn = () => inWorld() && state.gm.enabled;
 
@@ -95,8 +98,8 @@ function confirmRun(text, line) {
 async function run(line) {
   const command = line.trim();
   if (!command) return false;
-  const warning = CONFIRM[verbOf(command)];
-  if (warning && !(await confirmRun(warning, command))) return false;
+  const warnings = [CONFIRM[verbOf(command)], forEveryone(command) && `This runs for every player online (${state.players.length} now).`].filter(Boolean);
+  if (warnings.length && !(await confirmRun(warnings.join(" "), command))) return false;
   try {
     const result = await api("/api/v1/gm", { method: "POST", body: JSON.stringify({ command }) });
     logEntry(command, result.message, true);
@@ -108,6 +111,13 @@ async function run(line) {
     state.lastResult = "Refused: " + error.message;
     return false;
   }
+}
+
+// runQuiet sends a command that only reads (the progress summary) and gives back worldd's answer, without a line in the log.
+async function runQuiet(line) {
+  const result = await api("/api/v1/gm", { method: "POST", body: JSON.stringify({ command: line }) });
+  applyGm(result);
+  return result.message || "";
 }
 
 // ---- sign in
@@ -249,7 +259,7 @@ function renderSession() {
     ? (state.gmNote || "Enter the world with your GM account first.") + " You can still look around here, but commands need your character in the world."
     : state.gm.enabled ? "" : "GM mode is off, so worldd will refuse commands. Turn it on above.";
   for (const id of ["session-help", "commands-help"]) { $(id).hidden = !help; $(id).textContent = help; }
-  if (state.wasOn !== gmOn()) { state.wasOn = gmOn(); renderPlayers(); renderPlaces(); updateGive(); updateMoney(); }
+  if (state.wasOn !== gmOn()) { state.wasOn = gmOn(); renderPlayers(); renderPlaces(); updateGive(); updateMoney(); renderProgCard(); renderMapPanel(); }
   renderInspectButtons();
 }
 
@@ -288,8 +298,11 @@ function renderPlayers() {
     const add = (label, handler, enabled = gmOn()) => actions.append(el("button", { onclick: handler, disabled: !enabled, type: "button" }, label));
     add("Go to", () => run(`teleport-xyz self ${pos.x} ${pos.y} ${pos.z}`), gmOn() && !isMe);
     add("Bring here", () => { const at = selfPlayer().position; run(`teleport-xyz ${name} ${at.x} ${at.y} ${at.z}`); }, gmOn() && !!me && !isMe);
-    add("Give items", () => openGive("give-items", p.name), true);
-    add("Give money", () => openGive("give-money", p.name), true);
+    add("Give items", () => openView("give-items", p.name), true);
+    add("Give money", () => openView("give-money", p.name), true);
+    add("Progression", () => openView("progression", p.name), true);
+    add("Heal", () => run(`heal ${name}`), gmOn() && !p.dead);
+    add("Map", () => showOnMap(p.name), true);
     return el("tr", {},
       el("td", {}, p.name),
       el("td", {}, `${cm(pos.x)}, ${cm(pos.y)}, ${cm(pos.z)}`),
@@ -434,6 +447,9 @@ function show(view) {
   }
   if (view === "places") { if (state.places.length) renderPlaces(); else loadPlaces(); }
   if (view === "give-items" || view === "give-money") openedGive(view);
+  if (view === "progression") openedProgress();
+  if (view === "map") startMap();
+  else stopMap();
 }
 
 document.addEventListener("DOMContentLoaded", () => {

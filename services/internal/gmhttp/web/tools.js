@@ -5,6 +5,8 @@ const pretty = (name) => name.replace(/^Verra_/, "").replace(/_/g, " ");
 const valueOf = (input) => input.dataset.value || input.value.trim();
 const argument = (value) => (/^[\w.+-]+$/.test(value) ? value : quote(value));
 const COPPER_CAP = 10000000; // worldd's purse: 1,000 gold
+const EVERYONE_TITLE = "Everyone online";
+const playerText = (input) => (valueOf(input) === "*" ? EVERYONE_TITLE.toLowerCase() : input.value.trim());
 
 // ---- searching for what a field names
 
@@ -14,8 +16,9 @@ function entryRow(e) {
 }
 
 const sources = {
-  player: async (q) => {
+  player: async (q, everyone = false) => {
     const rows = [{ value: "self", title: "self", sub: "Your own character" }];
+    if (everyone) rows.push({ value: "*", title: EVERYONE_TITLE, sub: "Every player in the world, one after another" });
     for (const p of state.players) rows.push({ value: p.name, title: p.name, sub: "Online" });
     return rows.filter((r) => r.title.toLowerCase().includes(q.toLowerCase()));
   },
@@ -110,7 +113,8 @@ function commandFields(spec) {
   return spec.args.split(/\s+/).filter(Boolean).map((raw) => {
     const optional = raw.endsWith("?");
     const arg = optional ? raw.slice(0, -1) : raw;
-    return { arg, optional, ...((spec.fields && spec.fields[arg]) || fields[arg] || { type: "text", label: arg }) };
+    const everyone = arg === "character" && EVERYONE.has(spec.name);
+    return { arg, optional, everyone, ...((spec.fields && spec.fields[arg]) || fields[arg] || { type: "text", label: arg }) };
   });
 }
 
@@ -155,14 +159,14 @@ function fieldInput(field, id, values) {
     input = el("input", { id });
     if (field.type === "player") {
       input.value = "self";
-      picker(input, sources.player);
+      picker(input, (q) => sources.player(q, field.everyone));
     } else if (field.type === "place") {
       picker(input, sources.place);
     } else if (field.type === "actor") {
       input.placeholder = "Name or actor id";
       picker(input, sources.actor);
     } else if (field.type === "catalog") {
-      input.placeholder = "Search";
+      input.placeholder = field.hint || "Search";
       picker(input, (q) => sources.catalog(q, field.kind));
     }
   }
@@ -173,7 +177,7 @@ function fieldInput(field, id, values) {
 }
 
 function selectCommand(spec, values = {}) {
-  if (spec.view) { openGive(spec.view, values.character); return; }
+  if (spec.view) { openView(spec.view, values.character); return; }
   state.selected = spec;
   state.fields = commandFields(spec);
   for (const button of $("catalog").querySelectorAll("button")) button.setAttribute("aria-pressed", String(button.dataset.command === spec.name));
@@ -244,7 +248,7 @@ const ITEM_FILTERS = [
   ["Food & potions", "Consumable_"], ["Recipes", "Consumable_Recipe"], ["Mounts", "Mount_"], ["Bags", "Bag_"],
   ["Cosmetics", "Cosmetic_"], ["GM scrolls", "GM_Scroll"],
 ];
-const give = { prefix: "", item: null, asked: 0, timer: 0 };
+const give = { prefix: "", item: null, asked: 0, timer: 0, mode: "" };
 
 async function searchItems() {
   const ask = ++give.asked;
@@ -291,6 +295,66 @@ function countPresets(stack) {
   return box;
 }
 
+// ---- the quality of what is given: the item's own, a rarity (the lowest quality of that colour), or an exact quality
+
+const rarityOf = (quality) => RARITY_FIRST.reduce((band, first, i) => (quality >= first ? i : band), 0);
+
+function setQualityMode(mode) {
+  give.mode = mode;
+  for (const b of $("give-quality-mode").children) b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+  $("give-quality-box").hidden = !mode;
+  $("give-quality").disabled = $("give-quality-range").disabled = mode === "rarity";
+  if (mode === "rarity") setQuality(RARITY_FIRST[Number($("give-rarity").value)]);
+  updateQuality();
+}
+
+function setQuality(q) {
+  const quality = Math.min(200, Math.max(1, Math.round(Number(q) || 1)));
+  $("give-quality").value = quality;
+  $("give-quality-range").value = quality;
+  $("give-rarity").value = String(rarityOf(quality));
+  updateQuality();
+}
+
+function updateQuality() {
+  const quality = Number($("give-quality").value) || 1;
+  const band = rarityOf(quality);
+  [...$("give-quality-scale").children].forEach((span, i) => span.classList.toggle("on", i === band));
+  const first = RARITY_FIRST[band], last = band === 6 ? 200 : RARITY_FIRST[band + 1] - 1;
+  $("give-quality-note").textContent = give.mode === "rarity"
+    ? `${RARITIES[band]}: the item gets the lowest quality of that rarity it can have.`
+    : `Quality ${quality} is ${RARITIES[band]} (${first}-${last}). Higher in the band rolls higher stats. An item that can never be ${RARITIES[band]} is refused, with the rarities it allows.`;
+  updateGive();
+}
+
+function qualityWord() {
+  if (give.mode === "rarity") return RARITIES[Number($("give-rarity").value)];
+  if (give.mode === "quality") return "q" + $("give-quality").value;
+  return "";
+}
+
+// the Myself / A player / Everyone online buttons under a player field
+function whoButtons(box) {
+  const input = $(box.dataset.for);
+  const choices = [["Myself", "self"], ["A player", ""], [EVERYONE_TITLE, "*"]];
+  const mark = () => {
+    const v = valueOf(input);
+    [...box.children].forEach((b, i) => b.setAttribute("aria-pressed", String(i === 0 ? v === "self" : i === 2 ? v === "*" : v !== "self" && v !== "*")));
+  };
+  box.append(...choices.map(([label, value]) => el("button", {
+    type: "button",
+    onclick: () => {
+      setPlayer(input, value);
+      if (!value) input.focus();
+      input.dispatchEvent(new CustomEvent("picked", { bubbles: true }));   // not "input": the picker reads that as typing and drops the value
+      mark();
+    },
+  }, label)));
+  input.addEventListener("input", mark);
+  input.addEventListener("picked", mark);
+  mark();
+}
+
 function giveItemProblem() {
   if (!give.item) return "Choose an item.";
   if (!valueOf($("give-player"))) return "Choose a player.";
@@ -302,7 +366,8 @@ function giveItemProblem() {
 function updateGive() {
   const problem = giveItemProblem();
   $("give-submit").disabled = !!problem || !gmOn();
-  $("give-submit").textContent = problem || !give.item ? "Give" : `Give ${num($("give-count").value)} to ${$("give-player").value.trim()}`;
+  const how = give.mode === "rarity" ? ` (${RARITIES[Number($("give-rarity").value)]})` : give.mode === "quality" ? ` (quality ${$("give-quality").value})` : "";
+  $("give-submit").textContent = problem || !give.item ? "Give" : `Give ${num($("give-count").value)}${how} to ${playerText($("give-player"))}`;
   $("give-problem").textContent = gmOn() ? problem : gmOffText();
 }
 
@@ -312,7 +377,7 @@ async function submitGiveItem(event) {
   event.preventDefault();
   if (giveItemProblem() || !gmOn()) return;
   const parts = ["item", argument(valueOf($("give-player"))), give.item.value, $("give-count").value];
-  if ($("give-rarity").value) parts.push($("give-rarity").value);
+  if (qualityWord()) parts.push(qualityWord());
   await run(parts.join(" "));
   $("give-result").textContent = state.lastResult;
 }
@@ -338,7 +403,7 @@ function updateMoney() {
   const problem = moneyProblem();
   $("money-total").textContent = Number.isInteger(total) && total > 0 ? `${num(total)} copper` : "";
   $("money-submit").disabled = !!problem || !gmOn();
-  $("money-submit").textContent = problem ? "Give" : `Give to ${$("money-player").value.trim()}`;
+  $("money-submit").textContent = problem ? "Give" : `Give to ${playerText($("money-player"))}`;
   $("money-problem").textContent = gmOn() ? problem : gmOffText();
 }
 
@@ -359,17 +424,25 @@ function setMoney(gold) {
 // ---- opening them
 
 function setPlayer(input, name) {
-  input.value = name;
-  if (name === "self") delete input.dataset.value;
+  input.value = name === "*" ? EVERYONE_TITLE : name;
+  if (name === "self" || !name) delete input.dataset.value;
   else input.dataset.value = name;
 }
 
-function openGive(view, character) {
+const VIEW_PLAYER = { "give-items": "give-player", "give-money": "money-player", progression: "prog-player" };
+
+// openView shows a view, with its player field set to `character` when one is given
+function openView(view, character) {
+  if (character && VIEW_PLAYER[view]) {
+    const input = $(VIEW_PLAYER[view]);
+    setPlayer(input, character);
+    input.dispatchEvent(new CustomEvent("picked", { bubbles: true }));
+  }
   show(view);
-  if (character) setPlayer($(view === "give-items" ? "give-player" : "money-player"), character);
   updateGive();
   updateMoney();
 }
+const openGive = openView;
 
 function openedGive(view) {
   updateGive();
@@ -387,8 +460,16 @@ function setupTools() {
   }
   $("give-form").addEventListener("submit", submitGiveItem);
   $("money-form").addEventListener("submit", submitMoney);
-  picker($("give-player"), sources.player);
-  picker($("money-player"), sources.player);
+  picker($("give-player"), (q) => sources.player(q, true));
+  picker($("money-player"), (q) => sources.player(q, true));
+  for (const box of document.querySelectorAll(".who[data-for]")) whoButtons(box);
+
+  $("give-rarity").append(...RARITIES.map((r, i) => el("option", { value: String(i) }, r)));
+  $("give-quality-scale").append(...RARITIES.map((r, i) => el("span", { className: "r" + i, title: r }, r.slice(0, 3))));
+  for (const b of $("give-quality-mode").children) b.addEventListener("click", () => setQualityMode(b.dataset.mode));
+  $("give-rarity").addEventListener("change", () => setQuality(RARITY_FIRST[Number($("give-rarity").value)]));
+  $("give-quality").addEventListener("input", () => setQuality($("give-quality").value));
+  $("give-quality-range").addEventListener("input", () => setQuality($("give-quality-range").value));
 
   $("give-query").addEventListener("input", () => { clearTimeout(give.timer); give.timer = setTimeout(searchItems, 200); });
   $("give-search").addEventListener("submit", (event) => { event.preventDefault(); searchItems(); });

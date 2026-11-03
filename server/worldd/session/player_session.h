@@ -845,6 +845,34 @@ public:
     /// level-up effect when the level rose, and the character is saved.  Refused, changing nothing, for a type that is no weapon line, and for a lower level than the ranks bought in the
     /// line's tree need (they have to be refunded first).
     GmWeaponResult gm_set_weapon_xp(Connection& conn, int64_t leveling_type, int64_t xp, Clock::time_point now, const std::string& by);
+
+    // ---- Adventuring and the professions (the GM web tools' commands; session/gm_travel.h) --------------------------------------------------
+    /// What a GM change of Adventuring or of a profession did (a change of every profession says the first that moved, and how many did).
+    struct GmProgressResult {
+        bool        ok = false;
+        std::string refusal;
+        std::string what;                        // "Adventuring", the profession's name, or "every profession"
+        int64_t     xp_before = 0, xp_after = 0;
+        int         level_before = 1, level_after = 1;
+        int64_t     debt_before = 0, debt_after = 0;   // Adventuring
+        std::string tier_before, tier_after;           // a profession's certification
+        int         changed = 0;                       // the professions that moved
+    };
+    enum class GmAdventuring : uint8_t { AddXp, SetLevel, ClearDebt };
+    /// Adds Adventuring XP (the debt is paid first, as any XP pays it), raises the level to `amount` (the XP total that reaches it; the debt stays), or clears the debt.  What the client
+    /// is told is a kill's: the XPTracker, the level-up effect, the ranks the levels grant and the stats.  A level is only raised: the ranks the higher levels granted are not taken back.
+    GmProgressResult gm_adventuring(Connection& conn, GmAdventuring change, int64_t amount, Clock::time_point now, const std::string& by);
+    enum class GmProfession : uint8_t { AddXp, SetLevel, SetTier };
+    /// Adds XP to a profession (held at its certification's cap), sets its level (1 to 50: the certification becomes the lowest whose cap reaches it), or sets its certification (0 Novice
+    /// to 4 GrandMaster: the level is held inside the tier's range).  `profession` 0 changes all 22.  Refused when nothing would change.
+    GmProgressResult gm_profession(Connection& conn, int64_t profession, GmProfession change, int64_t amount, Clock::time_point now, const std::string& by);
+    /// Health, Mana and Stamina to their maximums, as a level gained gives them.  Refused for a dead player (the respawn heals) and for a character whose stats have not started.
+    struct GmHealResult {
+        bool        ok = false;
+        std::string refusal;
+        double      health_before = 0, health = 0, mana_before = 0, mana = 0;
+    };
+    GmHealResult gm_heal(Connection& conn, Clock::time_point now, const std::string& by);
     /// What a GM grant of an item did.
     struct GmItemResult {
         bool        ok = false;

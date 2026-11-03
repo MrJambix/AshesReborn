@@ -30,6 +30,8 @@ CREATE TABLE service_plot (name TEXT);
 INSERT INTO service_plot VALUES ('Plot_17_Service'), ('Plot_17_Service'), ('Plot_42_House_15x15');
 CREATE TABLE item_weapon (skill_line_name TEXT);
 INSERT INTO item_weapon VALUES ('Weapon_Ranged_Wand'), ('Weapon_Ranged_Wand'), ('');
+CREATE TABLE profession (name TEXT);
+INSERT INTO profession VALUES ('Mining'), ('LumberMilling');
 `
 
 func testCatalog(t *testing.T) *Catalog {
@@ -158,6 +160,7 @@ func TestCatalogRealData(t *testing.T) {
 		{"station", "", "carpentry", ""},
 		{"plot", "", "17", "Plot_17_Service"},
 		{"line", "", "wand", "Weapon_Ranged_Wand"},
+		{"profession", "", "mining", "Mining"},
 	} {
 		found, _, err := c.Lookup(tc.kind, tc.prefix, tc.query)
 		if err != nil || len(found) == 0 {

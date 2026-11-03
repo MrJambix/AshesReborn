@@ -18,6 +18,8 @@ namespace Mapc;
 ///                                    (`mapc build --check` is the same; `--check` stands anywhere: `mapc --check roads` is `mapc roads --check`; `--explain` prints what a line means and stops)
 ///   mapc export-config               the client's Config directory (AOC/Config: DefaultCombat.ini, DefaultAoCRecordConstants.ini ...) as the game ships it, into DIR/client_config
 ///   mapc export-zoi                  the zone-of-influence chunk packages of layer 0 (C_x_y_0.uasset) as the game ships them, into DIR/zoi_chunks (no map read: seconds)
+///   mapc minimap                   the game's world map: the 110 tiles of 2.5 km (UI/MinimapImageTiles/Verra_World_Master) as PNG, an overview and minimap.json, into
+///                                    DIR/minimap (the GM web tools' Map; no map read: about a minute)
 ///   mapc mount-speeds [--check]      read the 141 mount Blueprints' MaxWalkSpeed, MaxFlySpeed and MaxSwimSpeed (no map: seconds), write DIR/mount_speeds.tsv;
 ///                                    with --check write nothing and exit 1 when DIR's file differs from a fresh read (mounts milestone)
 ///   mapc artisan-curves [--check]    read the three profession level-up curves (Gathering, Processing, Crafting: pak assets the design database does not hold; no map:
@@ -172,6 +174,7 @@ public static class Cli
                 case "cell-exports": { var game = new Game(o.Paks, o.Usmap); return Diag.CellExports(game, o.Rest[0], o.Rest.Count > 1 ? o.Rest[1] : null, 12); }
                 case "export-config": return Export.Config(new Game(o.Paks, o.Usmap), o.OutDir);
                 case "export-zoi": return Export.Zoi(new Game(o.Paks, o.Usmap), o.OutDir);
+                case "minimap": return Minimap.Export(new Game(o.Paks, o.Usmap), o.OutDir);
                 case "mount-speeds": return MountSpeedsCommand(o);
                 case "artisan-curves": return ArtisanCurvesCommand(o);
                 case "roads": return RoadsCommand(o);

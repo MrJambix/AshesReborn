@@ -1526,6 +1526,54 @@ static void test_account_gm_commands() {
     CHECK(disabled.status == GmStatus::Ok && !owner.s->gm_enabled() && near_to(owner.s->gm_speed(), 1), ".GM Off disables commands and restores ordinary movement speed");
 }
 
+static void test_progression_commands() {
+    std::printf("the GM web tools' commands: Adventuring XP and level, the debt, heal, progress, a quality, everyone online\n");
+    auto record = cyb_on_the_ground();
+    record.gm_level = 3;
+    Harness owner(record, on_the_ground);
+    owner.play();
+    auto gm = make_travel(owner);
+    const auto run = [&](const std::string& line) {
+        std::this_thread::sleep_for(milliseconds(260));   // the GM budget refills in real time
+        const GmCommandResult r = gm.command(*owner.s, owner.conn, line);
+        owner.run(milliseconds(100));
+        return r;
+    };
+    CHECK(run(".GM On").status == GmStatus::Ok, "(GM mode on)");
+    const int level0 = owner.s->progress().level;
+    const auto xp = run(".GM xp self 500");
+    CHECK(xp.status == GmStatus::Ok && owner.s->progress().xp >= 500 && xp.message.find("Adventuring") != std::string::npos, (std::string(".GM xp adds Adventuring XP: ") + xp.message).c_str());
+    CHECK(run(".GM xp self 0").status == GmStatus::FailedPrecondition, "an XP of 0 is refused");
+    const auto up = run(".GM level self 10");
+    CHECK(up.status == GmStatus::Ok && owner.s->progress().level == 10 && owner.s->levels_gained() >= static_cast<size_t>(10 - level0), (std::string(".GM level raises the level to 10: ") + up.message).c_str());
+    const int64_t xp10 = owner.s->progress().xp;
+    CHECK(run(".GM level self 5").status == GmStatus::FailedPrecondition && owner.s->progress().level == 10, "a lower level is refused and changes nothing");
+    CHECK(run(".GM level self 10").status == GmStatus::FailedPrecondition, "the same level is refused");
+    CHECK(run(".GM level self 99").status == GmStatus::FailedPrecondition && owner.s->progress().xp == xp10, "a level past the cap is refused");
+    CHECK(run(".GM clear-debt self").status == GmStatus::FailedPrecondition, "clearing no debt is refused");
+    CHECK(run(".GM level self ten").status == GmStatus::InvalidArgument, "a level that is no number is refused with the usage");
+    // the professions need the data's 22 professions, which this world's fixture lacks: refused, with the reason
+    const auto prof = run(".GM profession-level self Mining 20");
+    CHECK(prof.status == GmStatus::FailedPrecondition && prof.message.find("no professions") != std::string::npos, "with no professions in the data a profession command says so");
+    // the progress summary: one fact a line
+    const auto progress = run(".GM progress self");
+    CHECK(progress.status == GmStatus::Ok && progress.message.find("character cyb") != std::string::npos && progress.message.find("adventuring level=10 ") != std::string::npos &&
+              progress.message.find("purse copper=") != std::string::npos,
+          ".GM progress lists the character, its Adventuring and its purse");
+    const auto heal = run(".GM heal self");
+    CHECK(heal.status == GmStatus::Ok || heal.message.find("stats have not started") != std::string::npos, (std::string(".GM heal heals, or says why not: ") + heal.message).c_str());
+    // a quality in the item command's fourth word: the item is looked up first, so a missing item is NotFound whatever the quality
+    CHECK(run(".GM item self missing 1 q65").status == GmStatus::NotFound, "q65 reads as a quality (the item is what is missing)");
+    CHECK(run(".GM item self missing 1 65").status == GmStatus::NotFound, "65 reads as a quality too");
+    CHECK(run(".GM item self missing 1 q0").status == GmStatus::InvalidArgument, "quality 0 is refused");
+    // everyone online: one line a player
+    const int64_t purse = owner.s->wallet().copper();
+    const auto all = run(".GM money \"*\" 250");
+    CHECK(all.status == GmStatus::Ok && owner.s->wallet().copper() == purse + 250 && all.message.find("1 of 1 players done") != std::string::npos && all.message.find("cyb: Gave 250 copper") != std::string::npos,
+          (std::string("money for * gives every player online, with a line each: ") + all.message).c_str());
+    CHECK(run(".GM teleport * Verra_RVR_Joeva").status == GmStatus::NotFound, "a command that does not take * reads it as a name");
+}
+
 static void test_client_rpcs() {
     std::printf("the client's own GM RPCs: ServerTeleportXYZ, ServerTeleport, ServerTeleportPlayer, behind the switch\n");
     auto record = cyb_on_the_ground();
@@ -1858,6 +1906,7 @@ int main() {
     test_speed_before_mounting();
     test_account_gm_commands();
     test_gm_tag();
+    test_progression_commands();
     test_client_rpcs();
     test_client_text_in_the_log();
     test_admin_api();

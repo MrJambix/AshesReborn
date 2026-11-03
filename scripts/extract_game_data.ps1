@@ -509,6 +509,10 @@ $steps = @(
         Invoke-Checked $dotnet (@($mapcDll, 'artisan-curves') + $common) 'mapc_artisan_curves'
         Invoke-Checked $dotnet (@($mapcDll, 'mount-speeds') + $common) 'mapc_mount_speeds'
     } },
+    @{ Name = 'minimap'; Title = "Export the game's world map for the GM web tools' Map (mapc; a few seconds)"; Outputs = @('dist\content\minimap\minimap.json', 'dist\content\minimap\overview.png'); Run = {
+        Assert-Files @('tools\mapc\bin\Release\net8.0\mapc.dll') 'run the tools step first'
+        Invoke-Checked $dotnet @($mapcDll, 'minimap', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_minimap'
+    } },
     @{ Name = 'names'; Title = "Read the words the items are named with from the game containers (itemnames; a few seconds)"; Outputs = @('dist\content\item_names.tsv'); Run = {
         Assert-Files @('tools\itemnames\bin\Release\net8.0\itemnames.dll') 'run the tools step first'
         $nameArgs = @($itemNamesDll, 'read', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir)

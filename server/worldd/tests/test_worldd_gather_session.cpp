@@ -1300,6 +1300,37 @@ static void test_testing_rate() {
 }
 #include "gather_session_registered.inc"
 
+static void test_gm_professions() {
+    std::printf("the GM tools' profession changes: XP, a level past the certification, a certification, all 22 at once\n");
+    Rig rig;
+    if (!rig.open(g_path)) return;
+    Player& p = rig.add_player(record_of("bbec5c86eb101fe5f38c87f0fa22e7d0", "cyb"));
+    play(p);
+    using G = PlayerSession::GmProfession;
+    const auto change = [&](int64_t profession, G kind, int64_t amount) {
+        const auto r = p.s->gm_profession(p.conn, profession, kind, amount, Clock::now(), "the test");
+        p.step_session();
+        return r;
+    };
+    const auto& pr = [&]() -> const auto& { return p.s->professions(); };
+    auto r = change(id::kHerbalism, G::AddXp, 1600);
+    CHECK(r.ok && pr().level(id::kHerbalism) == 2 && pr().xp(id::kHerbalism) == 1600 && r.what == "Herbalism", "1,600 Herbalism XP: level 2 (the curve's level 2 is at 1,600)");
+    r = change(id::kHerbalism, G::SetLevel, 25);
+    CHECK(r.ok && pr().level(id::kHerbalism) == 25 && pr().tier(id::kHerbalism) == 2 && r.tier_before == "Novice" && r.tier_after == "Journeyman",
+          "level 25 is past a Novice's cap: the certification becomes Journeyman (20-30)");
+    r = change(id::kHerbalism, G::SetTier, 4);
+    CHECK(r.ok && pr().tier(id::kHerbalism) == 4 && pr().level(id::kHerbalism) == 40, "GrandMaster: the level is raised to its first, 40");
+    r = change(id::kHerbalism, G::SetTier, 0);
+    CHECK(r.ok && pr().tier(id::kHerbalism) == 0 && pr().level(id::kHerbalism) == 10, "back to Novice: the level is held at its cap, 10");
+    CHECK(!change(id::kHerbalism, G::SetLevel, 0).ok && !change(id::kHerbalism, G::SetLevel, 51).ok && !change(id::kHerbalism, G::SetTier, 5).ok && !change(id::kHerbalism, G::AddXp, 0).ok,
+          "a level outside 1-50, a certification outside 0-4 and no XP are refused");
+    CHECK(!change(id::kHerbalism, G::SetTier, 0).ok, "a change that changes nothing is refused");
+    CHECK(!change(12345, G::AddXp, 10).ok, "a record that is no profession is refused");
+    r = change(0, G::SetLevel, 50);
+    CHECK(r.ok && r.changed == 22 && pr().level(id::kMining) == 50 && pr().tier(id::kMining) == 4 && pr().level(id::kHerbalism) == 50, "all 22 at level 50: GrandMaster each");
+    CHECK(p.s->progress_changed(), "the change is handed over to be saved");
+}
+
 int main() {
     {   // the lines of the log (info and above) go to g_log: the tests read what the user's test would
         auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
@@ -1328,6 +1359,7 @@ int main() {
     test_relog_keeps_the_resource_bag();
     test_levels();
     test_testing_rate();
+    test_gm_professions();
     g_fail += aoc_tests::run();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

@@ -3,6 +3,12 @@
 
 const LEVELS = [{ value: "0", title: "0" }, { value: "1", title: "1" }, { value: "2", title: "2" }, { value: "3", title: "3" }, { value: "4", title: "4" }];
 const RARITIES = ["Common", "Uncommon", "Rare", "Heroic", "Epic", "Legendary", "Artifact"];
+// the common quality curve (items/rarity.h): the first quality of each rarity; a record may hold its rarity inside a narrower range
+const RARITY_FIRST = [1, 6, 16, 31, 51, 71, 101];
+const TIERS = [{ value: "0", title: "Novice (1-10)" }, { value: "1", title: "Apprentice (10-20)" }, { value: "2", title: "Journeyman (20-30)" },
+  { value: "3", title: "Master (30-40)" }, { value: "4", title: "GrandMaster (40-50)" }];
+// the commands whose player may be "*": everyone online, one after another (gm_commands.inc's kEveryone)
+const EVERYONE = new Set(["money", "item", "xp", "level", "clear-debt", "heal", "profession-xp", "profession-level", "profession-tier", "weapon-level", "weapon-xp", "teach-recipe"]);
 
 // How each argument is filled in, when its name alone does not say.
 const player = { type: "player", label: "Player" };
@@ -23,6 +29,9 @@ const fields = {
   plot: { type: "catalog", kind: "plot", label: "Plot" },
   line: { type: "catalog", kind: "line", label: "Weapon line" },
   quest: { type: "catalog", kind: "quest", label: "Quest" },
+  profession: { type: "catalog", kind: "profession", label: "Profession", hint: "* is all 22" },
+  tier: { type: "select", label: "Certification", options: TIERS },
+  level: { type: "number", label: "Level", min: 1, max: 25, step: 1 },
   xp: { type: "number", label: "XP", step: 1 },
   seconds: { type: "number", label: "Seconds", min: 1, step: 1, presets: [3600, 21600, 86400] },
   variable: { type: "text", label: "Variable" },
@@ -47,7 +56,10 @@ cmd("teleport-xyz", "Travel", "character x y z?", "Teleport to a point", "Moves 
 cmd("speed", "Travel", "character multiplier", "Run speed", "Sets a player's run speed until they relog.");
 
 cmd("money", "Inventory", "character copper", "Give money", "Adds money to a player's purse.", { view: "give-money" });
-cmd("item", "Inventory", "character item count rarity?", "Give items", "Gives a player items.", { view: "give-items" });
+cmd("item", "Inventory", "character item count rarity?", "Give items", "Gives a player items, at the item's own quality, a rarity (Epic) or an exact quality (q65).", { view: "give-items" });
+
+cmd("progress", "Character", "character", "Progress summary", "Shows a player's Adventuring, professions, weapon lines and purse.", { view: "progression" });
+cmd("heal", "Character", "character", "Heal", "Fills a player's Health, Mana and Stamina. A dead player is refused: the respawn heals.");
 
 cmd("finish-jobs", "Crafting", "character station?", "Finish jobs", "Finishes a player's processing jobs now, at one station or all of them.");
 cmd("teach-recipe", "Crafting", "character recipe", "Teach recipe", "Teaches a player a recipe. It is saved with the character.");
@@ -56,6 +68,12 @@ cmd("recipes", "Crafting", "character", "Taught recipes", "Lists the recipes a p
 cmd("place-station", "Crafting", "node plot station", "Place station", "Puts a station on a free service plot of a Village or Town. It lasts until removed or until the server restarts.");
 cmd("remove-station", "Crafting", "node plot", "Remove station", "Takes a placed station off its plot.", { confirm: "This takes the station off its plot." });
 
+cmd("xp", "Progression", "character xp", "Add XP", "Adds Adventuring XP. Any experience debt is paid first, as with any XP.", { fields: { xp: { type: "number", label: "XP", min: 1, step: 1, presets: [1000, 10000, 100000, 1000000] } } });
+cmd("level", "Progression", "character level", "Set level", "Raises a player's Adventuring level, with the ranks and stats the levels give. A level is never lowered.");
+cmd("clear-debt", "Progression", "character", "Clear XP debt", "Clears a player's experience debt.");
+cmd("profession-xp", "Progression", "character profession xp", "Profession XP", "Adds XP to a profession, up to its certification's cap.", { fields: { xp: { type: "number", label: "XP", min: 1, step: 1, presets: [1000, 10000, 100000] } } });
+cmd("profession-level", "Progression", "character profession level", "Profession level", "Sets a profession's level. The certification becomes the lowest one whose cap reaches it.", { fields: { level: { type: "number", label: "Level", min: 1, max: 50, step: 1, presets: [10, 20, 30, 40, 50] } } });
+cmd("profession-tier", "Progression", "character profession tier", "Profession certification", "Sets a profession's certification. The level is held inside the new range.");
 cmd("reset-tutorials", "Progression", "character", "Reset tutorials", "Puts a player's finished tutorials back.", { confirm: "This puts back the character's finished tutorials." });
 cmd("weapon-level", "Progression", "character line level", "Set weapon level", "Sets a weapon line's level. A level below the ranks bought in its tree is refused.", { fields: { level: { type: "number", label: "Level", min: 1, max: 25, step: 1 } } });
 cmd("weapon-xp", "Progression", "character line xp", "Set weapon XP", "Sets a weapon line's experience total.", { fields: { xp: { type: "number", label: "XP total", min: 0, max: 5718160, step: 1 } } });

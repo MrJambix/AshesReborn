@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	authv1 "aocrop/services/gen/aoc/auth/v1"
+	citynodev1 "aocrop/services/gen/aoc/citynode/v1"
 	adminv1 "aocrop/services/gen/aoc/worldadmin/v1"
 	"aocrop/services/internal/account"
 	"aocrop/services/internal/authgrpc"
@@ -70,9 +72,19 @@ func run() error {
 		return err
 	}
 	defer streamConn.Close()
+	nodeConn, err := grpc.NewClient(cfg.CityNodeGRPCAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), token.DialOption())
+	if err != nil {
+		return err
+	}
+	defer nodeConn.Close()
 	api := http.NewServeMux()
 	api.Handle("/api/v1/gm", gmhttp.Handler(store, character.NewStore(pool), adminv1.NewWorldAdminServiceClient(worldConn)))
 	api.Handle("/api/v1/gm/", gmhttp.Reads(store, character.NewStore(pool), adminv1.NewWorldAdminServiceClient(worldConn), adminv1.NewWorldStreamServiceClient(streamConn), gmhttp.NewCatalog(cfg.ContentDB)))
+	gmMap := gmhttp.Map(store, character.NewStore(pool), gmhttp.NewLiveMap(adminv1.NewWorldStreamServiceClient(streamConn)), adminv1.NewWorldAdminServiceClient(worldConn),
+		citynodev1.NewCityNodeServiceClient(nodeConn), filepath.Join(filepath.Dir(cfg.ContentDB), "minimap"))
+	api.Handle("/api/v1/gm/map", gmMap)
+	api.Handle("/api/v1/gm/nodes", gmMap)
+	api.Handle("/api/v1/gm/minimap/", gmMap)
 	api.Handle("/gm/", gmhttp.Site())
 	status := statushttp.Handler(statushttp.Options{
 		WorldName:   cfg.WorldName,
