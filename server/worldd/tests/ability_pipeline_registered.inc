@@ -6,3 +6,4 @@
 // ============================================================================
 
 #include "ability_pipeline_guard_tests.inc"
+#include "ability_pipeline_vengeance_tests.inc"

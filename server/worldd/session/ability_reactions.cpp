@@ -18,8 +18,9 @@
 //
 //  What this file serves: the events Hit (OwnerHits) and Ability (Consume), the instigators Owner and Instigator (who put the effect on: the holder itself, unless a
 //  creature's hit left it), and the targets Owner and Instigator (the holder), Targets (the hit's) and HitInstigator (who hit the holder).
-//  The hit taken (Hit, OwnerIsHit) is raised for the Cleric's reactions only (Defiant Light): the other classes' react with Guard, Dodge, Camouflage, Stealth and Thorns, none of them
-//  checked yet, and Guard's and Dodge's stamina rules are A7's.
+//  The hit taken (Hit, OwnerIsHit) is raised for the Cleric's reactions (Defiant Light) and the Tank's Vengeance (its cooldown drops 0.5 s for each hit that hurts, 1 s for a block:
+//  instigator Instigator, a self hit and a ModifyCooldownsIds row, all served) only: the other classes' react with Guard, Dodge, Camouflage, Stealth, Thorns and Reflect, none of them
+//  checked yet, Guard's and Dodge's stamina rules are A7's, and Reflect's HitSource instigator is not served.
 //  The rest of the bindings, instigators and targets of the 335 records are left alone and said once in the log when a reaction would need them.
 // ============================================================================
 #include "session/ability_pipeline.h"
@@ -150,7 +151,7 @@ void AbilityPipeline::run_reactions(AbilityChange& c, int kind, int bit, const R
         for (const int64_t reaction_guid : carrier->reactions) {
             const ReactionDef* r = catalog_->reaction(reaction_guid);
             if (!r || (binding_of(r->row, kind) & bit) == 0) continue;
-            if (kind == kKindHit && bit == kBitOwnerIsHit && r->row.name.rfind("Cleric_", 0) != 0) continue;   // (see the file's head)
+            if (kind == kKindHit && bit == kBitOwnerIsHit && r->row.name.rfind("Cleric_", 0) != 0 && r->row.name.rfind("Tank_Vengeance_", 0) != 0) continue;   // (see the file's head)
             const int limit = r->row.global_limit > 0 ? r->row.global_limit : r->row.instigator_limit;
             if (limit > 0 && reaction_procs_[reaction_guid] >= limit) continue;
             if (r->row.trigger_expr != 0) {
