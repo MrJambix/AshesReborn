@@ -12,6 +12,7 @@
 #include <bit>
 #include <cctype>
 #include <cstring>
+#include <fstream>
 
 namespace aoc::worldd::spawns {
 
@@ -178,8 +179,43 @@ const char* verdict_name(Verdict v) {
         case Verdict::NoTable: return "no npc_motion.tsv";
         case Verdict::NoDonor: return "no donor open";
         case Verdict::NoPath: return "no blueprint";
+        case Verdict::OtherClass: return "another class than the recorded quest object's";
     }
     return "?";
+}
+
+bool load_prop_classes(const std::string& path, std::map<std::string, std::string>& out, std::string& error) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        error = "cannot open " + path;
+        return false;
+    }
+    std::map<std::string, std::string> rows;
+    std::string line;
+    for (size_t n = 1; std::getline(in, line); ++n) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (n == 1) {
+            if (line.rfind("archetype\tnative\t", 0) != 0) {
+                error = path + ": not a prop_classes.tsv (its first line is \"" + line.substr(0, 60) + "\")";
+                return false;
+            }
+            continue;
+        }
+        if (line.empty()) continue;
+        const size_t a = line.find('\t');
+        const size_t b = a == std::string::npos ? std::string::npos : line.find('\t', a + 1);
+        if (a == 0 || b == std::string::npos || b == a + 1) {
+            error = path + ": line " + std::to_string(n) + " is not \"archetype, native class, parents\"";
+            return false;
+        }
+        rows[line.substr(0, a)] = line.substr(a + 1, b - a - 1);
+    }
+    if (rows.empty()) {
+        error = path + ": no Blueprint listed";
+        return false;
+    }
+    out = std::move(rows);
+    return true;
 }
 
 std::string blueprint_leaf(const std::string& s) {
@@ -394,6 +430,11 @@ const OpenTemplate* GenericNpcs::prop_template(const content::NpcAssetRow& asset
     bool allowed = false;
     for (const char* folder : kFolders) allowed = allowed || path.rfind(folder, 0) == 0;
     if (!allowed) return fail(Verdict::NotPawn);
+    // ... and of the recorded one's native class: the folders hold plain actors as well (a furnace, a wagon, a tent), whose class has none of the properties the open writes
+    if (!config_.prop_classes.empty()) {
+        const auto c = config_.prop_classes.find(path);
+        if (c == config_.prop_classes.end() || c->second != kQuestObjectClass) return fail(Verdict::OtherClass);
+    }
     // (kept under a key of its own: template_for looks a pawn up by the plain path, so a Blueprint that is a quest object in one place and a pawn in another must not hand the prop's open to the pawn)
     const std::string key = path + "#prop";
     if (const auto it = made_.find(key); it != made_.end()) return &it->second;

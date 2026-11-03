@@ -42,6 +42,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <set>
@@ -1165,6 +1167,65 @@ static void test_interaction_state(const content::ContentDb& db, const spawns::C
     });
     if (found_plain) CHECK(!world::set_player(plain, me, true) && !world::allow_inputs(plain), "an actor with no interaction definition is not changed");
 }
+
+// The quest objects' class table (spawns/generic_npc.h, GenericConfig::prop_classes): a quest object is made from the recorded InteractableStateMachineBase only when its Blueprint is of
+// that class.  The forging furnace of JUN_HAR_ARCQ_1204 is a plain Actor: made from the recorded open, its actor block wrote a property handle a plain Actor does not have, and the client
+// closed the connection when it came into view ("Invalid property terminator handle - Handle=19", 3 November 2026).
+static void test_prop_classes(const spawns::CapturedData& captured) {
+    std::printf("\n-- the quest objects' class table: only a Blueprint of the recorded quest object's class is made --\n");
+    std::string error;
+    std::map<std::string, std::string> none;
+    CHECK(!spawns::load_prop_classes("no/such/prop_classes.tsv", none, error) && error.find("cannot open") != std::string::npos, "a missing table: 'cannot open'");
+    {
+        const std::string bad = (std::filesystem::temp_directory_path() / "worldd_test_prop_classes_bad.tsv").string();
+        std::ofstream(bad, std::ios::binary) << "archetype\tparents\tdefault_scale\n/Game/X.Default__X_C\tActor\t\n";
+        error.clear();
+        CHECK(!spawns::load_prop_classes(bad, none, error) && error.find("not a prop_classes.tsv") != std::string::npos && none.empty(), "a file with another header is refused (npc_motion.tsv is not read as one)");
+        std::filesystem::remove(bad);
+    }
+    const char* env = std::getenv("AOC_PROP_CLASSES");
+    const std::string path = env && *env ? env : "dist/content/prop_classes.tsv";
+    std::map<std::string, std::string> classes;
+    if (!spawns::load_prop_classes(path, classes, error)) {
+        std::printf("  [skip] %s: the class table tests need prop_classes.tsv (tools/mapc: mapc prop-classes)\n", error.c_str());
+        return;
+    }
+    const std::string furnace = "/Game/DesignAssets/Quests/ArcQuestAssets/JUN_HAR_ARCQ_1204_EchoesOfTheUnbroken/JUN_HAR_ARCQ_1204_ForgingFurnace.Default__JUN_HAR_ARCQ_1204_ForgingFurnace_C";
+    const std::string sword = "/Game/DesignAssets/Quests/SidequestAssets/SQ_0090_TruthAndArbitration/SQ_0091_SwordOfJudication_Piece_1.Default__SQ_0091_SwordOfJudication_Piece_1_C";
+    const std::string crate = "/Game/DesignAssets/World/Props/Interactables/Prop_Despawning_Crate.Default__Prop_Despawning_Crate_C";
+    size_t of_class = 0;
+    for (const auto& [archetype, native] : classes) of_class += native == spawns::kQuestObjectClass ? 1 : 0;
+    std::printf("    %s: %zu Blueprints, %zu of class %s\n", path.c_str(), classes.size(), of_class, spawns::kQuestObjectClass);
+    CHECK(classes.size() > 1500 && of_class > 800 && of_class < classes.size(), "the table lists the folders' Blueprints, most quest objects of the recorded class and others not");
+    CHECK(classes.count(furnace) && classes.at(furnace) == "Actor", "the forging furnace is a plain Actor");
+    CHECK(classes.count(sword) && classes.at(sword) == spawns::kQuestObjectClass, "the Sword of Judication's piece (the recorded quest object) is of the recorded class");
+    CHECK(classes.count(crate) && classes.at(crate) == spawns::kQuestObjectClass, "the crate on the ground is of the recorded class");
+
+    const auto asset_of = [](const std::string& archetype) {
+        content::NpcAssetRow a;
+        a.guid = 9000100;
+        a.archetype_path = archetype;
+        return a;
+    };
+    spawns::GenericConfig with_table;
+    with_table.prop_classes = classes;
+    spawns::GenericNpcs checked(captured, nullptr, with_table);
+    spawns::GenericNpcs unchecked(captured, nullptr, spawns::GenericConfig{});
+    spawns::Verdict v = spawns::Verdict::Generic;
+    const spawns::OpenTemplate* old_furnace = unchecked.prop_template(asset_of(furnace), &v);
+    CHECK(old_furnace && old_furnace->category == "prop", "without the table the furnace is made from the recorded quest object (what closed the client's connection)");
+    v = spawns::Verdict::Generic;
+    CHECK(checked.prop_template(asset_of(furnace), &v) == nullptr && v == spawns::Verdict::OtherClass, "with the table the furnace is not made: another class than the recorded quest object's");
+    v = spawns::Verdict::Generic;
+    const spawns::OpenTemplate* piece = checked.prop_template(asset_of(sword), &v);
+    CHECK(piece && piece->category == "prop" && v == spawns::Verdict::Generic, "a Blueprint of the recorded class is made as before");
+    v = spawns::Verdict::Generic;
+    CHECK(checked.prop_template(asset_of(crate), &v) != nullptr, "the crate on the ground is made as before");
+    v = spawns::Verdict::Generic;
+    CHECK(checked.prop_template(asset_of("/Game/DesignAssets/Quests/NoSuchQuest/NoSuchProp.Default__NoSuchProp_C"), &v) == nullptr && v == spawns::Verdict::OtherClass,
+          "a Blueprint the table does not list is not made");
+    CHECK(std::string(spawns::verdict_name(spawns::Verdict::OtherClass)).find("class") != std::string::npos, "the loader names the reason");
+}
 // ~ CoA - C:Y:B ~
 
 int main() {
@@ -1190,6 +1251,7 @@ int main() {
     test_population(*db, *captured);
     test_load_area(*db, *captured);
     test_interaction_state(*db, *captured);
+    test_prop_classes(*captured);
     test_gm_vendors(*db);
     test_mount_donors(*db);
     test_player_world(*db);

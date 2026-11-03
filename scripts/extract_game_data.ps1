@@ -12,7 +12,8 @@
 
     dist\content\content.db                    the game numbers                                  (contentc, from CacheDB.dbc)
     dist\content\artisan_curves.tsv,           profession curves, mount speeds and riders        (mapc, from the game's containers)
-      mount_speeds.tsv, mount_riders.tsv
+      mount_speeds.tsv, mount_riders.tsv,      and the native class of each quest object's Blueprint
+      prop_classes.tsv
     dist\content\npc_motion.tsv, region_foliage.tsv, roads_raw.tsv, roads.tsv, roads_levels.tsv
     dist\content\item_names.tsv                the words the items are named with (the Glint kinds, some quest items)   (tools\itemnames, from the game's containers)
     dist\content\npc_abilities.tsv,          what the creatures that attack with their own animation do: their Blueprints' ability tasks with the conditions they are
@@ -503,11 +504,12 @@ $steps = @(
         Copy-Item -Force -LiteralPath $usmapSrc -Destination (Join-Path $outDir 'aoc.usmap')
         Invoke-Checked $dotnet @($mapcDll, 'export-config', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_export_config'
     } },
-    @{ Name = 'curves'; Title = 'Read the profession curves and the mounts from the game containers (mapc)'; Outputs = @('dist\content\artisan_curves.tsv', 'dist\content\mount_speeds.tsv', 'dist\content\mount_riders.tsv'); Run = {
+    @{ Name = 'curves'; Title = 'Read the profession curves, the mounts and the quest objects'' classes from the game containers (mapc)'; Outputs = @('dist\content\artisan_curves.tsv', 'dist\content\mount_speeds.tsv', 'dist\content\mount_riders.tsv', 'dist\content\prop_classes.tsv'); Run = {
         Assert-Files @('tools\mapc\bin\Release\net8.0\mapc.dll') 'run the tools step first'
         $common = @('--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir)
         Invoke-Checked $dotnet (@($mapcDll, 'artisan-curves') + $common) 'mapc_artisan_curves'
         Invoke-Checked $dotnet (@($mapcDll, 'mount-speeds') + $common) 'mapc_mount_speeds'
+        Invoke-Checked $dotnet (@($mapcDll, 'prop-classes') + $common) 'mapc_prop_classes'
     } },
     @{ Name = 'minimap'; Title = "Export the game's world map for the GM web tools' Map (mapc; a few seconds)"; Outputs = @('dist\content\minimap\minimap.json', 'dist\content\minimap\overview.png'); Run = {
         Assert-Files @('tools\mapc\bin\Release\net8.0\mapc.dll') 'run the tools step first'

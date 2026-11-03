@@ -614,6 +614,17 @@ bool PlayerWorld::load_blueprints(const std::string& motion_path, std::string& e
     } else {
         spdlog::info("[nav] state tree table: {} Blueprints whose tree has no task to wander or patrol with (their NPCs stand at their post)", standing_archetypes_.size());
     }
+    // the native class of each quest object's Blueprint: only those of the recorded quest object's class are made (spawns/generic_npc.h, GenericConfig::prop_classes; the table is beside it too)
+    std::string class_error;
+    if (!spawns::load_prop_classes((std::filesystem::path(looks_dir_) / "prop_classes.tsv").string(), generic_config_.prop_classes, class_error)) {
+        spdlog::warn("[area] no quest objects' class table ({}): a quest object of another class than the recorded one's is made all the same, and a client closes the connection when it comes "
+                     "into view (run tools/mapc: mapc prop-classes)", class_error);
+    } else {
+        const size_t of_class = static_cast<size_t>(std::count_if(generic_config_.prop_classes.begin(), generic_config_.prop_classes.end(),
+                                                                  [](const auto& row) { return row.second == spawns::kQuestObjectClass; }));
+        spdlog::info("[area] quest objects' class table: {} Blueprints, {} of the recorded quest object's class ({}); the others are not made", generic_config_.prop_classes.size(), of_class,
+                     spawns::kQuestObjectClass);
+    }
     return true;
 }
 

@@ -1,5 +1,10 @@
 # Patch notes
 
+## 2026-11-03: No more drops near quest props
+
+### Fixed
+- Coming near the forging furnace of "Echoes of the Unbroken" no longer sends you back to character select with "Connection to the Realm timed out". The furnace is not shown for now, so that quest's furnace step can't be done yet. The same goes for a few other quest props of the same kind elsewhere (some quest wagons, tents and camps).
+
 ## 2026-11-03: Recipes you can learn
 
 ### Fixed

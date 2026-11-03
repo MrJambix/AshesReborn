@@ -114,6 +114,12 @@ struct GenericConfig {
     std::set<int64_t>        prop_components;
     /// ... and the population instances that are quest objects through their actor definition: its state responses give an item a quest asks for (a Heartwood root).
     std::set<int64_t>        prop_instances;
+    /// ... and the native class of each Blueprint of the quest objects' folders, by archetype path (prop_classes.tsv beside npc_motion.tsv, tools/mapc: mapc prop-classes; load_prop_classes).
+    /// A quest object is made from the recorded one only when its Blueprint is of the recorded one's native class (kQuestObjectClass): the open's actor block writes that class's properties,
+    /// and a client whose Blueprint is another class (JUN_HAR_ARCQ_1204_ForgingFurnace is a plain Actor) reads a property handle its class does not have ("Invalid property terminator
+    /// handle - Handle=19") and closes the connection, which the player sees as "Connection to the Realm timed out".  A Blueprint the table does not list is left out as well.
+    /// Empty (no table): the folders alone decide, as before.
+    std::map<std::string, std::string> prop_classes;
     /// The ability records of the Blueprint with this archetype path: the abilities of its state tree, which its open lists as the ones its AbilityComponent loads (the client plays only the
     /// abilities it has the record of).  Empty (or null): the Blueprint has none of its own to list, and a hostile humanoid is then not made from a guard's open (see fighting_humanoid).
     std::function<std::vector<int64_t>(const std::string& archetype_path)> abilities_of;
@@ -127,9 +133,17 @@ enum class Verdict : uint8_t {
     NoTable,      // npc_motion.tsv is not loaded: nothing is known of the Blueprints
     NoDonor,      // no captured open to make it from
     NoPath,       // the asset names no Blueprint
+    OtherClass,   // a quest object whose Blueprint is not of the recorded one's native class (GenericConfig::prop_classes)
 };
 
 const char* verdict_name(Verdict v);
+
+/// The native class of the recorded quest object, which every quest object is made from (GenericConfig::prop_classes).
+inline constexpr const char* kQuestObjectClass = "InteractableStateMachineBase";
+
+/// Reads prop_classes.tsv (tools/mapc: mapc prop-classes; the header "archetype\tnative\tparents", then one line per Blueprint) into `out`: archetype path to native class.  False with
+/// `error` when the file cannot be read, has another header or holds no line.
+bool load_prop_classes(const std::string& path, std::map<std::string, std::string>& out, std::string& error);
 
 /// The leaf of an archetype path or class name: "Wolf" of ".../Wolf.Default__Wolf_C", of "Wolf_C" and of "Wolf" alike.
 std::string blueprint_leaf(const std::string& archetype_or_class);

@@ -22,6 +22,8 @@ namespace Mapc;
 ///                                    DIR/minimap (the GM web tools' Map; no map read: about a minute)
 ///   mapc mount-speeds [--check]      read the 141 mount Blueprints' MaxWalkSpeed, MaxFlySpeed and MaxSwimSpeed (no map: seconds), write DIR/mount_speeds.tsv;
 ///                                    with --check write nothing and exit 1 when DIR's file differs from a fresh read (mounts milestone)
+///   mapc prop-classes [--check]      read the native class of each Blueprint in the quest objects' folders (no map: about a minute), write DIR/prop_classes.tsv (worldd opens
+///                                    a quest object only when its class is the recorded one's); with --check write nothing and exit 1 when DIR's file differs from a fresh read
 ///   mapc artisan-curves [--check]    read the three profession level-up curves (Gathering, Processing, Crafting: pak assets the design database does not hold; no map:
 ///                                    seconds), write DIR/artisan_curves.tsv; with --check write nothing and exit 1 when DIR's file differs from a fresh read (Gathering stage 2)
 ///   mapc roads [--check]             read the BP_RoadActor_C splines of the area's MainGrid cells, write DIR/roads_raw.tsv (a map read: run it alone; mounts milestone, stage 4)
@@ -118,7 +120,7 @@ public static class Cli
             switch (o.Cmd)
             {
                 case "help": case "build": case "extract": o.Cmd = "check"; break;   // the E1 gate: rebuild all three in a scratch folder and compare
-                case "check": case "mount-speeds": case "roads": case "artisan-curves": case "town-floors": case "town-layouts": break;   // these compare themselves
+                case "check": case "mount-speeds": case "prop-classes": case "roads": case "artisan-curves": case "town-floors": case "town-layouts": break;   // these compare themselves
                 default: throw new ArgumentException("--check goes with build, mount-speeds, artisan-curves, roads, town-floors or town-layouts (or alone: the E1 check), not with " + o.Cmd);
             }
         }
@@ -176,6 +178,7 @@ public static class Cli
                 case "export-zoi": return Export.Zoi(new Game(o.Paks, o.Usmap), o.OutDir);
                 case "minimap": return Minimap.Export(new Game(o.Paks, o.Usmap), o.OutDir);
                 case "mount-speeds": return MountSpeedsCommand(o);
+                case "prop-classes": return PropClassesCommand(o);
                 case "artisan-curves": return ArtisanCurvesCommand(o);
                 case "roads": return RoadsCommand(o);
                 case "town-floors": return TownFloorsCommand(o);
@@ -185,7 +188,7 @@ public static class Cli
                 case "bp": { var game = new Game(o.Paks, o.Usmap); Inspect.Bp(game, o.Rest[0], o.Rest.Count > 1 ? o.Rest[1] : null); return 0; }
                 case "inspect": { var game = new Game(o.Paks, o.Usmap); Inspect.Run(game, new[] { "inspect" }.Concat(o.Rest).ToArray()); return 0; }
                 default:
-                    Console.WriteLine("mapc extract | build | --check | probe-cells | export-config | export-zoi | mount-speeds [--check] | artisan-curves [--check] | roads [--check] | town-floors [--check] | town-layouts [--check] | merge-geometry BASE LAYER OUT | probe KEY.tsv | inspect NAME...   [--out-dir D --paks D --usmap F --navbuild EXE --region FILE | --center X,Y --radius CM  --margin CM --threads N --batches M --heap-gb G --min-free-gb G --work-dir D --stop-after N]");
+                    Console.WriteLine("mapc extract | build | --check | probe-cells | export-config | export-zoi | mount-speeds [--check] | prop-classes [--check] | artisan-curves [--check] | roads [--check] | town-floors [--check] | town-layouts [--check] | merge-geometry BASE LAYER OUT | probe KEY.tsv | inspect NAME...   [--out-dir D --paks D --usmap F --navbuild EXE --region FILE | --center X,Y --radius CM  --margin CM --threads N --batches M --heap-gb G --min-free-gb G --work-dir D --stop-after N]");
                     return o.Cmd == "help" ? 0 : 2;
             }
         }
@@ -358,6 +361,27 @@ public static class Cli
     }
 
     /// <summary>mapc mount-speeds: the speeds of the mount Blueprints into DIR/mount_speeds.tsv, or with --check a byte comparison with the file that is there.</summary>
+    static int PropClassesCommand(Opt o)
+    {
+        var game = new Game(o.Paks, o.Usmap);
+        var rows = PropClasses.Collect(game, PropClasses.AllPaths(game), out var packages, out var bad);
+        string text = PropClasses.ToTsv(rows);
+        Console.WriteLine($"{rows.Count} Blueprints of {packages} packages ({bad} unreadable), {rows.Count(r => r.Native == "InteractableStateMachineBase")} of them quest objects (InteractableStateMachineBase)");
+        string file = Path.Combine(o.OutDir, PropClasses.FileName);
+        if (o.CheckFlag)
+        {
+            if (!File.Exists(file)) { Console.WriteLine($"{PropClasses.FileName}: missing in {o.OutDir}"); return 1; }
+            var have = File.ReadAllBytes(file); var fresh = Encoding.UTF8.GetBytes(text);
+            if (have.AsSpan().SequenceEqual(fresh)) { Console.WriteLine($"{PropClasses.FileName}: identical ({have.Length} bytes)"); return 0; }
+            Console.WriteLine($"{PropClasses.FileName}: DIFFERS (file {have.Length} bytes, fresh {fresh.Length})");
+            return 1;
+        }
+        Directory.CreateDirectory(o.OutDir);
+        File.WriteAllBytes(file, Encoding.UTF8.GetBytes(text));
+        Console.WriteLine($"wrote {file}");
+        return 0;
+    }
+
     static int MountSpeedsCommand(Opt o)
     {
         var game = new Game(o.Paks, o.Usmap);
