@@ -71,6 +71,7 @@ public:
     int64_t                         citizen_node = 0;
     const world::CityNodes*         nodes = nullptr;
     const quest::QuestLog*          quests = nullptr;   // quests: the character's log (null: it has none)
+    const professions::Professions* professions = nullptr;   // the character's professions (null, or not valid(): every one at Novice level 1)
 
     std::optional<int64_t> quest_count(int64_t quest, const std::string& query) const override { return quests ? quests->quest_count(quest, query) : std::nullopt; }
     std::optional<int64_t> objective_count(int64_t quest, int64_t objective, const std::string& query) const override {
@@ -103,6 +104,16 @@ public:
         if (name == "Node_IsPlayerCitizenOfNode") {
             if (args.size() != 2) return std::nullopt;
             return ExprValue::of(citizen_node != 0 && citizen_node == args[1].i ? 1 : 0);
+        }
+        // a profession's certification tier (0 Novice, 1 Apprentice, 2 Journeyman, 3 Master, 4 GrandMaster) or level, by the profession's name: the three Destiny
+        // "Apprentice" steps ask GetPlayerProfessionCertificationLevel(GetPlayer(), "Fishing") >= 1 for 21 of the professions
+        if (name == "GetPlayerProfessionCertificationLevel" || name == "GetPlayerProfessionLevel") {
+            const bool tier = name == "GetPlayerProfessionCertificationLevel";
+            if (args.size() != 2 || args[0].i != kPlayer) return std::nullopt;
+            if (!professions) return ExprValue::of(tier ? 0 : 1);
+            const std::optional<int> v = professions::by_name(*professions, args[1].text, tier);
+            if (!v) return std::nullopt;   // a name no profession has: said in the log
+            return ExprValue::of(*v);
         }
         // the world around: worldd runs no elections, constructions, expansions or buy orders yet, and has no mayors
         static const char* const kNodeActivity[] = {"Node_NumOfServiceBuildingsInState", "Node_NumOfServiceBuilding", "Node_IsNodeMayorElectionActive", "Node_IsNodeMayorPrevoteActive",
@@ -140,6 +151,7 @@ std::unique_ptr<dialogue::Facts> PlayerSession::dialogue_facts(const world::Worl
     f->citizen_node = pb_.setup().citizen_node;
     f->nodes = world_ ? world_->city_nodes() : nullptr;
     if (quests_on_) f->quests = &quest_log_;
+    f->professions = &professions_;
     return f;
 }
 

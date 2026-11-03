@@ -193,4 +193,14 @@ using XpRunner = std::function<std::optional<double>(int64_t expr, const std::ma
 /// the stat engine refuses.
 XpRunner make_xp_runner(const abilities::Catalog& catalog, const stats::CharacterStats& stats, std::span<const stats::WornItem> worn, std::string& error);
 
+/// What the expressions GetPlayerProfessionCertificationLevel (`tier` true: 0 Novice ... 4 GrandMaster) and GetPlayerProfessionLevel ask of a profession named `name`
+/// (the profession record's name, any case: "Fishing", "AnimalHusbandry").  A set with no book answers Novice level 1, as the set itself does; nullopt for a name no
+/// profession has.
+inline std::optional<int> by_name(const Professions& p, std::string_view name, bool tier) {
+    if (!p.valid()) return tier ? 0 : 1;
+    const Profession* prof = p.book()->named(name);
+    if (!prof) return std::nullopt;
+    return tier ? p.tier(prof->guid) : p.level(prof->guid);
+}
+
 }  // namespace aoc::worldd::professions

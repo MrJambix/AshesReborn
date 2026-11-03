@@ -123,6 +123,11 @@ static void test_book_and_rules() {
     CHECK(skipped && !c.changed() && p.tier(kLumber) == 0, "a Promote below the tier's cap is skipped");
     c = p.promote(kMining, true, &skipped);
     CHECK(!skipped && c.promoted() && c.after.tier == 1 && c.after.level == 10 && p.tier(kMining) == 1 && c.moved(), "a Promote at the cap is one tier up, the level kept");
+    // the quest expressions GetPlayerProfessionCertificationLevel and GetPlayerProfessionLevel (the Destiny "Apprentice" steps ask the tier >= 1)
+    CHECK(pr::by_name(p, "mining", true) == 1 && pr::by_name(p, "Mining", false) == 10 && pr::by_name(p, "LUMBERJACKING", true).value_or(-1) >= 0 &&
+              pr::by_name(p, "Lumberjacking", true) == 0 && !pr::by_name(p, "Fishing", true) && pr::by_name(pr::Professions(), "Fishing", true) == 0 &&
+              pr::by_name(pr::Professions(), "Fishing", false) == 1,
+          "by name: the promoted Mining is tier 1 at level 10, a Novice is tier 0; a name the book lacks is unanswered; a set with no book is Novice level 1");
     c = p.add_xp(kMining, 1000000);
     CHECK(c.after.level == 20 && c.after.xp == 400ll * 21 * 21 - 1, "an Apprentice's XP is held at the Apprentice cap");
     c = p.promote(kMining, false);
