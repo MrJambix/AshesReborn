@@ -144,6 +144,7 @@ void Endpoint::tick_in_phases(Clock::time_point now, std::vector<std::pair<Addre
             }
             if (timing) c = SteadyClock::now();
             for (auto& pkt : s->connection.flush(now)) send_(addr, pkt);
+            watch_link(*s, now);
             if (timing) {
                 const auto d = SteadyClock::now();
                 profile.sessions_us += micros(b, c);

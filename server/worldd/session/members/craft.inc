@@ -10,3 +10,6 @@ private:
     /// buying a lot does not slow the crafts down, and a start that does not read is told whatever the shops told before.
     RequestBudget craft_budget_{kVendorBurst, kVendorInterval};
     bool          craft_unreadable_logged_ = false;
+    /// A recipe item used from the bag (activation LearnRecipes): the recipes it names that the character does not know yet join the taught list, which the client
+    /// reads from OwnerInfo.PlayerKnownRecipeIds and the inventory save keeps, and one of the stack goes. An item whose recipes are all known stays, refused.
+    void learn_recipes(Connection& conn, const repl::ItemUse& use, const svc::InventoryItem& item, const content::ItemUse& activation, Clock::time_point now);

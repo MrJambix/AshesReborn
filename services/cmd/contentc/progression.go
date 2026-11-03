@@ -69,6 +69,7 @@ func byGuid(rows []designdb.Row) map[int64]*designdb.Row {
 
 type progressionSummary struct {
 	uses, actions, tables, modelled, xpRewards, xpModelled, levelingTypes, grants int
+	recipes                                                                      int // item_recipe rows
 }
 
 // buildProgression fills the plan D1 tables. curves are the StatCurve rows as buildCurves read them (EvalCurve of the XP
@@ -123,6 +124,21 @@ func buildProgression(w *writer, src *source, curves *aocexpr.CurveMap, statName
 				if err := w.exec(`INSERT INTO item_cast (item_guid, ability_guid) VALUES (?, ?)`, r.Guid, cast); err != nil {
 					return err
 				}
+			}
+		}
+		if activation == "LearnRecipes" {
+			recipes := f.ids("LearnableRecipeIds")
+			if f.err != nil {
+				return f.err
+			}
+			for i, g := range recipes {
+				if g == 0 {
+					continue
+				}
+				if err := w.exec(`INSERT INTO item_recipe (item_guid, ord, recipe_guid) VALUES (?, ?, ?)`, r.Guid, i, g); err != nil {
+					return err
+				}
+				sum.recipes++
 			}
 		}
 		for i, g := range actions {
@@ -350,7 +366,9 @@ func buildProgression(w *writer, src *source, curves *aocexpr.CurveMap, statName
 
 	opt.logf("item_use: %d items; action_response: %d; reward_table: %d (%d modelled); reward_xp: %d (%d the level scrolls' formula); leveling_type: %d; skill_auto_grant: %d",
 		sum.uses, sum.actions, sum.tables, sum.modelled, sum.xpRewards, sum.xpModelled, sum.levelingTypes, sum.grants)
+	opt.logf("item_recipe: %d recipes taught by LearnRecipes items", sum.recipes)
 	meta["typed.item_use"] = strconv.Itoa(sum.uses)
+	meta["typed.item_recipe"] = strconv.Itoa(sum.recipes)
 	meta["typed.action_response"] = strconv.Itoa(sum.actions)
 	meta["typed.reward_table"] = strconv.Itoa(sum.tables)
 	meta["typed.reward_table_modelled"] = strconv.Itoa(sum.modelled)

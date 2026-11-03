@@ -276,6 +276,10 @@ struct ItemUse {
     bool                 disabled_in_combat = false;
     int64_t              cast_ability = 0;  // the ability a CastAbility item casts when used (contentc version 38; 0: none)
     std::vector<int64_t> actions;           // ActionResponse guids, in the record's order
+    /// A LearnRecipes item's LearnableRecipeIds (contentc version 44, item_recipe), in the record's order; recipes_listed is false for a file
+    /// older than that, where what the item teaches is not known.
+    std::vector<int64_t> recipes;
+    bool                 recipes_listed = false;
 };
 
 /// A row of `action_response` with its `action_reward` rows.

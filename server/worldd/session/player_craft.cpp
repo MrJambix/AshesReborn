@@ -758,6 +758,53 @@ void PlayerSession::say(Connection& conn, const char* text, Clock::time_point no
     gather_callouts_.push_back({now + kCalloutLife, key_of_callout});
 }
 
+void PlayerSession::learn_recipes(Connection& conn, const repl::ItemUse& use, const svc::InventoryItem& item, const content::ItemUse& activation, Clock::time_point now) {
+    const char* what = "ServerItemUsed (a recipe)";
+    const auto refuse = [&](const std::string& why) {
+        ++uses_refused_;
+        refuse_item_request(conn, what, why, now);
+    };
+    if (!activation.recipes_listed) return refuse("content.db is older than contentc 44 (no item_recipe): what the recipe teaches is not known, and the item stays");
+    if (activation.recipes.empty()) return refuse("the item names no recipe to learn (its LearnableRecipeIds are empty): it stays");
+    const content::CraftRecipeData* book = world_ ? world_->craft_recipes() : nullptr;
+    // What is new: a recipe the data does not hold, or one every character knows (not learnable: the client knows it by its own flag), teaches nothing
+    std::vector<int64_t> fresh;
+    std::vector<std::string> names;
+    for (const int64_t r : activation.recipes) {
+        const content::CraftRecipe* rec = book ? book->recipe(r) : nullptr;
+        if (!rec || !rec->learnable) continue;
+        if (std::find(taught_.begin(), taught_.end(), r) != taught_.end() || std::find(fresh.begin(), fresh.end(), r) != fresh.end()) continue;
+        fresh.push_back(r);
+        names.push_back(rec->name);
+    }
+    if (fresh.empty()) return refuse("the character knows what the item teaches already (or every character does): it stays");
+    if (taught_.size() + fresh.size() > bootstrap::kMaxKnownRecipes) return refuse("the character knows the most recipes the list holds");
+    if (!room_for(2 + bootstrap::kMaxEventsPerChain)) return;
+
+    items::Outcome used;
+    used.ok = true;
+    if (activation.consume_on_use) {
+        used = inventory_.consume(svc::ItemContainer::Backpack, use.slot, item.instance_guid, 1);
+        if (!used.ok) return refuse(used.refusal);
+        inventory_dirty_ = true;
+        inventory_changed_ = true;
+    }
+    taught_.insert(taught_.end(), fresh.begin(), fresh.end());
+    ++uses_applied_;
+    ++items_applied_;
+    if (!used.events.empty()) {
+        const std::vector<bootstrap::ItemEvent> events = item_events_for(used);
+        queue("ClientReceiveStorageEvent", [events](bootstrap::PlayerBootstrap& pb) { return pb.item_events(events); }, conn, /*must_build=*/true);
+    }
+    if (pb_.set_known_recipes(taught_)) queue("OwnerInfo", [](bootstrap::PlayerBootstrap& pb) { return pb.currencies_update(); }, conn, /*must_build=*/true);
+    hand_over_inventory("a recipe was learned", /*periodic=*/false);   // the list is saved with the inventory: at once, as a GM's teaching is
+    std::string list;
+    for (const std::string& n : names) list += (list.empty() ? "" : ", ") + n;
+    spdlog::info("[session] {}: learned {} from item {} ({}{}) ({} taught in all)", name(), list, item.item_record_id,
+                 activation.consume_on_use ? "one of the stack used up" : "the item stays", fresh.size() < activation.recipes.size() ? "; the rest known already" : "",
+                 taught_.size());
+}
+
 bool PlayerSession::gm_teach_recipe(Connection& conn, int64_t recipe, const std::string& by) {
     if (std::find(taught_.begin(), taught_.end(), recipe) != taught_.end()) return false;
     if (taught_.size() >= bootstrap::kMaxKnownRecipes) return false;

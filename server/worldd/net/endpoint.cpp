@@ -313,12 +313,40 @@ void Endpoint::remove(const Address& a, const char* why) {
     if (it == sessions_.end()) return;
     Session& s = *it->second;
     spdlog::info("[endpoint] {} ({}): {}", a.to_string(), s.request.character_id, why);
-    if (s.player) s.player->finish(why);   // the last good position is saved whatever ended the session
+    spdlog::info("[link] {}: the connection at its end: {}", s.character_name.empty() ? s.request.character_id : s.character_name,
+                 s.connection.health_summary(Clock::now()));
+    if (s.player) s.player->finish(why);  // the last good position is saved whatever ended the session
     auto c = by_character_.find(s.request.character_id);
     if (c != by_character_.end() && c->second == a) by_character_.erase(c);
     auto i = by_id_.find(s.id);
     if (i != by_id_.end() && i->second == a) by_id_.erase(i);
     sessions_.erase(it);
+}
+
+void Endpoint::watch_link(Session& s, Clock::time_point now) {
+    constexpr std::chrono::seconds kWindowStall{2}, kSilence{5};
+    if (!s.logged_in) return;
+    const ConnectionHealth& h = s.connection.health();
+    const std::string& who = s.character_name.empty() ? s.request.character_id : s.character_name;
+    if (h.window_full_since && now - *h.window_full_since >= kWindowStall) {
+        if (!s.window_stall_warned) {
+            s.window_stall_warned = true;
+            spdlog::warn("[link] {}: nothing can be sent for 2 s: the client has not reported on our last 256 packets, so not even a keep-alive goes out; {}",
+                         who, s.connection.health_summary(now));
+        }
+    } else if (s.window_stall_warned && !h.window_full_since) {
+        s.window_stall_warned = false;
+        spdlog::info("[link] {}: the window is open again after {:.1f} s; {}", who, h.window_full_longest, s.connection.health_summary(now));
+    }
+    if (now - h.last_receive >= kSilence) {
+        if (!s.silence_warned) {
+            s.silence_warned = true;
+            spdlog::warn("[link] {}: no packet from the client for 5 s; {}", who, s.connection.health_summary(now));
+        }
+    } else if (s.silence_warned) {
+        s.silence_warned = false;
+        spdlog::info("[link] {}: the client is heard again; {}", who, s.connection.health_summary(now));
+    }
 }
 
 bool Endpoint::session_limit_reached(const Address& from, Clock::time_point now) {
@@ -396,6 +424,7 @@ void Endpoint::tick(Clock::time_point now) {
             }
             if (timing) b = std::chrono::steady_clock::now();
             for (auto& pkt : s->connection.flush(now)) send_(addr, pkt);
+            watch_link(*s, now);
             if (timing) {
                 const auto c = std::chrono::steady_clock::now();
                 profile.sessions_us += std::chrono::duration<double, std::micro>(b - a).count();

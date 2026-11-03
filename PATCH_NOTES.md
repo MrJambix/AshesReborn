@@ -1,5 +1,11 @@
 # Patch notes
 
+## 2026-11-03: Recipes you can learn
+
+### Fixed
+- Recipe scrolls now teach their recipe: use one from your bag and the recipe is yours, and the scroll is used up. A recipe you already know is refused and the scroll stays, so you can sell it or give it away.
+- The server now records more about each connection, to track down "Connection to the Realm timed out". If it happens to you, tell us the time it happened.
+
 ## 2026-11-03: Mayors' flying mounts, town people who keep the peace, and Cleric work
 
 ### Fixed

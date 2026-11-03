@@ -42,7 +42,7 @@
 //	                     the quality bands, the set bonuses, the gameplay tags) and the compiled stat formula graph
 //	                     (package statprog) that worldd runs; set_effect_bonus (contentc version 43) the effects a set puts on
 //	                     its wearer (SetEffectBonuses: the ArmorType sets' mitigation and attribute effects)
-//	item_use, item_action, action_response, action_reward,
+//	item_use, item_action, item_recipe (contentc version 44), action_response, action_reward,
 //	reward_table, reward_item, reward_xp,
 //	leveling_type, leveling_curve,
 //	skill_auto_grant, skill_rank_stat_mod
@@ -562,6 +562,13 @@ CREATE TABLE item_cast (
     item_guid    INTEGER PRIMARY KEY,
     ability_guid INTEGER NOT NULL
 );
+-- The recipes a LearnRecipes item teaches (contentc version 44): the item's LearnableRecipeIds, in the record's order.
+CREATE TABLE item_recipe (
+    item_guid   INTEGER NOT NULL,
+    ord         INTEGER NOT NULL,
+    recipe_guid INTEGER NOT NULL,
+    PRIMARY KEY (item_guid, ord)
+) WITHOUT ROWID;
 -- The item's ActivationActionsIds, in the record's order.
 CREATE TABLE item_action (
     item_guid   INTEGER NOT NULL,

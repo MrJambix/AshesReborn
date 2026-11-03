@@ -108,6 +108,8 @@ constexpr const char* kEquipSlotSql = "SELECT slot, name FROM equip_slot";
 // leveling_type, leveling_curve, skill_auto_grant and skill_rank_stat_mod
 constexpr const char* kItemUseSql = "SELECT item_guid, activation, consume_on_use, cooldown, disabled_in_combat, cast_ability_guid FROM item_use WHERE item_guid = ?1";
 constexpr const char* kItemActionSql = "SELECT action_guid FROM item_action WHERE item_guid = ?1 ORDER BY ord";
+// contentc version 44: the recipes a LearnRecipes item teaches.  Not among the statements every file must answer: an older file has no such table.
+constexpr const char* kItemRecipeSql = "SELECT recipe_guid FROM item_recipe WHERE item_guid = ?1 ORDER BY ord";
 constexpr const char* kItemHasTagSql = "SELECT 1 FROM item_tag WHERE item_guid = ?1 AND (tag = ?2 OR tag LIKE ?2 || '.%') LIMIT 1";
 constexpr const char* kActionSql = "SELECT guid, name, response_type, class_guid, class_name, remove_up_to_quantity FROM action_response WHERE guid = ?1";
 constexpr const char* kActionRewardSql = "SELECT reward_table_guid FROM action_reward WHERE action_guid = ?1 ORDER BY ord";
@@ -1031,6 +1033,10 @@ std::optional<ItemUse> ContentDb::item_use(int64_t item_guid, std::string& error
         u.cast_ability = sqlite3_column_int64(s, 5);
     }
     if (!guid_list(db_, kItemActionSql, item_guid, u.actions, error, "item action")) return std::nullopt;
+    if (u.activation == "LearnRecipes") {
+        u.recipes_listed = Stmt(db_, kItemRecipeSql).ok();   // (a file older than version 44 has no such table: what the item teaches is not known)
+        if (u.recipes_listed && !guid_list(db_, kItemRecipeSql, item_guid, u.recipes, error, "item recipe")) return std::nullopt;
+    }
     return u;
 }
 // -- CoA . C-Y-B --

@@ -69,6 +69,7 @@ void append_bits(InBunch& dst, const InBunch& src) {
 
 Connection::Connection(const ConnectionConfig& cfg, Clock::time_point now)
     : cfg_(cfg), last_receive_(now), last_send_(now) {
+    health_.last_receive = health_.last_send = health_.last_ack = now;
     // UE5 InitSequence: the notify state starts one before the peer's first
     // packet, and every channel's reliable sequence at initial seq % 1024.
     notify_.init(conn::seq_add(cfg.client_initial_seq, -1), cfg.server_initial_seq);
@@ -78,14 +79,26 @@ std::vector<InBunch> Connection::receive(const uint8_t* data, size_t len, Clock:
     std::vector<InBunch> out;
     const auto pkt = conn::read_data_packet(data, len, wire::Direction::ClientToServer);
     if (!pkt) return out;
-    const int delta = notify_.update(pkt->notify, [this](uint16_t seq, bool ok) { on_packet_ack(seq, ok); });
+    const int delta = notify_.update(pkt->notify, [this, now](uint16_t seq, bool ok) {
+        ++(ok ? health_.packets_acked : health_.packets_lost);
+        health_.last_ack = now;
+        on_packet_ack(seq, ok);
+    });
     if (delta <= 0) {
         // While the receive window re-syncs, packets are dropped until the
         // client acks the advanced window; UE still owes the client that ack
         // (++HasDirtyAcks), or it would wait for our next keep-alive.
-        if (notify_.is_waiting_for_history_flush()) dirty_acks_ = true;
+        if (notify_.is_waiting_for_history_flush()) {
+            dirty_acks_ = true;
+            ++health_.datagrams_flush_wait;
+        } else {
+            ++health_.datagrams_stale;
+        }
         return out;
     }
+    ++health_.datagrams_received;
+    health_.longest_receive_gap = std::max(health_.longest_receive_gap, std::chrono::duration<double>(now - last_receive_).count());
+    health_.last_receive = now;
     last_receive_ = now;
 
     std::vector<wire::ParsedBunch> bunches;
@@ -206,6 +219,7 @@ void Connection::on_packet_ack(uint16_t seq, bool delivered) {
         } else if (ob->reliable && !ob->queued) {
             ob->queued = true;
             outgoing_.push_back(ob);  // lost: send it again, same sequence
+            ++health_.bunches_resent;
         }
         note_ack(*ob, delivered);
     }
@@ -411,6 +425,9 @@ std::vector<uint8_t> Connection::finish_packet(emit::BunchWriter& w, std::vector
     auto bytes = conn::finish_data_packet(w);
     const uint16_t seq = notify_.commit_and_increment_out_seq();
     if (!tracked.empty()) in_flight_[seq] = std::move(tracked);
+    ++health_.packets_sent;
+    health_.max_in_flight = std::max(health_.max_in_flight, unreported_packets());
+    health_.last_send = now;
     last_send_ = now;
     dirty_acks_ = false;
     return bytes;
@@ -420,6 +437,7 @@ std::vector<uint8_t> Connection::finish_packet(emit::BunchWriter& w, std::vector
 std::vector<std::vector<uint8_t>> Connection::flush(Clock::time_point now) {
     std::vector<std::vector<uint8_t>> out;
     constexpr size_t kMaxBits = conn::kMaxPacketBytes * 8;
+    track_window(now);
     while (!outgoing_.empty() && !notify_.is_window_full()) {
         emit::BunchWriter w = start_packet();
         std::vector<OutPtr> tracked;  // what the ack of this packet is about: reliable bunches, chain parts
@@ -450,6 +468,34 @@ std::vector<std::vector<uint8_t>> Connection::flush(Clock::time_point now) {
         out.push_back(finish_packet(w, {}, now));
     }
     return out;
+}
+
+void Connection::track_window(Clock::time_point now) {
+    if (notify_.is_window_full()) {
+        if (!health_.window_full_since) {
+            health_.window_full_since = now;
+            ++health_.window_full_times;
+        }
+        return;
+    }
+    if (!health_.window_full_since) return;
+    const double s = std::chrono::duration<double>(now - *health_.window_full_since).count();
+    health_.window_full_seconds += s;
+    health_.window_full_longest = std::max(health_.window_full_longest, s);
+    health_.window_full_since.reset();
+}
+
+std::string Connection::health_summary(Clock::time_point now) const {
+    const auto ago = [now](Clock::time_point t) { return std::chrono::duration<double>(now - t).count(); };
+    const ConnectionHealth& h = health_;
+    std::string full = h.window_full_since ? fmt::format(", full NOW for {:.1f} s", ago(*h.window_full_since)) : std::string();
+    return fmt::format("{} packets sent, {} acknowledged, {} reported lost, {} reliable bunches sent again, {} unreliable dropped for want of room; "
+                       "{} in flight now, at most {}; the window was full {} time(s), {:.1f} s in all, {:.1f} s at most{}; "
+                       "{} of the client's packets read, {} dropped as old, {} dropped waiting for the history flush, the longest gap between two {:.1f} s; "
+                       "last from the client {:.1f} s ago, last sent {:.1f} s ago, last acknowledgement {:.1f} s ago",
+                       h.packets_sent, h.packets_acked, h.packets_lost, h.bunches_resent, unreliable_dropped_, unreported_packets(), h.max_in_flight,
+                       h.window_full_times, h.window_full_seconds, h.window_full_longest, full, h.datagrams_received, h.datagrams_stale,
+                       h.datagrams_flush_wait, h.longest_receive_gap, ago(h.last_receive), ago(h.last_send), ago(h.last_ack));
 }
 
 bool Connection::timed_out(Clock::time_point now) const {

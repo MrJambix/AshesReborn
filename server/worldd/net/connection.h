@@ -177,6 +177,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -205,6 +206,27 @@ struct Chain {
     std::vector<protocol::emit::BunchWriter> exports;
     /// The content: SerializeNewActor and the content blocks, an RPC, ...
     protocol::emit::BunchWriter payload;
+};
+
+/// How the link with the client has gone (the investigation of 2026-11-03: a player's client said "Connection to the Realm timed out"
+/// while the server saw nothing wrong).  Counted since the connection began; read at its end and by the endpoint's stall warnings.
+struct ConnectionHealth {
+    size_t packets_sent = 0;
+    size_t packets_acked = 0;          // the client said it has them
+    size_t packets_lost = 0;           // the client said it does not (their reliable bunches go again)
+    size_t bunches_resent = 0;         // reliable bunches queued again after a loss
+    size_t datagrams_received = 0;     // packets of the client that read
+    size_t datagrams_stale = 0;        // ...dropped as old or repeated
+    size_t datagrams_flush_wait = 0;   // ...dropped while the receive window waited for the client to see our acks (UE's history flush)
+    size_t max_in_flight = 0;          // the most packets sent and not reported on at once (the window holds 256)
+    size_t window_full_times = 0;      // times the window filled: nothing at all is sent then, not even a keep-alive
+    double window_full_seconds = 0;    // in all, ended stretches
+    double window_full_longest = 0;
+    double longest_receive_gap = 0;    // seconds between two of the client's packets that read
+    std::optional<Clock::time_point> window_full_since;
+    Clock::time_point last_receive{};
+    Clock::time_point last_send{};
+    Clock::time_point last_ack{};      // the last time the client reported on a packet of ours
 };
 
 /// Names an accepted chain in AckEvents: send_chain returns it, 0 is "refused".
@@ -374,6 +396,10 @@ public:
     /// crowd out the player's own data (the actor system) looks at before it adds more.
     size_t packets_in_flight() const { return static_cast<uint16_t>(notify_.out_seq() - notify_.out_ack_seq()) & 0x3FFF; }
     size_t queued_bunches() const { return outgoing_.size(); }
+    /// The link's counters (see ConnectionHealth).
+    const ConnectionHealth& health() const { return health_; }
+    /// One line of them for the log, the ages counted back from `now`.
+    std::string health_summary(Clock::time_point now) const;
 
 private:
     struct OutBunch {
@@ -450,7 +476,12 @@ private:
     ChainId next_chain_ = 1;
     std::deque<AckEvent> ack_events_;
     size_t unreliable_dropped_ = 0;
-    std::unordered_map<uint32_t, int> in_reliable_;                // channel -> last sequence delivered
+    ConnectionHealth health_;
+    /// Packets sent that the client has not reported on yet (packets_in_flight counts from one before the newest reported, so it is one more).
+    size_t unreported_packets() const { const size_t n = packets_in_flight(); return n > 0 ? n - 1 : 0; }
+    /// Starts or ends a stretch of a full window (flush, at each call).
+    void track_window(Clock::time_point now);
+    std::unordered_map<uint32_t, int> in_reliable_;               // channel -> last sequence delivered
     std::unordered_map<uint32_t, std::map<int, Queued>> in_queue_; // early reliable bunches
     std::unordered_map<uint32_t, Partial> partial_;                // reliable partial being built
 };

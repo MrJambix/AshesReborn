@@ -183,6 +183,8 @@ private:
         Clock::time_point byte_at{};
         bool rate_started = false;
         size_t rate_dropped = 0;
+        bool window_stall_warned = false; // watch_link: the stretch of a full window now going on was logged
+        bool silence_warned = false;      // watch_link: the client's silence now going on was logged
         double profile_us = 0;            // --loop-stats: its ticks and sends, and its view's part, since take_costliest
         double profile_view_us = 0;
 
@@ -212,6 +214,9 @@ private:
     std::string random_challenge();
     /// Takes `len` bytes from the session's bucket (refilled for the time since the last datagram); false when it holds fewer.
     bool within_rate(Session& s, const Address& from, size_t len, Clock::time_point now);
+    /// After each flush: logs once when a player's link stalls (the window full 2 s, so nothing goes out, not even a keep-alive; or no packet
+    /// from the client for 5 s) and when it comes back, with the connection's counters, so a client's "timed out" can be read in our log.
+    void watch_link(Session& s, Clock::time_point now);
 // [CoA + C.Y.B]
 
     EndpointConfig cfg_;

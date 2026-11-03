@@ -250,11 +250,19 @@ static void test_window_full() {
     CHECK(kas.size() == 255, "255 keep-alives, then the window of 256 unacknowledged packets is full");
     CHECK(c.flush(t0 + seconds(200)).empty(), "nothing more goes out while it is full, not even a keep-alive");
     CHECK(c.notify().is_window_full(), "(is_window_full)");
+    // the link's counters (the investigation of 2026-11-03): the stretch of a full window is seen while it lasts
+    const ConnectionHealth& h = c.health();
+    CHECK(h.packets_sent == 256 && h.max_in_flight == 256 && h.window_full_since && h.window_full_times == 1 && h.packets_acked == 0,
+          "the counters: 256 packets sent, 256 in flight at most, the window full now (once), none acknowledged yet");
+    CHECK(c.health_summary(t0 + seconds(200)).find("full NOW for") != std::string::npos, "and the summary line says the window is full now");
 
     for (const auto& p : kas) cl.receive(p);
     auto in = c.receive(cl.packet({cl.netspeed(7)}), t0 + seconds(200) + milliseconds(1));
     CHECK(in.size() == 1 && !c.notify().is_window_full(), "the client's next packet is accepted and opens the window");
     CHECK(c.flush(t0 + seconds(200) + milliseconds(60)).size() == 1, "and its ack goes out");
+    CHECK(h.packets_acked == 256 && h.packets_lost == 0 && !h.window_full_since && h.window_full_longest > 140.0 && h.window_full_longest < 150.0 &&
+              h.longest_receive_gap > 199.0,
+          "afterwards: all 256 acknowledged, none lost, the stretch ended and measured (about 149 s), the client's silence of 200 s the longest gap");
 }
 
 static void test_cadence() {
