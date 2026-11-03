@@ -167,8 +167,9 @@ func TestWithContentDBTheRulesLoad(t *testing.T) {
 	if kits == nil {
 		t.Fatalf("loadContent(%q) gave no starting kits", path)
 	}
-	if bard, err := kits.Kit(2); err != nil || len(bard) != 13 {
-		t.Errorf("the Bard's kit = %d items, %v, want the captured Bard's 13", len(bard), err)
+	// The captured Bard's 13 worn items, then the Flail Runner welcome mount in the Backpack.
+	if bard, err := kits.Kit(2); err != nil || len(bard) != 14 || bard[13].Container != character.Backpack {
+		t.Errorf("the Bard's kit = %d items, %v, want the captured Bard's 13 and the welcome mount", len(bard), err)
 	}
 	if err := check.Check(customization.New{Race: 0, Gender: 0, Class: 2, AppearanceJSON: "{}"}); err != nil {
 		t.Errorf("a Kaelar male Bard with nothing chosen is refused: %v", err)
@@ -238,31 +239,42 @@ func TestBackfillGivesCybTheBardsKitOnce(t *testing.T) {
 	backfillKits(ctx, store, kits)
 
 	items, err := store.Inventory(ctx, cyb.ID)
-	if err != nil || len(items) != 13 {
-		t.Fatalf("cyb has %d items (%v), want the Bard's 13", len(items), err)
+	if err != nil || len(items) != 14 {
+		t.Fatalf("cyb has %d items (%v), want the Bard's 13 and the welcome mount", len(items), err)
 	}
+	var worn, bag []character.Item
 	for _, it := range items {
-		if it.Container != character.Equipment || it.Quantity != 1 || it.Quality != 1 {
+		if it.Container == character.Equipment {
+			worn = append(worn, it)
+		} else {
+			bag = append(bag, it)
+		}
+	}
+	if len(worn) != 13 || len(bag) != 1 || bag[0].Container != character.Backpack {
+		t.Fatalf("cyb has %d worn and %d other items, want 13 worn and the welcome mount in the Backpack: %+v", len(worn), len(bag), bag)
+	}
+	for _, it := range worn {
+		if it.Quantity != 1 || it.Quality != 1 {
 			t.Errorf("cyb's item %+v", it)
 		}
 	}
-	if items[0].Slot != 1 || items[0].ItemRecordID != 6064630736269279236 || items[1].Slot != 2 || items[1].Durability != 11 || items[12].Slot != 38 || items[12].Durability != 38 {
-		t.Errorf("cyb's first, second and last items: %+v %+v %+v", items[0], items[1], items[12])
+	if worn[0].Slot != 1 || worn[0].ItemRecordID != 6064630736269279236 || worn[1].Slot != 2 || worn[1].Durability != 11 || worn[12].Slot != 38 || worn[12].Durability != 38 {
+		t.Errorf("cyb's first, second and last worn items: %+v %+v %+v", worn[0], worn[1], worn[12])
 	}
-	if t2, _ := store.Inventory(ctx, tank.ID); len(t2) != 12 {
-		t.Errorf("the Tank has %d items, want 12", len(t2))
+	if t2, _ := store.Inventory(ctx, tank.ID); len(t2) != 13 {
+		t.Errorf("the Tank has %d items, want 12 and the welcome mount", len(t2))
 	}
 	if h, _ := store.Inventory(ctx, has.ID); len(h) != 1 || h[0].ItemRecordID != 5 {
 		t.Errorf("the character with items was changed: %+v", h)
 	}
-	for _, want := range []string{"starter kit granted (backfill)", "name=cyb", "items=13", "granted=2"} {
+	for _, want := range []string{"starter kit granted (backfill)", "name=cyb", "items=14", "granted=2"} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("the log lacks %q:\n%s", want, logs.String())
 		}
 	}
 	// once: the second start changes nothing
 	backfillKits(ctx, store, kits)
-	if again, _ := store.Inventory(ctx, cyb.ID); len(again) != 13 || again[1].InstanceGUID != items[1].InstanceGUID {
+	if again, _ := store.Inventory(ctx, cyb.ID); len(again) != 14 || again[1].InstanceGUID != items[1].InstanceGUID {
 		t.Errorf("a second backfill changed cyb's items")
 	}
 }

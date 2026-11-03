@@ -1,5 +1,22 @@
 # Patch notes
 
+## 2026-11-03: Mayors' flying mounts, town people who keep the peace, and Cleric work
+
+### Fixed
+- Healing or buffing a town person (a vendor, a villager) no longer makes the whole town fight you. A heal or a buff on any creature no longer starts a fight.
+- The death window now offers the first Emberspring you discovered (for a new character, the Aelan Divine Gate): your first discovered place becomes your home.
+- The level 10 and level 20 weapon scrolls now put your worn weapon lines at the level they name, instead of one level short.
+- Your chat ignore list is now kept when the server restarts.
+- The Destiny steps that ask for an Apprentice profession now count once your profession is promoted.
+
+### New
+- Type `.mount` in chat to list the mounts in your bag, `.mount <number or name>` to summon one, and `.mount off` to dismiss it. This is how to ride the mayors' flying mounts, which do nothing when used from the bag.
+- Cleric: Divine Flare's Shielding now protects other players standing in the flare too. Healing now draws the attention of the creatures fighting whoever you heal.
+- Tank: Vengeance comes back half a second sooner each time you take damage, a second sooner on a block.
+- Quests that ask you to defeat a kind of creature (goblins, beasts, the creatures of an event) now count them, show where to find them on the map, and drop their quest items.
+- Armor sets: wearing five pieces of one armor kind now gives that kind's set effect (Heavy: 10% less physical damage taken), and the tier three sets' piece bonuses apply.
+- More creatures use their special attacks: attacks that build up over a fight now come out once the fight has gone on long enough.
+
 ## 2026-11-02: Game master tools
 
 ### Improved
