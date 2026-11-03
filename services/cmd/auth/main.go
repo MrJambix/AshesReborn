@@ -81,9 +81,10 @@ func run() error {
 	api.Handle("/api/v1/gm", gmhttp.Handler(store, character.NewStore(pool), adminv1.NewWorldAdminServiceClient(worldConn)))
 	api.Handle("/api/v1/gm/", gmhttp.Reads(store, character.NewStore(pool), adminv1.NewWorldAdminServiceClient(worldConn), adminv1.NewWorldStreamServiceClient(streamConn), gmhttp.NewCatalog(cfg.ContentDB)))
 	gmMap := gmhttp.Map(store, character.NewStore(pool), gmhttp.NewLiveMap(adminv1.NewWorldStreamServiceClient(streamConn)), adminv1.NewWorldAdminServiceClient(worldConn),
-		citynodev1.NewCityNodeServiceClient(nodeConn), filepath.Join(filepath.Dir(cfg.ContentDB), "minimap"))
+		citynodev1.NewCityNodeServiceClient(nodeConn), filepath.Join(filepath.Dir(cfg.ContentDB), "minimap"), gmhttp.NewMapRecords(cfg.ContentDB))
 	api.Handle("/api/v1/gm/map", gmMap)
 	api.Handle("/api/v1/gm/nodes", gmMap)
+	api.Handle("/api/v1/gm/mapdata", gmMap)
 	api.Handle("/api/v1/gm/minimap/", gmMap)
 	api.Handle("/gm/", gmhttp.Site())
 	status := statushttp.Handler(statushttp.Options{

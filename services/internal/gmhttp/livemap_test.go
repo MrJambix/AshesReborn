@@ -124,7 +124,7 @@ func (nodePlaces) ListPlaces(context.Context, *adminv1.ListPlacesRequest, ...grp
 }
 
 func TestMapRoutes(t *testing.T) {
-	handler := Map(fakeTokens{}, fakeGrants(3), NewLiveMap(&fakeStream{frames: []*adminv1.SubscribeResponse{snapshot(1)}}), &nodePlaces{}, fakeNodes{}, t.TempDir())
+	handler := Map(fakeTokens{}, fakeGrants(3), NewLiveMap(&fakeStream{frames: []*adminv1.SubscribeResponse{snapshot(1)}}), &nodePlaces{}, fakeNodes{}, t.TempDir(), nil)
 	get := func(path, token string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", path, nil)
 		if token != "" {
@@ -137,7 +137,7 @@ func TestMapRoutes(t *testing.T) {
 	if r := get("/api/v1/gm/map", ""); r.Code != 401 {
 		t.Fatalf("map without a login: %d", r.Code)
 	}
-	if r := Map(fakeTokens{}, fakeGrants(0), NewLiveMap(&fakeStream{}), &nodePlaces{}, fakeNodes{}, t.TempDir()); true {
+	if r := Map(fakeTokens{}, fakeGrants(0), NewLiveMap(&fakeStream{}), &nodePlaces{}, fakeNodes{}, t.TempDir(), nil); true {
 		req := httptest.NewRequest("GET", "/api/v1/gm/nodes", nil)
 		req.Header.Set("Authorization", "Bearer valid-login")
 		reply := httptest.NewRecorder()
@@ -166,13 +166,13 @@ func TestMapRoutes(t *testing.T) {
 
 func TestMinimapFiles(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "overview.png"), []byte("PNG fake"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "overview.jpg"), []byte("JPEG fake"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("no"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	handler := Map(fakeTokens{}, fakeGrants(3), NewLiveMap(&fakeStream{}), &nodePlaces{}, fakeNodes{}, dir)
+	handler := Map(fakeTokens{}, fakeGrants(3), NewLiveMap(&fakeStream{}), &nodePlaces{}, fakeNodes{}, dir, nil)
 	get := func(path, token string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", path, nil)
 		if token != "" {
@@ -182,14 +182,14 @@ func TestMinimapFiles(t *testing.T) {
 		handler.ServeHTTP(reply, req)
 		return reply
 	}
-	if r := get("/api/v1/gm/minimap/overview.png", ""); r.Code != 401 {
+	if r := get("/api/v1/gm/minimap/overview.jpg", ""); r.Code != 401 {
 		t.Fatalf("a picture without a login: %d", r.Code)
 	}
-	r := get("/api/v1/gm/minimap/overview.png", "valid-login")
-	if r.Code != 200 || r.Header().Get("Content-Type") != "image/png" || !strings.HasPrefix(r.Header().Get("Cache-Control"), "private") || r.Body.String() != "PNG fake" {
+	r := get("/api/v1/gm/minimap/overview.jpg", "valid-login")
+	if r.Code != 200 || r.Header().Get("Content-Type") != "image/jpeg" || !strings.HasPrefix(r.Header().Get("Cache-Control"), "private") || r.Body.String() != "JPEG fake" {
 		t.Fatalf("overview: %d %q %q", r.Code, r.Header().Get("Content-Type"), r.Header().Get("Cache-Control"))
 	}
-	for _, bad := range []string{"secret.txt", "..%2Fsecret.txt", "s250000_x1_y1.png", "minimap.json"} {
+	for _, bad := range []string{"secret.txt", "..%2Fsecret.txt", "s250000_x1_y1.png", "overview.png", "l_x1_y1.png", "n_../x_L1.jpg", "i_a.b.png", "minimap.json"} {
 		if r := get("/api/v1/gm/minimap/"+bad, "valid-login"); r.Code != 404 {
 			t.Fatalf("%s: %d", bad, r.Code)
 		}

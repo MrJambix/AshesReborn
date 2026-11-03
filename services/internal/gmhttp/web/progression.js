@@ -137,6 +137,31 @@ function action(title, { value = "", min, max, presets = [], button, line, selec
   return box;
 }
 
+const tierName = (n) => TIERS[n].title.replace(/ \(.*/, "");
+
+// upgrades: the certification one step up (Novice -> Apprentice -> Journeyman -> Master -> GrandMaster), or straight to any higher one;
+// "at its top level" sets the level to the new certification's cap as well
+function upgrades(p, who, target, what) {
+  const box = el("div", { className: "action" }, el("label", {}, "Upgrade the certification"));
+  const now = Number(p.tierno) || 0;
+  if (now >= TIERS.length - 1) {
+    box.append(el("p", { className: "muted small" }, `${prog.all ? "This profession is" : spaced(p.name) + " is"} already ${tierName(TIERS.length - 1)}.`));
+    return box;
+  }
+  const upgrade = async (tier, top) => {
+    if (!(await run(`profession-tier ${who} ${target} ${tier}`))) return;
+    if (top) await run(`profession-level ${who} ${target} ${(tier + 1) * 10}`);
+    loadProgress();
+  };
+  const next = now + 1;
+  box.append(
+    el("button", { type: "button", className: "wide", disabled: !gmOn(), onclick: () => upgrade(next, false) }, `Upgrade ${what} to ${tierName(next)}`),
+    el("button", { type: "button", className: "wide", disabled: !gmOn(), onclick: () => upgrade(next, true) }, `Upgrade to ${tierName(next)} at level ${(next + 1) * 10}`),
+    el("div", { className: "presets" }, ...TIERS.slice(next).map((t) =>
+      el("button", { type: "button", disabled: !gmOn(), title: `Straight to ${t.title}`, onclick: () => upgrade(Number(t.value), false) }, tierName(Number(t.value))))));
+  return box;
+}
+
 function toggle(label, key) {
   const box = el("input", { type: "checkbox", checked: prog[key] });
   box.addEventListener("change", () => { prog[key] = box.checked; renderProgCard(); });
@@ -185,6 +210,7 @@ function renderProgCard() {
         button: (v) => `Set ${what} to level ${v}`, line: (v) => `profession-level ${who} ${target} ${v}`,
       }),
       el("p", { className: "muted small" }, "A level past the certification's cap raises the certification to fit."),
+      upgrades(p, who, target, what),
       action("Certification", { select: TIERS, value: String(p.tierno), button: () => `Set ${what}'s certification`, line: (v) => `profession-tier ${who} ${target} ${v}` }),
       toggle("All 22 professions at once", "all"));
   }

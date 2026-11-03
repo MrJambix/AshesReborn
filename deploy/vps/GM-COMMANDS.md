@@ -60,13 +60,25 @@ stream for the whole of Verra at the first map read and closes it a minute after
 last, so a closed map costs worldd nothing (the stream allows 8 at once). Players are
 always sent; creatures, resource nodes, mounts and loot only for a view under 8 km
 across. The nodes are the places list's positions with the levels of the node service
-(`AOC_CITYNODE_GRPC_ADDR`); without it they show with no level. Behind them is the
-game's own world map, which `mapc minimap` (the `minimap` step of
-`extract_game_data`) exports from the client's tiles into `dist/content/minimap`:
-110 tiles of 2.5 km and an overview, 58 MB, shipped in the package with the rest of
-`dist/content`. `auth` reads them from `minimap` beside `AOC_CONTENT_DB` and serves
-them only to the GM login (`GET /api/v1/gm/minimap/...`); without them the map is a
-plain grid. World +X is up until Rotate is pressed.
+(`AOC_CITYNODE_GRPC_ADDR`); without it they show with no level.
+
+The map is drawn as the client draws its own (record `MapTileSet_Verra_World_Master`):
+the painted Region layer (110 tiles of 2.5 km), the Local layer from about 400 m a
+screen across (1,765 tiles of 500 m), and over it each town's backdrop at the node's
+level (`NodeBackdrops`, 100,800 cm across, centred on the node and turned by its yaw).
+A tile is centred on its grid position times its size (the old export put its corner
+there: the whole map was 1.25 km off). `mapc minimap` (the `minimap` step of
+`extract_game_data`) writes the pictures, as JPEG, and the map's 204 icons into
+`dist/content/minimap` (2,191 files, 225 MB, shipped with the rest of `dist/content`);
+`auth` serves them only to the GM login (`GET /api/v1/gm/minimap/...`). The marks come
+from the game's map records in `content.db`, read once (`GET /api/v1/gm/mapdata`):
+the nodes' icons by level, POIs (`POIRecordBase`), dungeons and landmarks
+(`MapIconInfoRecordBase`), named places (`NamedLocationRecord`,
+`SpecialLocationRecord`), respawn shrines (`attune_point`), quest givers and vendors
+placed in the world (not those inside town buildings: the data does not say where
+they stand), and the legend (`MapIconMappings_Main`), each line of which switches its
+marks on and off. Stations and events are not on the map yet. Without the pictures
+the map is a plain grid. World +X is up until Rotate is pressed.
 
 Every command has a ready form (`web/commands.js`; a test compares its arguments
 with `gm_commands.inc`, so add a new command there too). Pickers search the game's

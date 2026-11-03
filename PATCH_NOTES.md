@@ -1,5 +1,15 @@
 # Patch notes
 
+## 2026-11-03: Game master tools: the game's own map
+
+### New
+- The GM page's map is now the game's own map, drawn as the game draws it: the painted world map, the detailed close-up when you zoom in, and each town as it stands at its node's level. It shows the game's icons and legend: settlements, points of interest, dungeons, place names, respawn shrines, quest givers and vendors. Each line of the legend turns its marks on and off, and the search box finds players, nodes and places.
+- Give items has filters for jewelry (rings, necklaces, earrings) and for raw and cut gems.
+- Progression can upgrade a profession's certification one step (Novice to Apprentice to Journeyman to Master to GrandMaster), straight to any higher one, or to the next one at its top level.
+
+### Fixed
+- The GM map's picture was 1.25 km off from the players and nodes on it.
+
 ## 2026-11-03: No more drops near quest props
 
 ### Fixed

@@ -273,6 +273,13 @@ h4 { margin: .9rem 0 .3rem; font-size: .85rem; color: var(--muted); font-weight:
 .map-list li { display: flex; justify-content: space-between; gap: .5rem; padding: .25rem .5rem; border-bottom: 1px solid #1f1c16; cursor: pointer; }
 .map-list li:hover, .map-list li.selected { background: #24221c; color: var(--gold); }
 .map-list li.muted { cursor: default; }
+.map-legend h4 { margin: .6rem 0 .2rem; font-size: .8rem; font-weight: 600; color: var(--gold); }
+.map-legend p { margin: .15rem 0 .3rem; }
+.legend-line { display: flex; align-items: center; gap: .45rem; width: 100%; padding: .15rem .35rem; margin: 0 0 2px; text-align: left; background: transparent; border: 1px solid transparent; }
+.legend-line span:nth-of-type(1) { flex: 1; }
+.legend-line[aria-pressed="false"] { opacity: .45; }
+.legend-line:hover { border-color: var(--border); }
+.legend-icon { width: 20px; height: 20px; flex: none; }
 .row.tight { margin: 0 0 .4rem; }
 
 @media (max-width: 800px) {

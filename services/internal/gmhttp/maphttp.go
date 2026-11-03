@@ -36,14 +36,15 @@ type MapNode struct {
 	Parent      string  `json:"parent,omitempty"` // the display name of the node it is a vassal of
 }
 
-// minimapFile is what GET /api/v1/gm/minimap/ may name: mapc minimap's files and nothing else.
-var minimapFile = regexp.MustCompile(`^(minimap\.json|overview\.png|s\d+_x-?\d+_y-?\d+\.png)$`)
+// minimapFile is what GET /api/v1/gm/minimap/ may name: mapc minimap's files and nothing else (tiles r_ and l_, node backdrops n_, icons i_).
+var minimapFile = regexp.MustCompile(`^(minimap\.json|overview\.jpg|[rl]_x-?\d+_y-?\d+\.jpg|n_[A-Za-z]+_L\d\.jpg|i_[A-Za-z0-9_]+\.png)$`)
 
-// Map serves GET /api/v1/gm/map (the dots of the live map), GET /api/v1/gm/nodes (the city nodes with their levels) and
+// Map serves GET /api/v1/gm/map (the dots of the live map), GET /api/v1/gm/nodes (the city nodes with their levels),
+// GET /api/v1/gm/mapdata (the game's map records: POIs, places, shrines, the nodes' icons and backdrops, the legend) and
 // GET /api/v1/gm/minimap/{file} (the game's own map pictures, which `mapc minimap` writes to minimapDir from the player's install). Reads
 // only, so the account's grant is enough. The map and the nodes have their own budget, so that a map polling every second leaves
-// the other reads theirs; the pictures have none, since a view asks for a few dozen at once and each is read from disk.
-func Map(tokens Tokens, grants Grants, live *LiveMap, world WorldReads, nodes NodeReads, minimapDir string) http.Handler {
+// the other reads theirs; the pictures and the records have none, since a view asks for a few dozen pictures at once and the records are read once.
+func Map(tokens Tokens, grants Grants, live *LiveMap, world WorldReads, nodes NodeReads, minimapDir string, records *MapRecords) http.Handler {
 	var mu sync.Mutex
 	left, at := mapBurst, time.Now()
 	take := func() bool {
@@ -107,11 +108,32 @@ func Map(tokens Tokens, grants Grants, live *LiveMap, world WorldReads, nodes No
 			readError(w, 404, "The game's map is not on this server. Run mapc minimap.")
 			return
 		}
-		if strings.HasSuffix(name, ".png") {
+		switch {
+		case strings.HasSuffix(name, ".png"):
 			w.Header().Set("Content-Type", "image/png")
+		case strings.HasSuffix(name, ".jpg"):
+			w.Header().Set("Content-Type", "image/jpeg")
 		}
 		w.Header().Set("Cache-Control", "private, max-age=86400") // the pictures change only with a new export
 		http.ServeContent(w, r, name, info.ModTime(), f)
+	})
+	mux.HandleFunc("GET /api/v1/gm/mapdata", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		if _, code, message := authorize(ctx, r, tokens, grants); code != 0 {
+			readError(w, code, message)
+			return
+		}
+		if records == nil {
+			readError(w, 503, "The game's map records are not on this server.")
+			return
+		}
+		data, err := records.Read()
+		if err != nil {
+			readError(w, 503, "The game's map records could not be read: "+err.Error())
+			return
+		}
+		_ = json.NewEncoder(w).Encode(data)
 	})
 	mux.HandleFunc("GET /api/v1/gm/nodes", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel, ok := admit(w, r)

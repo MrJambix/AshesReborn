@@ -160,15 +160,19 @@
         <div class="map-stage">
           <canvas id="map-canvas" aria-label="Live map of the world"></canvas>
           <div id="map-tip" class="map-tip" hidden></div>
-          <p class="map-help muted small">Drag to pan, scroll to zoom, click a dot. Shift+click the ground to teleport yourself there.</p>
+          <p class="map-help muted small">Drag to pan, scroll to zoom, click a mark. Shift+click the ground to teleport yourself there.</p>
         </div>
         <aside class="map-side">
           <div id="map-panel" class="card" hidden></div>
+          <input id="map-filter" type="search" placeholder="Find a player, node or place" aria-label="Find a player, node or place on the map">
           <h3 class="muted small">Players online</h3>
-          <input id="map-filter" type="search" placeholder="Find a player" aria-label="Find a player on the map">
           <ul id="map-players" class="map-list"></ul>
+          <h3 class="muted small">Places</h3>
+          <ul id="map-places" class="map-list"></ul>
           <h3 class="muted small">Nodes</h3>
           <ul id="map-nodes" class="map-list"></ul>
+          <h3 class="muted small">Legend</h3>
+          <div id="map-legend" class="map-legend"></div>
         </aside>
       </div>
     </section>

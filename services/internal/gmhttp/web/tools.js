@@ -244,7 +244,9 @@ async function submitCommand(event) {
 // ---- Give items
 
 const ITEM_FILTERS = [
-  ["All", ""], ["Weapons", "Gear_Weapon"], ["Armor", "Gear_Armor"], ["Resources", "Resource_"],
+  ["All", ""], ["Weapons", "Gear_Weapon"], ["Armor", "Gear_Armor"], ["Jewelry", "Gear_Accessory_"], ["Rings", "Gear_Accessory_Ring"],
+  ["Necklaces", "Gear_Accessory_Necklace"], ["Earrings", "Gear_Accessory_Earring"], ["Raw gems", "Resource_Raw_Gem"], ["Cut gems", "Resource_Processed_Gem"],
+  ["Resources", "Resource_"],
   ["Food & potions", "Consumable_"], ["Recipes", "Consumable_Recipe"], ["Mounts", "Mount_"], ["Bags", "Bag_"],
   ["Cosmetics", "Cosmetic_"], ["GM scrolls", "GM_Scroll"],
 ];
