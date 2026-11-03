@@ -76,7 +76,10 @@ void PlayerSession::init_attunements(const svc::Character& character) {
     for (const int32_t n : character.attunements) a.discover(n);   // (a number out of range, or one twice, is left out)
     a.home = character.home_attunement >= 1 && character.home_attunement <= respawn::kMaxPlaceNumber ? character.home_attunement : 0;
     a.home_last_used_ms = std::max<int64_t>(0, character.home_last_used_ms);
+    // a character that discovered places but has no home takes the first it discovered (Attunements::settle_home: the death window needs a home to offer a choice)
+    const bool homeless = a.settle_home();
     attunements_ = std::move(a);
+    if (homeless) progress_changed_ = true;   // (saved with the next progress hand-over)
     // a character with nothing on its list joins with the pawn's default state (the first discovery is an update)
     if (attunements_.discovered.empty() && attunements_.home == 0 && attunements_.home_last_used_ms <= 0) return;
     // the first state of the pawn carries them: the last use on the client's synchronized clock (the saved moment is wall time)
@@ -112,6 +115,7 @@ void PlayerSession::run_embersprings(Connection& conn, Clock::time_point now) {
         if (attunements_.has(s->number)) continue;
         if (!room_for(6)) return;   // (the replies wait: the next tick finds the shrine again)
         if (!attunements_.discover(s->number)) continue;
+        attunements_.settle_home();   // the first discovery is the home (the death window needs one)
         ++discoveries_;
         spdlog::log(level_for(shrine_logged_, 40), "[embersprings] {}: discovers the Emberspring {} (number {}, {:.0f} m from it; {} of the character's now)", name(), s->name, s->number,
                     std::hypot(s->x - g.x, s->y - g.y) / 100.0, attunements_.discovered.size());
@@ -159,6 +163,7 @@ void PlayerSession::on_home_attunement(Connection& conn, const repl::ClientRpc& 
     if (!attunements_.has(s->number)) {
         // a place the character has not discovered yet is discovered by this, and that is all (the home is made by the next use)
         attunements_.discover(s->number);
+        attunements_.settle_home();   // (the first discovery is the home)
         ++discoveries_;
         spdlog::log(level_for(shrine_logged_, 40), "[embersprings] {}: discovers the Emberspring {} by attuning to it", name(), s->name);
         send_attunements(conn, now);

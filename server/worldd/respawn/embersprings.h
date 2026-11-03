@@ -59,6 +59,14 @@ struct Attunements {
         discovered.push_back(number);
         return true;
     }
+    /// A set with places and no home takes the first place it discovered as its home (a new character's Aelan Divine Gate); true when that changed the set.  The client's
+    /// death window (URespawnAlert::Init 0x146666b70) builds its buttons only when RespawnChoices.HomeRespawn is set: with no home it shows a line naming the nearest place and
+    /// no choice, and Revive brings the player back at the login spot.  Modelled: retail's first home of a new character is not recorded.
+    bool settle_home() {
+        if (home != 0 || discovered.empty()) return false;
+        home = discovered.front();
+        return true;
+    }
     bool operator==(const Attunements& o) const { return discovered == o.discovered && home == o.home && home_last_used_ms == o.home_last_used_ms; }
 };
 

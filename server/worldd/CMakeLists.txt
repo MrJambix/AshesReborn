@@ -569,6 +569,7 @@ target_compile_definitions(test_worldd_node_pop PRIVATE
 
 # the towns' real ground: the platform reader and sampler on bytes made in the test, the frames, and - when dist/content/town_platforms.bin exists (mapc town-floors) - the real
 # platforms at the real node records and the world's ground queries on them; AOC_REAL_GROUND=1 adds the baked pit
+worldd_add_test(test_worldd_embersprings)
 worldd_add_test(test_worldd_town_platform)
 target_compile_definitions(test_worldd_town_platform PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
