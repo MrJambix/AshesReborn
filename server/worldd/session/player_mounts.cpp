@@ -76,7 +76,7 @@ void PlayerSession::on_summon_trigger(Connection& conn, int32_t client_instance,
     const auto ignore = [&](const char* why) {
         ++mount_ignored_;
         spdlog::log(level_for(mount_logged_, kLoggedMounts), "[session] {}: a Summon_Mount is ignored: {}", name(), why);
-        if (pending_ends_.size() < 64) pending_ends_.push_back(client_instance);   // the client's own instance of the cast is ended
+        if (client_instance != MountController::kNoClientInstance && pending_ends_.size() < 64) pending_ends_.push_back(client_instance);   // the client's own instance of the cast is ended
         flush_abilities(conn);
     };
     if (!mounts_) return ignore("worldd has no mounts");
@@ -122,13 +122,13 @@ void PlayerSession::on_summon_trigger(Connection& conn, int32_t client_instance,
             break;
         case MountController::Outcome::Desummoning:
             spdlog::log(level_for(mount_logged_, kLoggedMounts), "[session] {}: Summon_Mount while a mount is out: the old mount is desummoned and nothing is summoned", name());
-            if (pending_ends_.size() < 64) pending_ends_.push_back(client_instance);
+            if (client_instance != MountController::kNoClientInstance && pending_ends_.size() < 64) pending_ends_.push_back(client_instance);
             flush_abilities(conn);
             break;
         case MountController::Outcome::Ignored:
             ++mount_ignored_;
             spdlog::log(level_for(mount_logged_, kLoggedMounts), "[session] {}: Summon_Mount is ignored: a summon or a desummon is in progress", name());
-            if (pending_ends_.size() < 64) pending_ends_.push_back(client_instance);
+            if (client_instance != MountController::kNoClientInstance && pending_ends_.size() < 64) pending_ends_.push_back(client_instance);
             flush_abilities(conn);
             break;
     }
@@ -156,6 +156,67 @@ void PlayerSession::on_desummon_mount(Connection& conn, Clock::time_point now) {
         spdlog::debug("[session] {}: ServerDesummonMount: no mount to desummon", name());
     }
     run_mounts(conn, now);
+}
+
+std::string PlayerSession::on_mount_command(Connection& conn, const std::string& args, Clock::time_point now) {
+    // The 44 mayor flyers activate by CastAbility under the archetype Mount_Mayor_<node>, whose requirement (citizen and mayor of the node) the client checks in
+    // ValidateItemUse before it sends anything: for anyone else it returns without a word, so their summon never reaches the server.  This command runs the same summon
+    // the client's Summon_Mount trigger does, for a mount item the player carries in the bag; only the client's own cast is missing (kNoClientInstance: nothing to end).
+    if (!mounts_) return "Mounts are not available on this server.";
+    struct Owned {
+        int32_t                  slot;
+        const content::MountRow* row;
+    };
+    std::vector<Owned> owned;
+    for (const svc::InventoryItem& it : inventory_.items()) {
+        if (it.container != svc::ItemContainer::Backpack) continue;
+        if (const content::MountRow* row = mounts_->book().find(it.item_record_id)) owned.push_back({it.slot, row});
+    }
+    std::sort(owned.begin(), owned.end(), [](const Owned& a, const Owned& b) { return a.slot < b.slot; });
+    const auto label = [](const content::MountRow& r) { return r.display_name.empty() ? r.item_name : r.display_name; };
+    const auto lower = [](std::string s) {
+        for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    };
+    std::string want = args;
+    while (!want.empty() && std::isspace(static_cast<unsigned char>(want.front()))) want.erase(want.begin());
+    while (!want.empty() && std::isspace(static_cast<unsigned char>(want.back()))) want.pop_back();
+    if (chat::same_name(want, "off") || chat::same_name(want, "dismiss")) {
+        if (mounts_->phase() == MountController::Phase::Idle) return "You have no mount out.";
+        on_desummon_mount(conn, now);
+        return "Your mount is dismissed.";
+    }
+    if (want.empty() || chat::same_name(want, "list")) {
+        if (owned.empty()) return "You carry no mount in your bag.";
+        std::string out = "Your mounts (.mount <number or name> summons one, .mount off dismisses it):";
+        for (size_t i = 0; i < owned.size() && i < 20; ++i) out += "\n" + std::to_string(i + 1) + ". " + label(*owned[i].row) + " (" + owned[i].row->kind + ")";
+        if (owned.size() > 20) out += "\n... and " + std::to_string(owned.size() - 20) + " more: name one.";
+        return out;
+    }
+    const Owned* pick = nullptr;
+    if (std::all_of(want.begin(), want.end(), [](unsigned char c) { return std::isdigit(c); }) && want.size() <= 3) {
+        const size_t n = std::stoul(want);
+        if (n >= 1 && n <= owned.size()) pick = &owned[n - 1];
+    } else {
+        const std::string w = lower(want);
+        for (const Owned& o : owned) {
+            if (lower(label(*o.row)) == w || lower(o.row->item_name) == w) { pick = &o; break; }
+        }
+        if (!pick) {
+            for (const Owned& o : owned) {
+                if (lower(label(*o.row)).find(w) != std::string::npos || lower(o.row->item_name).find(w) != std::string::npos) { pick = &o; break; }
+            }
+        }
+    }
+    if (!pick) return "No mount in your bag matches \"" + want + "\". Type .mount to list them.";
+    const std::string name_of = label(*pick->row);
+    const bool was_out = mounts_->phase() != MountController::Phase::Idle;
+    spdlog::log(level_for(mount_logged_, kLoggedMounts), "[session] {}: .mount {}: the summon of the bag's slot {} ({}, a {} mount activated by {})", name(), want, pick->slot, pick->row->item_name,
+                pick->row->kind, pick->row->activation);
+    on_summon_trigger(conn, MountController::kNoClientInstance, pick->slot, static_cast<uint32_t>(repl::ItemLocation::Backpack), now);
+    if (was_out) return "Your mount is dismissed. Use .mount again to summon " + name_of + ".";
+    if (mounts_->phase() == MountController::Phase::Idle) return "You cannot summon " + name_of + " here.";
+    return "Summoning " + name_of + ".";
 }
 
 void PlayerSession::mount_damaged(Clock::time_point now) {

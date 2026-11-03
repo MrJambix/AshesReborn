@@ -28,3 +28,4 @@
 #include "session/members/based_move.inc"
 #include "session/members/view_phases.inc"
 #include "session/members/market.inc"
+#include "session/members/mount_command.inc"

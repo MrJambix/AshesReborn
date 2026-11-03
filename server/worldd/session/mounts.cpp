@@ -284,7 +284,7 @@ void MountController::run_open(double now, Effects& out) {
     auto made = row ? book_.make(*row, p, mint_, error) : std::nullopt;
     if (!made) {
         spdlog::warn("[mounts] {}: the mount of item {} cannot be made: {}", owner_.name, req_.item_record, row ? error : std::string("no such mount"));
-        out.ends.push_back(req_.client_instance);
+        if (req_.client_instance != kNoClientInstance) out.ends.push_back(req_.client_instance);
         if (item_instance_ >= 0 && item_shown_) item_visible_effects(out, true);
         drop_steps(cast_, true);
         cast_ = 0;
@@ -299,7 +299,7 @@ void MountController::run_open(double now, Effects& out) {
     const protocol::emit::FIntrepidNetworkGUID pet = made->actor.actor.guid;
     if (!registry_.add(std::move(made->actor))) {
         spdlog::warn("[mounts] {}: the registry does not take the mount of item {}", owner_.name, req_.item_record);
-        out.ends.push_back(req_.client_instance);
+        if (req_.client_instance != kNoClientInstance) out.ends.push_back(req_.client_instance);
         if (item_instance_ >= 0 && item_shown_) item_visible_effects(out, true);
         drop_steps(cast_, true);
         cast_ = 0;

@@ -48,6 +48,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -2470,6 +2471,80 @@ static void test_real_roads() {
 }
 // -- Cyb x C | O | A --
 
+/// The client's SendChatMessage of `text` (Say), every other parameter at its default.
+static BunchWriter chat_rpc(const std::string& text) {
+    const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
+    const schema::RpcSchema* rpc = pc.rpc("SendChatMessage");
+    repl::RpcParams params;
+    if (!rpc) return BunchWriter();
+    for (const auto& command : rpc->commands) {
+        repl::Value v;
+        switch (command.type) {
+            case schema::PropType::Bool: v = repl::Value::boolean(false); break;
+            case schema::PropType::Str: v = repl::Value::str(""); break;
+            case schema::PropType::Name: v = repl::Value(repl::NameValue{}); break;
+            case schema::PropType::Text: v = repl::Value(repl::TextValue{}); break;
+            case schema::PropType::Enum: v = repl::Value::u64(0); break;
+            case schema::PropType::Float: v = repl::Value::f32(0); break;
+            case schema::PropType::NetSerializeStruct: v = repl::Value(repl::ItemInstance{}); break;
+            default: return BunchWriter();
+        }
+        params.values[command.handle] = std::move(v);
+    }
+    repl::set_rpc_param(*rpc, params, "ChatData.Quote", repl::Value::str(text));
+    repl::set_rpc_param(*rpc, params, "ChatData.ChatCategory", repl::Value::u64(9));   // Say
+    return actor_rpc(pc, "SendChatMessage", params);
+}
+
+static int64_t g_mayor_flyer_record = 0;
+
+/// The mayor flyers (Mount_Mayor_<node>, activated by CastAbility) never reach the server from the client's item use: `.mount` summons them.
+static void test_mount_command() {
+    std::printf("the .mount chat command: a mayor flyer summoned from the bag, ridden, and dismissed\n");
+    CHECK(g_mayor_flyer_record != 0, "the real data has a flying mount activated by CastAbility (a mayor flyer)");
+    if (!g_mayor_flyer_record) return;
+    std::vector<svc::InventoryItem> items = kit();
+    constexpr int kMayorSlot = 10;
+    items.push_back(make_item(Bag, kMayorSlot, g_mayor_flyer_record, 305));
+    Harness h(cyb_record(std::move(items)));
+    h.play();
+    const auto say = [&](const std::string& text) {
+        h.t += seconds(4);   // the chat budget
+        h.client_sends({h.client.actor(h.pc_ch, chat_rpc(text), true)});
+    };
+    say(".mount");
+    h.run(milliseconds(500));
+    CHECK(!h.mount() && h.s->mounts()->phase() == MountController::Phase::Idle, ".mount alone lists the bag's mounts and summons nothing");
+    say(".mount nosuchmount");
+    h.run(milliseconds(500));
+    CHECK(!h.mount() && h.s->mounts()->phase() == MountController::Phase::Idle, "a name no bag mount has summons nothing");
+    // the bag's mounts in slot order: 5, 6, 7 (locked), 8 (aquatic), 9 (a flyer), 10 (the mayor flyer): the sixth
+    const size_t from = h.got.size();
+    say(".mount 6");
+    h.run(milliseconds(1900));
+    CHECK(h.mount() && h.s->mounts()->phase() == MountController::Phase::Out && h.s->mounts()->item_record() == g_mayor_flyer_record,
+          ".mount 6 summons the mayor flyer, whose item use the client never sends");
+    bool named = false;
+    pawn_ends(h, from, MountController::kNoClientInstance, &named);
+    CHECK(!named, "no ClientEndAbility names a cast the client never made");
+    walk_up_to_mount(h);
+    get_on(h);
+    h.run(milliseconds(200));
+    CHECK(h.s->mounted() && h.s->ride() && h.s->ride()->can_fly(), "the player gets on it as on any summoned mount, and it can fly");
+    say(".mount off");
+    h.run(milliseconds(4000));
+    CHECK(!h.s->mounted() && !h.mount() && h.s->mounts()->phase() == MountController::Phase::Idle, ".mount off dismounts the rider and dismisses the mount");
+    // by a piece of its name, in any case
+    const content::MountRow* row = h.s->mounts()->book().find(g_mayor_flyer_record);
+    std::string piece = row ? (row->display_name.empty() ? row->item_name : row->display_name) : std::string();
+    piece = piece.substr(0, std::min<size_t>(piece.size(), 6));
+    for (char& c : piece) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    h.run(milliseconds(4000));   // (the old mount's run has ended)
+    say(".mount " + piece);
+    h.run(milliseconds(1900));
+    CHECK(h.s->mounts()->phase() == MountController::Phase::Out, ".mount with a part of a mount's name, in other case, summons a mount of the bag");
+}
+
 int main() {
     spdlog::set_level(std::getenv("AOC_TEST_LOG") ? spdlog::level::debug : spdlog::level::off);
     std::string error;
@@ -2485,6 +2560,7 @@ int main() {
             if (r.item_name == "Mount_Grounded_Horse_0") g_other_mount_record = r.item;
             if (r.kind == "aquatic" && !g_aquatic_record) g_aquatic_record = r.item;
             if (r.kind == "flying" && !g_flying_record) g_flying_record = r.item;
+            if (r.kind == "flying" && r.activation == "CastAbility" && !g_mayor_flyer_record) g_mayor_flyer_record = r.item;
         }
     }
     test_get_on_and_off();
@@ -2519,6 +2595,7 @@ int main() {
     test_mounts_remain();
     test_distance_desummon();
     test_real_roads();
+    test_mount_command();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

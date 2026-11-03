@@ -111,11 +111,14 @@ public:
         double x = 0, y = 0, z = 0, yaw_degrees = 0;
     };
 
+    /// The `client_instance` of a summon the client did not cast (the `.mount` chat command): no ClientEndAbility is sent for it, as the client holds no such instance.
+    static constexpr int32_t kNoClientInstance = INT32_MIN;
+
     /// A summon the client asked for, once the session has found the item (the inventory's instance at the call's slot).
     struct Request {
         int64_t         item_record = 0;
         repl::GuidValue item_guid;
-        int32_t         client_instance = 0;    // ServerTriggerAbility's ClientInstanceId (ClientEndAbility names it)
+        int32_t         client_instance = 0;    // ServerTriggerAbility's ClientInstanceId (ClientEndAbility names it; kNoClientInstance: none)
         int64_t         lock_expiration = 0;    // the item's LockExpiration (Unix seconds; 0: none)
         int64_t         now_unix = 0;
         Place           place;
