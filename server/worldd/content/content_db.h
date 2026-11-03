@@ -43,6 +43,7 @@
 // ============================================================================
 #pragma once
 
+#include "content/tag_query.h"
 #include "items/rarity.h"
 #include "stats/gear.h"
 
@@ -1101,13 +1102,20 @@ struct QuestObjectiveRow {
     struct ItemReward {
         int64_t              table = 0;
         std::vector<int64_t> instances, sets;
-        bool                 tag_query = false;   // the creatures are named by tags: not modelled (it matches nothing)
+        /// (contentc version 43) the creatures named by their tags (NPCTagQuery; a creature of `instances` or `sets` drops the item too).  `tag_query` says the record sets one:
+        /// with `tags.present` false it does not read (an older file holds only the flag) and names no creature.
+        bool                 tag_query = false;
+        TagQuery             tags;
     };
     std::vector<ItemReward> item_rewards;
     std::vector<int64_t> kill_sets, kill_instances;            // Kill: population sets and instances
     bool        advanced = false;          // ... EliteRank filter on
     int         elite = 0;
-    bool        kill_owner = false, use_context = false, tag_query = false;   // ... (a tag query is not modelled)
+    bool        kill_owner = false, use_context = false;
+    /// ... (contentc version 43) the creatures named by their tags (TagQuery): a kill of a creature whose tags it matches counts, as one of `kill_sets` or `kill_instances` does.
+    /// `tag_query` says the record sets one; with `kill_tags.present` false it does not read (a file older than version 43 holds only that flag) and names no creature.
+    bool        tag_query = false;
+    TagQuery    kill_tags;
     std::vector<QuestSource> sources;      // Dialogue / TurnIn
     bool        any_source = false;        // TurnIn: any source
     std::vector<int64_t> components, actors;   // Interact: interactable component and actor definitions
@@ -1239,13 +1247,6 @@ struct VendorPriceRow {
 struct VendorPredicateRow {
     std::string expression, failure;
     bool        hidden = false;
-};
-
-/// A gameplay tag query as the data holds it (vendor_modifier.filter, vendor_sell_filter.filter): the token stream and the tag dictionary (lower case); `present` is false for none.
-struct TagQuery {
-    bool                     present = false;
-    std::vector<int64_t>     tok;
-    std::vector<std::string> tags;
 };
 
 /// One price modifier (vendor_modifier): the operations it applies to (contexts: a bit mask, 1 buy, 2 sell, 4 repair), how it changes a price (operation Add / Multiply / Set),

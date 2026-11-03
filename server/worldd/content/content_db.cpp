@@ -2727,12 +2727,11 @@ std::string lower_case(std::string s) {
     return s;
 }
 
-/// A tag query of vendor_modifier.filter or vendor_sell_filter.filter ({"tok": [..], "tags": [..]}); `present` stays false for '' and for text that is no query.
-TagQuery parse_tag_query(const std::string& text) {
+/// A tag query as content.db holds one ({"tok": [..], "tags": [..]}, the dictionary made lower case); `present` stays false for anything that is no query (an older
+/// objective's flag 1).
+TagQuery tag_query_of(const nlohmann::json& j) {
     TagQuery q;
-    if (text.empty()) return q;
-    const nlohmann::json j = nlohmann::json::parse(text, nullptr, false);
-    if (j.is_discarded() || !j.is_object()) return q;
+    if (!j.is_object()) return q;
     q.tok = int_list(j, "tok");
     const auto it = j.find("tags");
     if (it != j.end() && it->is_array()) {
@@ -2740,6 +2739,26 @@ TagQuery parse_tag_query(const std::string& text) {
     }
     q.present = q.tok.size() >= 2 && q.tok[1] != 0;
     return q;
+}
+
+/// A tag query of vendor_modifier.filter or vendor_sell_filter.filter; `present` stays false for '' and for text that is no query.
+TagQuery parse_tag_query(const std::string& text) {
+    if (text.empty()) return TagQuery{};
+    const nlohmann::json j = nlohmann::json::parse(text, nullptr, false);
+    if (j.is_discarded()) return TagQuery{};
+    return tag_query_of(j);
+}
+
+/// An objective's "tq" (contentc version 43: the query; before it 1, the record sets one): whether there is one, and the query when it reads.
+bool objective_tag_query(const nlohmann::json& o, TagQuery& out) {
+    out = TagQuery{};
+    const auto it = o.find("tq");
+    if (it == o.end() || it->is_null()) return false;
+    if (it->is_object()) {
+        out = tag_query_of(*it);
+        return true;
+    }
+    return it->is_number() && it->get<double>() != 0;
 }
 
 /// A JSON array of integers (the text of a column); empty for anything else.
@@ -3295,7 +3314,7 @@ bool parse_objective_detail(const std::string& text, QuestObjectiveRow& o) {
             if (!e.is_object()) return false;
             QuestObjectiveRow::ItemReward r;
             r.table = json_int(e, "t");
-            r.tag_query = json_flag(e, "tq");
+            r.tag_query = objective_tag_query(e, r.tags);
             if (!json_ints(e, "inst", r.instances) || !json_ints(e, "sets", r.sets)) return false;
             o.item_rewards.push_back(std::move(r));
         }
@@ -3328,7 +3347,7 @@ bool parse_objective_detail(const std::string& text, QuestObjectiveRow& o) {
     o.elite = static_cast<int>(json_int(*d, "elite"));
     o.kill_owner = json_flag(*d, "owner");
     o.use_context = json_flag(*d, "ctx");
-    o.tag_query = json_flag(*d, "tq");
+    o.tag_query = objective_tag_query(*d, o.kill_tags);
     if (!json_sources(*d, "src", o.sources)) return false;
     o.any_source = json_flag(*d, "any");
     if (!json_ints(*d, "comp", o.components) || !json_ints(*d, "actor", o.actors)) return false;

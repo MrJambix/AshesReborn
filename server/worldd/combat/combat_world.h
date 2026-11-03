@@ -75,6 +75,7 @@ struct KillReward {
     int         level = 0;
     int         elite = 0;        // its elite rank (what a Kill objective's rank filter reads)
     int64_t     instance = 0;     // quests, slice 2: its population instance (0: none), what a Kill objective names
+    std::shared_ptr<const content::TagSet> tags;   // (contentc version 43) its gameplay tags, what a Kill objective by tag query reads (world::NpcInfo::tags; null: none)
     int64_t     adventuring_xp = 0;
     int64_t     weapon_xp = 0;    // every equipped weapon line gets this (the data's Weapon experience; not modelled by the session yet)
     int64_t     node_xp = 0;      // the node's share (not modelled)

@@ -24,7 +24,9 @@
 #include "spawns/population.h"
 #include "spawns/spawn_filter.h"
 #include "npc_appearance_key.h"
+#include "test_registry.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -452,6 +454,15 @@ static void test_real_area(const content::ContentDb& db, const spawns::CapturedD
     CHECK(count(hs, Why::Appearance) == 0 && with_humans.size() > after.size() + 300, "--spawn-humanoids brings the 300 and more humanoid points back");
 }
 
+/// What the registered checks get: the real files, each null when it is not there.
+struct RealArea {
+    const content::ContentDb*   db = nullptr;
+    const spawns::CapturedData* captured = nullptr;
+    const npc::MotionTable*     table = nullptr;
+};
+
+#include "spawn_filter_registered.inc"
+
 int main() {
     test_conditions();
     test_points();
@@ -474,12 +485,17 @@ int main() {
     const char* env_motion = std::getenv("AOC_NPC_MOTION");
     const std::string motion_path = env_motion && *env_motion ? env_motion : "dist/content/npc_motion.tsv";
     npc::MotionTable table;
+    RealArea fx;
+    fx.db = &*db;
+    fx.captured = &*captured;
     if (!table.load(motion_path, error)) {
         std::printf("  [skip] %s: the real-area tests need npc_motion.tsv (tools/mapc: mapc npc-motion)\n", error.c_str());
     } else {
+        fx.table = &table;
         test_answer_key(table);
         test_real_area(*db, *captured, table);
     }
+    g_fail += aoc_tests::run(fx);
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

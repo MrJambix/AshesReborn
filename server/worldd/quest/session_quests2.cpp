@@ -289,8 +289,9 @@ void PlayerSession::run_talk_actions(Connection& conn, const dialogue::Result& r
 }
 
 void PlayerSession::quest_kill(Connection& conn, const combat::KillReward& k, Clock::time_point now) {
-    if (!quests_on_ || k.instance == 0 || quest_log_.instances().empty()) return;
-    quest_engine(conn, now, "a kill", [&](quest::Engine& eng) { eng.kill(k.instance, k.elite); });
+    // a creature with no instance (a captured one) may still be named by its tags
+    if (!quests_on_ || (k.instance == 0 && !(k.tags && !k.tags->empty())) || quest_log_.instances().empty()) return;
+    quest_engine(conn, now, "a kill", [&](quest::Engine& eng) { eng.kill(k.instance, k.elite, k.tags.get()); });
 }
 
 void PlayerSession::quest_shrine(Connection& conn, int64_t place, Clock::time_point now) {

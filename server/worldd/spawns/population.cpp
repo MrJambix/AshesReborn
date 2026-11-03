@@ -297,6 +297,7 @@ bool spawn_point(const content::PopulationData& data, const TemplateSource& temp
     s.key = pt.key;
     s.seed = h;
     s.zoi = static_cast<uint64_t>(zoi);
+    s.tags = npc_tag_set(data, set, inst, chosen->asset_set, *chosen->asset);
     out = s;
     if (zoi != 0) ++stats.by_zoi[static_cast<uint64_t>(zoi)];
     ++stats.spawned;
