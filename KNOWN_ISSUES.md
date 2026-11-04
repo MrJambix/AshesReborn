@@ -2,7 +2,7 @@
 
 This document lists the known issues of the current SandalCore main in one place: what happens, a workaround when there is one, and the status. What is still to be built is in [ROADMAP.md](ROADMAP.md), under "Achieved and left".
 
-**Last updated:** 1 November 2026
+**Last updated:** 3 November 2026
 
 ---
 
@@ -66,6 +66,17 @@ This document lists the known issues of the current SandalCore main in one place
 
 ## Codebase Markers Summary
 
-An audit of internal code markers across active services and servers (recounted 28 October 2026) indicates:
-- **`TODO` markers**: 18 instances across 6 files (focused on edge-case protocol fields, auxiliary telemetry, and stubbed RPC fallbacks).
+A recount of internal code markers across active code (`server`, `libs/aocnet`, `services`, `src`, `tools`; `third_party` and documentation excluded) on 3 November 2026 indicates:
+
+- **`TODO` markers**: 5 files, all under `libs/aocnet`:
+  - `protocol/emit/replayout/catalog.h` (Phase III M1),
+  - `protocol/net_guid_allocator.h` (NetGUID reuse for long-running servers),
+  - `protocol/schema/pawn_schema.cpp` and `protocol/schema/player_state_schema.cpp` (the pawn's `archetype_netguid`, not yet extracted from packet 79/104),
+  - `protocol/tests/test_pawn_spawn_diff.cpp` (a test that still holds placeholder NetGUIDs).
 - **`FIXME` markers**: 0 active instances.
+
+The world server (`server/worldd`) itself carries no `TODO`/`FIXME` markers. The remaining protocol work is concentrated in the `libs/aocnet` replication layer, including stubs that are not `TODO`-marked:
+
+- `libs/aocnet/protocol/emit/actor_builder.cpp:832` — `build_delta` logs "not yet implemented" and produces nothing.
+- `libs/aocnet/protocol/emit/actor_builder.cpp:444` — `scale_scaled_x/y/z` are not yet wired; three packed-vector zeros are written so the stream does not drift.
+- `libs/aocnet/protocol/schema/pawn_schema.cpp:153` and `player_state_schema.cpp:20` — `archetype_netguid` is a placeholder 0 pending extraction from the captures.
