@@ -161,11 +161,13 @@ size_t NodePopulations::apply(const world::CityNodeInfo& info, int level, double
     e.by_source[0] = e.by_source[1] = 0;
     e.npcs = 0;
     e.stations = 0;
+    e.props = 0;
     for (const auto& [ident, l] : st.live) {
         ++e.by_source[l.spawn.source == PopSource::Layout ? 0 : 1];
         if (l.actor == 0) continue;
         const world::WorldActor* made = registry_.find(l.actor);
         if (made && made->kind == world::ActorKind::Station) ++e.stations;
+        else if (made && made->kind == world::ActorKind::Prop) ++e.props;
         else ++e.npcs;
     }
     if (first) {
@@ -186,7 +188,8 @@ size_t NodePopulations::start(double now) {
     size_t nodes = 0;
     for (const world::CityNodeInfo& info : nodes_.nodes()) {
         if (!in_area(info)) continue;
-        total += apply(info, nodes_.level_of(info.guid), now, true);
+        apply(info, nodes_.level_of(info.guid), now, true);
+        if (const auto e = entries_.find(info.guid); e != entries_.end()) total += e->second.npcs + e->second.stations;   // (the people: a commission board is no one)
         ++nodes;
     }
     spdlog::info("[people] {} node(s) inside the area, {} NPCs made; they follow the nodes' levels (a level change makes the difference real)", nodes, total);
@@ -231,7 +234,7 @@ uint64_t NodePopulations::respawn(uint32_t ref, double now) {
     if (id != 0) {
         ++respawned_;
         const auto e = entries_.find(slot.node);
-        if (e != entries_.end()) e->second.npcs = actors_of(slot.node).size() - std::min(actors_of(slot.node).size(), e->second.stations);
+        if (e != entries_.end()) e->second.npcs = actors_of(slot.node).size() - std::min(actors_of(slot.node).size(), e->second.stations + e->second.props);
     }
     return id;
 }

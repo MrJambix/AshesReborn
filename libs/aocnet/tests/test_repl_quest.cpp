@@ -131,6 +131,42 @@ void test_codecs() {
         });
         CHECK(back && *back == v, "they read back, a negative value too");
     }
+    {   // a commission board (FCommissionBoardList, NetSerialize 0x1459be2b0): its words in the client's order, here against the bytes packed by hand
+        // (Python: struct.pack('<Q4IdQIQQIQQ6IQ4II', 1, 2,3,4,5, 0.5, 6, 1, 7, 8, 1, 9, 10, 0,0,0,0,0,0, 11, 12,13,14,15, 1)): all whole words, so the stream is
+        // the little-endian bytes of NodeGuid, Guid, TimeOfLastRefresh, CommissionBoardRecordId, the count, then QuestId, the objectives, an empty reward,
+        // NodeId, InstanceGuid and bCompletedAlready as a uint32
+        CommissionBoardList b;
+        b.node = 1;
+        b.guid = {2, 3, 4, 5};
+        b.last_refresh = 0.5;
+        b.board = 6;
+        QuestPreview q;
+        q.quest = 7;
+        q.quest_type = 8;
+        q.objectives = {{9, 10}};
+        q.node = 11;
+        q.instance = {12, 13, 14, 15};
+        q.completed = true;
+        b.commissions.push_back(q);
+        BunchWriter w;
+        CHECK(write_commission_board(w, b) && w.bit_pos() == 1056, "a board with one commission is 1056 bits");
+        const char* const want =
+            "010000000000000002000000030000000400000005000000000000000000e03f060000000000000001000000070000000000000008000000000000000100000009000000000000000a"
+            "000000000000000000000000000000000000000000000000000000000000000b000000000000000c0000000d0000000e0000000f00000001000000";
+        const Bits bits(w);
+        const Bits expect = bits_of_hex(want, 1056);
+        bool same = bits.size() == expect.size();
+        for (size_t i = 0; same && i < bits.size(); ++i) same = bits.b[i] == expect.b[i];
+        CHECK(same, "... bit for bit the client's layout: QuestId with no Name, an int32 objective count, the reward, NodeId, InstanceGuid, a uint32 bool");
+        const auto back = with_exact(bits, [&](const uint8_t* d, size_t bytes, size_t n) {
+            wire::PacketReader r(d, bytes, n);
+            return read_commission_board(r);
+        });
+        CHECK(back && *back == b, "it reads back");
+        CommissionBoardList empty;
+        BunchWriter e;
+        CHECK(write_commission_board(e, empty) && e.bit_pos() == 64 + 128 + 64 + 64 + 32, "an empty board is 352 bits");
+    }
 }
 
 // ---- the schema -------------------------------------------------------------------------------------------------------------------

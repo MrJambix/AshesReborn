@@ -1601,3 +1601,77 @@ static void test_quest_hand_in_engine() {
         CHECK(r && granted_at_start(book, *r) == std::vector<int64_t>({7}), "a start action that activates an objective that started active does not run its start actions twice");
     }
 }
+
+// ---- the commission boards (session/player_commissions.cpp) ----------------------------------------------------------------------
+
+static void test_commission_board() {
+    std::printf("the commission boards: a board's use lists its commissions and opens the window, a card's accept takes the commission, the claim pays\n");
+    std::string why;
+    const auto data = quest_test_data(why);
+    if (!data) { std::printf("  [skip] SKIP: %s\n", why.c_str()); return; }
+    std::map<std::string, std::string> classes;
+    if (!spawns::load_prop_classes("dist/content/prop_classes.tsv", classes, why)) { std::printf("  [skip] SKIP: %s\n", why.c_str()); return; }
+    const qs::QuestBook qb(data->quests);
+    FakeQuestApi api;
+    QuestHarness h(api, *data, log_after_start());
+    spawns::GenericConfig cfg;
+    cfg.prop_classes = classes;
+    spawns::GenericNpcs generic(*h.fx.captured, nullptr, cfg);
+    content::NpcAssetRow asset;
+    asset.guid = 9000200;
+    asset.archetype_path = "/Game/DesignAssets/Quests/Commissions/CommissionBoard_NodeDefault.Default__CommissionBoard_NodeDefault_C";
+    const spawns::OpenTemplate* t = generic.prop_template(asset);
+    CHECK(t && t->actor_block().schema && std::string(t->actor_block().schema->name) == "ACommissionBulletinBoard", "a commission board is made as a plain actor of its own class");
+    if (!t) return;
+    const uint64_t board = h.fx.add(*t, kCx + 150, kCy);
+    h.play();
+    h.run(milliseconds(2000));
+    const world::WorldActor* a = h.fx.world->registry().find(board);
+    CHECK(a != nullptr, "(the board stands in the world)");
+    if (!a) return;
+    const size_t from = h.got.size();
+    h.s->open_commission_board(h.conn, *a, h.t);
+    h.run(milliseconds(300));
+    const repl::CommissionBoardList first = h.s->commission_board();
+    std::printf("  [info] board %lld, %zu commission(s), guid %08x%08x%08x%08x\n", static_cast<long long>(first.board), first.commissions.size(), first.guid.a, first.guid.b,
+                first.guid.c, first.guid.d);
+    CHECK(h.s->commission_board_actor() == board && first.board == 6064631047146700800ll && first.commissions.size() == 8 && (first.guid.a | first.guid.b | first.guid.c | first.guid.d) != 0,
+          "CommissionBoard_NodeDefault opens the Adventure board with its 8 commissions and the board's guid");
+    bool adventure = true;
+    for (const repl::QuestPreview& p : first.commissions) {
+        const content::QuestRow* def = qb.quest(p.quest);
+        adventure = adventure && def && def->flavor == "Commission" && !p.objectives.empty() && !p.completed;
+    }
+    CHECK(adventure, "each is a commission of the data with its first objectives, none taken");
+    CHECK(h.got.size() > from, "the board and the window go out");
+    h.s->open_commission_board(h.conn, *a, h.t);
+    h.run(milliseconds(300));
+    CHECK(h.s->commission_board().commissions == first.commissions, "the same board in the same refresh window lists the same commissions");
+    // the card's accept
+    const repl::QuestPreview pick = first.commissions[0];
+    const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
+    const schema::RpcSchema* accept = pc.rpc("ServerNCSBoardAcceptCommission");
+    CHECK(accept != nullptr, "(the accept's call is in the schema)");
+    if (!accept) return;
+    const auto send = [&](const repl::GuidValue& g) {
+        repl::RpcParams params;
+        const char* const names[4] = {"CommissionGuid.A", "CommissionGuid.B", "CommissionGuid.C", "CommissionGuid.D"};
+        const uint32_t words[4] = {g.a, g.b, g.c, g.d};
+        for (int i = 0; i < 4; ++i) repl::set_rpc_param(*accept, params, names[i], repl::Value::i64(static_cast<int32_t>(words[i])));
+        h.client_request(actor_rpc(pc, "ServerNCSBoardAcceptCommission", params), h.pc_ch);
+        h.run(milliseconds(300));
+    };
+    const size_t before = h.s->quest_log().instances().size();
+    send(repl::GuidValue{1, 2, 3, 4});
+    CHECK(h.s->quest_log().instances().size() == before, "a guid that is on no open board takes nothing");
+    send(pick.instance);
+    const qs::QuestInstance* q = h.s->quest_log().find(pick.quest);
+    CHECK(q && q->preview == (qs::Guid128{pick.instance.a, pick.instance.b, pick.instance.c, pick.instance.d}), "the commission is in the log with the card's guid (QuestPreviewGuid)");
+    CHECK(h.s->commission_board().commissions[0].completed, "the board shows the card taken");
+    const size_t after = h.s->quest_log().instances().size();
+    send(pick.instance);
+    CHECK(h.s->quest_log().instances().size() == after, "the same card again takes nothing (the quest is in the log)");
+    // the claim: a commission waits for it as a Destiny step does
+    const content::QuestRow* def = qb.quest(pick.quest);
+    CHECK(def && (def->rewards.empty() || qs::pays_on_claim(*def)), "a commission with rewards pays on the client's claim");
+}

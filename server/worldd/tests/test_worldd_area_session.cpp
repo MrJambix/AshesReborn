@@ -1393,6 +1393,7 @@ int main() {
     test_quest_hand_in();   // quests part 3, slice 2
     test_quest_hand_in_engine();
     test_destiny_board();
+    test_commission_board();
     g_fail += aoc_tests::run();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

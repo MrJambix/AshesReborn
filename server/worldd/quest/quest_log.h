@@ -92,6 +92,10 @@ struct QuestInstance {
     bool    awaiting_claim = false;
     /// What the client is told links a quest of the Destiny board to the rest of the chain (quest_wire.cpp).  An ordinary quest has neither.
     Guid128 destiny_parent, destiny_objective;
+    /// A commission taken from a board: the board entry's InstanceGuid (FQuestInstance.QuestPreviewGuid, which the board's card compares to show it taken) and the node of the
+    /// board (NodeId).  Not saved: after a relog the card shows as not taken, and taking it again is refused as a quest already in the log.
+    Guid128 preview;
+    int64_t preview_node = 0;
     // what the client was told: the replication ids of its two items (kIndexNone while it was not sent), and whether it has to be sent again
     int32_t cache_id = -1, vars_id = -1;
     bool    wire_dirty = true;

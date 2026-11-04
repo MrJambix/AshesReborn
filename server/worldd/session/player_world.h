@@ -111,6 +111,11 @@ struct MovementConfig {
     std::chrono::seconds      save_interval{60};   // a changed position is saved this often, and when the session ends
 };
 
+/// The interactable definition of the commission boards (ICD_PID_CommissionBoard) and the player interaction a use of it opens the board by (PID_CommissionBoard, whose
+/// completion response is EActionResponse::OpenCommissionBoard).
+inline constexpr int64_t kCommissionBoardIcd = 6064633962143220279;
+inline constexpr int64_t kCommissionBoardPid = 6064630678546284548;
+
 class PlayerWorld {
 public:
     std::shared_ptr<chat::Room> chat_room() const { return chat_room_; }

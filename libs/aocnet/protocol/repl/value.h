@@ -750,6 +750,27 @@ struct RewardInstance {
     bool operator==(const RewardInstance&) const = default;
 };
 
+/// FQuestPreview (commission boards): one commission a board offers, as FCommissionBoardList carries it (quest_codec.h has the layout).
+struct QuestPreview {
+    GuidValue instance;                                        // InstanceGuid: what ServerNCSBoardAcceptCommission names
+    int64_t   quest = 0, quest_type = 0;                       // QuestId: the NarrativeQuestV2 record and its type id (no Name on the wire)
+    std::vector<std::pair<int64_t, int64_t>> objectives;       // InitialObjectives: each NarrativeObjectiveV2 record and type id
+    RewardInstance rewards;                                    // BaseQuestRewards
+    int64_t   node = 0;                                        // NodeId
+    bool      completed = false;                               // bCompletedAlready
+    bool operator==(const QuestPreview&) const = default;
+};
+
+/// FCommissionBoardList (commission boards): the board a PlayerController's CurrentCommissionBoard shows; its own NetSerialize (quest_codec.h).
+struct CommissionBoardList {
+    int64_t   node = 0;                     // NodeGuid: the board's city node record
+    GuidValue guid;                         // Guid: the board actor's
+    double    last_refresh = 0;             // TimeOfLastRefresh, on the GameState's ReplicatedWorldTimeSecondsDouble clock
+    int64_t   board = 0;                    // CommissionBoardRecordId: a CommissionBoardRecordBase
+    std::vector<QuestPreview> commissions;
+    bool operator==(const CommissionBoardList&) const = default;
+};
+
 /// FHashedVariable (quests, slice 1): the variables of one quest instance, each a 64-bit key (CityHash64 of its name) and an int32 value, in the map's order; NetSerialize (quest_codec.h).
 struct HashedVariable {
     std::vector<std::pair<uint64_t, int32_t>> variables;
@@ -797,7 +818,7 @@ public:
         GameplayTag, GameplayTagContainer, StatInt32Inst,
         Quat, GuidToBoolWrapper, AlignmentContainer, AppearanceId, CharacterCustomization, ItemInstance, InlineObject,
         EventBox, HitConfirmations, PlayerMovementInput, VendorPurchaseCart, VendorTransactionCart, NodeTaxDetails, LocalizedMessage, ChannelingData, CraftItemState,
-        RewardInstance, HashedVariable, WarehouseSummaryEntry, CraftTagSelection, GuildDataWire, CurrencyContainer>;
+        RewardInstance, HashedVariable, WarehouseSummaryEntry, CraftTagSelection, GuildDataWire, CurrencyContainer, CommissionBoardList>;
 
     Value() = default;
 // built by C | Y | B with C | O | A

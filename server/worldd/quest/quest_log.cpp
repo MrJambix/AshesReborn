@@ -515,7 +515,9 @@ std::vector<int64_t> quest_reward_tables(const content::QuestRow& def, const Que
 }
 
 bool pays_on_claim(const content::QuestRow& def) {
-    if (def.flavor != "Destiny") return false;
+    // a Destiny step and a commission: their objectives do not complete the quest, and the client claims the reward (UDestinies, UCommissionRewards:
+    // ServerNCSCompleteCommission)
+    if (def.flavor != "Destiny" && def.flavor != "Commission") return false;
     if (!def.rewards.empty()) return true;
     return std::any_of(def.objectives.begin(), def.objectives.end(), [](const content::QuestObjectiveRow& o) { return !o.rewards.empty(); });
 }

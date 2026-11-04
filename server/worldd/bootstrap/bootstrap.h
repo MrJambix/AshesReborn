@@ -476,6 +476,10 @@ public:
     /// The player marketplace (bootstrap/bootstrap_market.inc): one call of the PlayerController's (ClientOpenMarketplaceUI, ClientReceiveMarketplaceHeaders ...), its parameters
     /// built by `build` from the call's schema entry (protocol/repl/marketplace_rpc.h).  nullopt when the controller has no such call or the parameters do not build.
     std::optional<Send> market_call(const char* rpc, const std::function<std::optional<repl::RpcParams>(const protocol::schema::RpcSchema&)>& build);
+    /// The commission boards (bootstrap/bootstrap_commissions.inc): the PlayerController's CurrentCommissionBoard (the board's window reads it), and
+    /// ClientOpenCommissionBoardDialog, which opens the window.
+    std::optional<Send> commission_board_update(const protocol::repl::CommissionBoardList& board);
+    std::optional<Send> open_commission_board();
     /// ClientReceiveTaxDetails: the answer to ServerGetTaxDetails.
     std::optional<Send> tax_details(const protocol::repl::StationTax& tax);
     /// The stats component's CrowdControlState (session/crowd_state.h), times on the synchronized clock.  Nothing goes out until ability_update().  False when the pawn does not take it.

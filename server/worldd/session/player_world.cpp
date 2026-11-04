@@ -359,6 +359,8 @@ bool PlayerWorld::load_area(const spawns::AreaConfig& area, std::string& error) 
                     if (!offers.empty()) generic_config_.prop_instances.insert(instance);
                 }
             }
+            // ... and the commission boards (ICD_PID_CommissionBoard: its use opens the board, player_commissions.cpp)
+            props.insert(kCommissionBoardIcd);
             for (auto it = props.begin(); it != props.end();) {
                 it = objects_->interactables.count(*it) != 0 ? std::next(it) : props.erase(it);
             }
@@ -1522,7 +1524,7 @@ size_t PlayerWorld::start_node_people(const spawns::NodePopulations::Config& con
         }
         if (!npcs_) return;   // no ground: the NPC stands where the data put it
         const world::WorldActor* a = registry_.find(id);
-        if (!a) return;
+        if (!a || a->kind != world::ActorKind::Npc) return;   // (an object of the node, a commission board, has no motion)
         npc::NpcMotionSetup setup = npc::make_setup(*a, motion_, instance, route, speeds(), nullptr, &node);   // (a route of the node is walked at its record)
         if (setup.ambient == npc::Ambient::Patrol && setup.route.size() < 2) setup.ambient = npc::Ambient::Wander;
         if (plot != 0) npc::keep_to_workshop(&setup, npc::kWorkshopRadiusCm);   // a building's person strolls round its own building

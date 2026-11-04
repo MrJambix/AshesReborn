@@ -109,8 +109,9 @@ void PlayerSession::on_destiny_claim(Connection& conn, const repl::ClientRpc& rp
     q->end_time = quest_clock(now);
     quest_log_.touch(*q);
     spdlog::info("[quests] {}: claimed the rewards of {}", name(), def->name);
-    grant_quest_rewards(conn, tables, "a claimed Destiny reward", now, record);
-    quest_sync(conn, "a Destiny reward was claimed");
+    const bool commission = def->flavor == "Commission";
+    grant_quest_rewards(conn, tables, commission ? "a claimed commission reward" : "a claimed Destiny reward", now, record);
+    quest_sync(conn, commission ? "a commission reward was claimed" : "a Destiny reward was claimed");
 }
 
 void PlayerSession::on_destiny_client_data(Connection& conn, Clock::time_point now) {

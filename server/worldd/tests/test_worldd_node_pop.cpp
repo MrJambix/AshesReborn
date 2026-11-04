@@ -1200,13 +1200,17 @@ static void test_world() {
     CHECK(made == circle_npcs(4) && made > 400 && world.node_people() && people_of(world.registry()) == before_npcs + made,
           "start_node_people: the circle holds Joeva only (a Town): the oracle's number of NPCs, added to the area's");
     CHECK(world.start_node_people(cfg) == 0, "once");
-    size_t vendors = 0, with_ref = 0;
+    size_t vendors = 0, with_ref = 0, objects = 0;
     world.registry().for_each([&](const world::WorldActor& a) {
-        if (a.npc.spawn_ref >= spawns::kNodeRefBase) {
-            ++with_ref;
-            vendors += a.npc.vendor_guid != 0 ? 1 : 0;
+        if (a.npc.spawn_ref < spawns::kNodeRefBase) return;
+        if (a.kind == world::ActorKind::Prop) {   // an object of the town (a commission board): no one, and not in `made`
+            ++objects;
+            return;
         }
+        ++with_ref;
+        vendors += a.npc.vendor_guid != 0 ? 1 : 0;
     });
+    std::printf("    (and %zu object(s) of the town: its commission boards)\n", objects);
     CHECK(with_ref == made && vendors > 0, "the town's NPCs carry node references, and some are vendors");
     check_town_health(world, "after start_node_people");
     check_open_carries_health(world);

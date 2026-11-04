@@ -33,6 +33,7 @@
 #include "protocol/repl/value.h"
 #include "protocol/wire/packet_reader.h"
 
+#include <cstring>
 #include <optional>
 
 namespace aoc { namespace protocol { namespace repl {
@@ -77,6 +78,106 @@ inline bool write_reward_instance(emit::BunchWriter& out, const RewardInstance& 
     out.write_uint32(0);   // the currency map
     out.write_uint32(0);   // the source reward table ids
     return true;
+}
+
+// FCommissionBoardList (commission boards): NetSerialize 0x1459be2b0 (an archive: raw words, LSB first), read from the client:
+//
+//    64                        NodeGuid (int64)
+//    4 x 32                    Guid (FGuid: A, B, C, D)
+//    64                        TimeOfLastRefresh (double)
+//    64                        CommissionBoardRecordId (int64)
+//    32 + n x FQuestPreview    Commissions: an int32 count (the exe refuses one above 0xaaaa), then each as 0x1459c37c0 runs it:
+//        64 + 64                   QuestId: Guid, TypeId (0x1413df110: no Name)
+//        32 + m x (64 + 64)        InitialObjectives: an int32 count, then each Guid, TypeId (0x1459c21c0)
+//        ...                       BaseQuestRewards: FRewardInstance as above (0x14643ec60)
+//        64                        NodeId (int64)
+//        4 x 32                    InstanceGuid (FGuid)
+//        32                        bCompletedAlready: a uint32 (non-zero: true)
+constexpr size_t kMaxCommissions = 64;            // a board lists CommissionsPerBoard (8); the exe's own cap is 0xaaaa
+constexpr size_t kMaxCommissionObjectives = 64;
+
+inline bool commission_board_fits(const CommissionBoardList& b) {
+    if (b.commissions.size() > kMaxCommissions) return false;
+    for (const QuestPreview& q : b.commissions) {
+        if (q.objectives.size() > kMaxCommissionObjectives || !reward_instance_fits(q.rewards)) return false;
+    }
+    return true;
+}
+
+inline void write_guid_words(emit::BunchWriter& out, const GuidValue& g) {
+    out.write_uint32(g.a);
+    out.write_uint32(g.b);
+    out.write_uint32(g.c);
+    out.write_uint32(g.d);
+}
+
+inline GuidValue read_guid_words(wire::PacketReader& r) {
+    GuidValue g;
+    g.a = r.read_uint32();
+    g.b = r.read_uint32();
+    g.c = r.read_uint32();
+    g.d = r.read_uint32();
+    return g;
+}
+
+inline bool write_commission_board(emit::BunchWriter& out, const CommissionBoardList& b) {
+    if (!commission_board_fits(b)) return false;
+    out.write_uint64(static_cast<uint64_t>(b.node));
+    write_guid_words(out, b.guid);
+    uint64_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(b.last_refresh));
+    std::memcpy(&bits, &b.last_refresh, sizeof(bits));
+    out.write_uint64(bits);
+    out.write_uint64(static_cast<uint64_t>(b.board));
+    out.write_uint32(static_cast<uint32_t>(b.commissions.size()));
+    for (const QuestPreview& q : b.commissions) {
+        out.write_uint64(static_cast<uint64_t>(q.quest));
+        out.write_uint64(static_cast<uint64_t>(q.quest_type));
+        out.write_uint32(static_cast<uint32_t>(q.objectives.size()));
+        for (const auto& [guid, type] : q.objectives) {
+            out.write_uint64(static_cast<uint64_t>(guid));
+            out.write_uint64(static_cast<uint64_t>(type));
+        }
+        if (!write_reward_instance(out, q.rewards)) return false;
+        out.write_uint64(static_cast<uint64_t>(q.node));
+        write_guid_words(out, q.instance);
+        out.write_uint32(q.completed ? 1u : 0u);
+    }
+    return true;
+}
+
+inline std::optional<CommissionBoardList> read_commission_board(wire::PacketReader& r) {
+    CommissionBoardList b;
+    b.node = static_cast<int64_t>(r.read_uint64());
+    b.guid = read_guid_words(r);
+    const uint64_t bits = r.read_uint64();
+    std::memcpy(&b.last_refresh, &bits, sizeof(bits));
+    b.board = static_cast<int64_t>(r.read_uint64());
+    const int32_t n = static_cast<int32_t>(r.read_uint32());
+    if (overran(r) || n < 0 || static_cast<size_t>(n) > kMaxCommissions) return std::nullopt;
+    for (int32_t i = 0; i < n; ++i) {
+        QuestPreview q;
+        q.quest = static_cast<int64_t>(r.read_uint64());
+        q.quest_type = static_cast<int64_t>(r.read_uint64());
+        const int32_t m = static_cast<int32_t>(r.read_uint32());
+        if (overran(r) || m < 0 || static_cast<size_t>(m) > kMaxCommissionObjectives) return std::nullopt;
+        for (int32_t k = 0; k < m; ++k) {
+            const int64_t guid = static_cast<int64_t>(r.read_uint64());
+            const int64_t type = static_cast<int64_t>(r.read_uint64());
+            q.objectives.emplace_back(guid, type);
+        }
+        auto rewards = read_reward_instance(r);
+        if (!rewards) return std::nullopt;
+        q.rewards = std::move(*rewards);
+        q.node = static_cast<int64_t>(r.read_uint64());
+        q.instance = read_guid_words(r);
+        const uint32_t done = r.read_uint32();
+        if (overran(r) || done > 1) return std::nullopt;   // (the exe takes any non-zero; this writer only writes 0 or 1)
+        q.completed = done != 0;
+        b.commissions.push_back(std::move(q));
+    }
+    if (overran(r)) return std::nullopt;
+    return b;
 }
 
 inline bool hashed_variable_fits(const HashedVariable& v) { return v.variables.size() <= kMaxHashedVariables; }

@@ -115,7 +115,7 @@ enum class S {
     Unknown, Vec3, Vec2, Ticks, Rotator, Quantized, Normal, RepMovement, LoadTracker, UniqueId, Tag, TagContainer,
     StatInt32, Quat, GuidToBool, Alignment, AppearanceId, Customization, ItemInstance, ItemStorageEvent, HitConfirmations,
     MovementInput, VendorPurchase, VendorTransaction, EmptyMap, NodeTax, LocalizedMessage, ChannelingData, CraftState, RewardInstance, HashedVariable,
-    WarehouseEntry, CraftTags, GuildData, Currency,
+    WarehouseEntry, CraftTags, GuildData, Currency, CommissionBoard,
 };
 
 S find_struct(std::string_view n) {
@@ -153,6 +153,7 @@ S find_struct(std::string_view n) {
     if (n == "FCraftingResourceTagCostSelection") return S::CraftTags;
     if (n == "FGuildData") return S::GuildData;
     if (n == "FCurrencyContainer") return S::Currency;
+    if (n == "FCommissionBoardList") return S::CommissionBoard;
     return S::Unknown;
 }
 
@@ -1292,6 +1293,10 @@ bool struct_accepts(std::string_view struct_name, const Value& v) {
             const auto* c = v.get_if<CurrencyContainer>();
             return c && c->values.size() <= kMaxCurrencyEntries;
         }
+        case S::CommissionBoard: {
+            const auto* b = v.get_if<CommissionBoardList>();
+            return b && commission_board_fits(*b);
+        }
         case S::Unknown:     break;
     }
     return false;
@@ -1311,6 +1316,7 @@ std::optional<Value> zero_struct(std::string_view struct_name) {
         case S::CraftState:   return Value(CraftItemState{});           // no recipe, no resources
         case S::RewardInstance: return Value(RewardInstance{});         // no items, no experience
         case S::HashedVariable: return Value(HashedVariable{});         // no variables
+        case S::CommissionBoard: return Value(CommissionBoardList{});   // no board, no commissions
         default:              break;
     }
     return std::nullopt;
@@ -1489,6 +1495,11 @@ std::optional<Value> read_struct(std::string_view struct_name, PacketReader& r, 
             if (!s) return std::nullopt;
             return Value(std::move(*s));
         }
+        case S::CommissionBoard: {
+            auto b = read_commission_board(r);
+            if (!b) return std::nullopt;
+            return Value(std::move(*b));
+        }
         case S::WarehouseEntry: {
             auto e = read_warehouse_entry(r);
             if (!e) return std::nullopt;
@@ -1627,6 +1638,8 @@ bool write_struct(std::string_view struct_name, const Value& v, BunchWriter& out
             return write_guild_data(out, *v.get_if<GuildDataWire>());
         case S::Currency:
             return write_currency_container(out, *v.get_if<CurrencyContainer>());
+        case S::CommissionBoard:
+            return write_commission_board(out, *v.get_if<CommissionBoardList>());
         case S::Unknown:
             break;
     }

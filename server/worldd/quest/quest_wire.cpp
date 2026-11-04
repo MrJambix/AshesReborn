@@ -132,6 +132,10 @@ std::optional<ElementState> cache_item(const repl::FastArrayLayout& layout, cons
         ok = top.set_guid(es, "Quests.ParentInstanceGuid", q.destiny_parent) && ok;
         ok = top.set_guid(es, "Quests.ObjectiveInstigatorGuid", q.destiny_objective) && ok;
     }
+    if (!q.preview.zero()) {   // a commission taken from a board: the board's card shows it taken
+        ok = top.set_guid(es, "Quests.QuestPreviewGuid", q.preview) && ok;
+        if (q.preview_node != 0) ok = top.set(es, "Quests.NodeId", Value::i64(q.preview_node)) && ok;
+    }
     const auto objectives = top.sub("Quests.Objectives");
     if (!objectives) return std::nullopt;
     repl::ArrayValue list;

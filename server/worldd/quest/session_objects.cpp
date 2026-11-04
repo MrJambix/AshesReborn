@@ -157,6 +157,10 @@ void PlayerSession::finish_prop_use(Connection& conn, uint64_t actor_id, Clock::
     const FIntrepidNetworkGUID component = component_guid_of(*a, a->npc.interact_component);
     const FIntrepidNetworkGUID actor = a->actor.guid;
     queue("ClientOnDoInteract", [component, actor](bootstrap::PlayerBootstrap& pb) { return pb.interact_done(component, actor); }, conn, /*must_build=*/true);
+    if (row.pid == kCommissionBoardPid) {   // a commission board (player_commissions.cpp)
+        open_commission_board(conn, *a, now);
+        return;
+    }
     // what its use gives
     if (!row.grants.empty()) {
         gather::Harvest h;

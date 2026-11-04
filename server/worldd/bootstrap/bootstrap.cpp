@@ -2940,6 +2940,7 @@ std::optional<Send> PlayerBootstrap::correction(float time_stamp, const repl::Ve
 #include "bootstrap/bootstrap_group.inc"
 #include "bootstrap/bootstrap_guild.inc"
 #include "bootstrap/bootstrap_market.inc"
+#include "bootstrap/bootstrap_commissions.inc"
 #include "quest/bootstrap_objects.inc"
 
 }  // namespace aoc::worldd::bootstrap
