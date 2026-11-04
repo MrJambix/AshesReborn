@@ -386,8 +386,13 @@ void test_songs_and_the_air() {
     r.run_to(12.5);
     CHECK(r.pawn.effect(self_effect) != nullptr, "(Cheerful plays again)");
     r.trigger("Bard_Music_Pensive", 13.0, false, 2, &seen);
-    r.run_to(15.5);
+    seen = r.run_to(15.31);
     CHECK(r.pawn.effect(self_effect) == nullptr && r.pawn.effect(r.effect("Bard_Music_Pensive_Self")) != nullptr, "a second song replaces the first: they share the Bard_Music tag");
+    // ... and the first song's last buff runs out by itself, as retail's did (capture 44: Pensive_Buff stayed 440 ms into Cathartic's), instead of going with its loop
+    const std::optional<double> buff_end = r.pipe->effect_end(buff);
+    CHECK(r.pawn.effect(buff) != nullptr && buff_end && *buff_end > 15.3 && *buff_end <= 15.3 + 2.5 + 1e-6, "the replaced song's buff stays on to its own end (2.5 s at most)");
+    r.run_to(18.0);
+    CHECK(r.pawn.effect(buff) == nullptr, "...and then goes");
     // cast at the air: Maddening's hits reach enemies only; it spends its cost, starts its cooldown and plays its montage
     const double t1 = 30.0;
     CHECK(r.trigger("Bard_Dance_Maddening", t1, false, 0, &seen) == Refusal::None, "Maddening, cast at the air, is accepted");

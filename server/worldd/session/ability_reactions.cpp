@@ -245,8 +245,12 @@ bool AbilityPipeline::land_ally_finisher(AbilityChange& c, const HitDef& hit, co
             if (actor == 0) apply_hit(c, h, t, true, from);
             else apply_hit_on_targets(c, h, {actor}, t, from, nullptr);
         };
+        // the hit that fires the projectile names the Bard as its Source: the projectile's record spawns it at EAbilitySystemOrigin::Source, and a confirmation without one made the client drop
+        // it ("SpawnProjectile(): Failed to find spawn transform for projectile", 25 times in the owner's client log of 4 November for Bard_ResonantWeapon_End_Cheerful_Projectile)
+        HitSource from_bard = src;
+        from_bard.actor = true;
         for (size_t i = 0; i < picks; ++i) {
-            land(*child, pool[i].actor, src);   // (its confirmation is what the client spawns the projectile from)
+            land(*child, pool[i].actor, from_bard);   // (its confirmation is what the client spawns the projectile from)
             for (const int64_t guid : child->fires) {
                 const content::ProjectileRow* p = catalog_->projectile(guid);
                 if (!p) continue;

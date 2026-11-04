@@ -3847,9 +3847,9 @@ void AbilityPipeline::end_held(size_t index, double t) {
     emit({std::move(c), std::nullopt, t, "the held ability " + (a ? a->row.name : std::string("?")) + " is released"});
 }
 
-void AbilityPipeline::end_loop(AbilityChange& c, int64_t ability, double t) {
+void AbilityPipeline::end_loop(AbilityChange& c, int64_t ability, double t, bool loop_only) {
     for (size_t i = 0; i < effects_.size();) {
-        if (effects_[i].owner != ability) {
+        if (effects_[i].owner != ability || (loop_only && !std::isinf(effects_[i].end))) {
             ++i;
             continue;
         }
@@ -3864,14 +3864,15 @@ void AbilityPipeline::step_loop(Cast& cast, double t) {
     ItemScope item_scope(*this, cast.item_stats);
     const AbilityDef& def = *cast.def;
     AbilityChange c;
-    // a song replaces the one that plays (the songs share a tag): its effects end
+    // a song replaces the one that plays (the songs share a tag): its loop ends, and the buff it last gave runs out by itself (with Counterpoint, up to 24 s: "weave back and forth
+    // between multiple melodies at once")
     std::set<int64_t> others;
     for (const EffectInst& e : effects_) {
         if (e.owner == 0 || e.owner == def.row.guid) continue;
         const AbilityDef* a = catalog_->ability(e.owner);
         if (a && !is_none_tag(def.row.shared_cooldown_tag) && a->row.shared_cooldown_tag == def.row.shared_cooldown_tag) others.insert(e.owner);
     }
-    for (const int64_t o : others) end_loop(c, o, t);
+    for (const int64_t o : others) end_loop(c, o, t, true);
     // its effects (the loop's own, the buff ...) start now and the loop effect re-adds the others every tick
     for (const auto& [key, guid] : def.effects) {
         if (const EffectDef* e = catalog_->effect(guid)) apply_effect(c, *e, 1, std::nullopt, t, false, def.row.guid);

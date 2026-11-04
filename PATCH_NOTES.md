@@ -1,6 +1,12 @@
 # Patch notes
 
-## Next update: people in caves
+## Next update: Bard melodies
+
+### Fixed
+- Bard: the heal, mana and Pep that the Cheerful, Pensive and Epic melodies send to an ally at a finisher now show flying to them. Before, the heal arrived but nothing was seen leaving your hands.
+- Bard: when you switch to another melody, the buff of the one you switched away from now runs out on its own instead of ending at once, so you can weave between melodies.
+
+## 2026-11-04: people in caves
 
 ### Fixed
 - People who stand in caves under the mountains, such as in the Anvils' halls, are back on the cave floor. Some were standing on the mountain top far above, so you could not find them. Maryl Amberstone is back where "A Heavy Load" sends you, so you can hand her the parts.

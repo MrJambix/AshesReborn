@@ -862,7 +862,9 @@ private:
     void   end_held(size_t index, double t);
     /// The effects some hit of the ability's closure applies (to its caster or its targets).
     std::set<int64_t> effects_applied_by_hits(const abilities::AbilityDef& def) const;
-    void   end_loop(bootstrap::AbilityChange& c, int64_t ability, double t);
+    /// Ends the effects the ability owns.  `loop_only`: only its infinite ones (a song's loop effect), and the buffs it put on run out by themselves: a song another song replaces
+    /// [R: the retail Bard switching melodies, capture 44: the old _Self goes with the new press, the old _Buff runs its 2.5 s out (Pensive_Buff 440 ms past Cathartic_Buff's start)].
+    void   end_loop(bootstrap::AbilityChange& c, int64_t ability, double t, bool loop_only = false);
     /// What the hit takes off its targets (the caster): the effects of EffectsToRemoveIds, at most MaxNumEffectsToRemove of them.
     void   remove_by_hit(bootstrap::AbilityChange& c, const abilities::HitDef& hit);
     /// The engine's effect list follows effects_ at once, so that a formula run now reads the effects that were just applied.
