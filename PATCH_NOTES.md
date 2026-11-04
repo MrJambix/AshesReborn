@@ -1,5 +1,12 @@
 # Patch notes
 
+## 2026-11-04: Reflect, huntable creatures and quest crates
+
+### Fixed
+- Tank: Reflect now reflects damage back to whatever hits you, instead of only parrying. The Ranger's Thorns does the same.
+- Huntable creatures (the peaceful ones you hunt with a bow) no longer attack you.
+- "A Heavy Load" and other quest parts you have to carry are now carried on your back like a crate, instead of being dropped into your bag where the quest could not find them.
+
 ## 2026-11-03: Commission boards
 
 ### New
