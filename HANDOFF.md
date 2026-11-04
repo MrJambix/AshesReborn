@@ -114,6 +114,8 @@ The whole uncommitted working tree went out together: stamina/Guard fix, summone
 | Commit | `3af6ed7` plus the uncommitted tree: what runs is not fully committed |
 | Not deployed | The launcher, including `GmOverlay.cs` in `D:\AshesReborn\AshesRebornLauncher` |
 
+**Ready, not deployed (the user said not yet, 18:40 EST on 3 November):** `sandalcore-package-gmweb4.tar` (`259A1AD4...`; `auth.exe` `22D9093D...`), made from `fixes21` (its `auth.exe` and `worldd.exe` checked against the VPS): exactly `dist/services/auth.exe`, `PATCH_NOTES.md`, `VERSION.txt` (`+gmweb4`) and `dist/content/minimap` (the 112 old files out, 2,191 in) change. Source: `vps-deploy` at `6ab7df5` (the GM page's map drawn as the game's: tiles centred on their grid position, the old map was 1.25 km off; the game's map records at `/api/v1/gm/mapdata`; jewelry and gem filters; certification upgrades; `deploy/vps/GM-COMMANDS.md`). **Until it is live:** the tree's `PATCH_NOTES.md` starts with its entry (leave it out of another package), and any `auth.exe` built from the tree carries the new map, which needs the new `dist/content/minimap` (with the old files it shows a plain grid). A package made before it goes out must be rebuilt on that one. Not played or signed in.
+
 ## Open work, most important first
 
 000. **Live since 00:41 on 3 November in `fixes19` (see the top), not played.** Built and tested as branch `fixes-20261103` (now in `vps-deploy`). `worldd.exe` and the Go services go together (migration **0025** and `character.proto` fields Character 34, SaveProgressRequest 17-18); `content.db` is unchanged.
