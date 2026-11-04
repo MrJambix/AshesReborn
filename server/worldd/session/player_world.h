@@ -282,6 +282,8 @@ public:
     const warehouse::Book*        warehouses() const { return warehouses_ ? &*warehouses_ : nullptr; }
     /// A test's warehouses (load_area reads the real ones).
     void                          set_warehouses(warehouse::Book book) { warehouses_ = std::move(book); }
+    /// The shared warehouse: the accounts' warehouses, one for all the characters of an account (warehouse/warehouse.h); the sessions take theirs at the join.
+    warehouse::Banks&             warehouse_banks() const { return banks_; }
     /// Crafting, step 0: the station definitions (content.db, contentc version 20), read with the area; null for an older file (the stations still stand and open, with the default tax).
     const content::CraftStationData* station_data() const { return stations_ ? &*stations_ : nullptr; }
     /// Crafting, step 1: the recipes, their inputs and costs (null with an older content.db).
@@ -686,6 +688,7 @@ private:
     quest::QuestWorker*                  quest_worker_ = nullptr;
     std::optional<vendor::TownShops>     shops_;
     std::optional<warehouse::Book>       warehouses_;   // storage clerks, step 0
+    mutable warehouse::Banks             banks_;        // the shared warehouse (the sessions hold the world const; the network thread alone touches it)
     std::optional<content::CraftStationData> stations_;   // crafting, step 0: the station definitions and which asset is whose station
     std::optional<content::CraftRecipeData>  recipes_;    // crafting, step 1: the recipes
     std::map<std::pair<int64_t, int64_t>, uint64_t> placed_stations_;   // (node, plot) -> the actor of a station a game master placed

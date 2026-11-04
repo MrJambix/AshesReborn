@@ -153,8 +153,14 @@ static double world_time_at(Clock::time_point t) { return std::chrono::duration<
 struct RecordingSink : PositionSink {
     std::vector<std::vector<svc::InventoryItem>> inventories;
     std::vector<std::vector<svc::MarketRow>> market;   // the marketplace: the rows of each save that carried some, with its inventory in `inventories`
+    std::vector<std::vector<svc::WarehouseItem>> warehouses;   // the shared warehouse: the warehouse rows of each save that carried no market rows
     void save(const std::string&, const svc::Position&) override {}
     void save_inventory(const std::string&, std::vector<svc::InventoryItem> items) override { inventories.push_back(std::move(items)); }
+    void save_inventory(const std::string& id, std::vector<svc::InventoryItem> items, std::vector<svc::WalletEntry>, std::vector<svc::ProcessingJob>, std::vector<int64_t>,
+                        std::vector<svc::WarehouseItem> warehouse) override {
+        warehouses.push_back(std::move(warehouse));
+        save_inventory(id, std::move(items));
+    }
     void save_inventory(const std::string& id, std::vector<svc::InventoryItem> items, std::vector<svc::WalletEntry>, std::vector<svc::ProcessingJob>, std::vector<int64_t>,
                         std::vector<svc::WarehouseItem>, std::vector<svc::MarketRow> rows) override {
         market.push_back(std::move(rows));
@@ -1355,6 +1361,7 @@ static BunchWriter dialogue_choice(const repl::DialogueResponse& response) {
 #include "dialogue_session_tests.inc"
 #include "quest_session_tests.inc"
 #include "player_presence_tests.inc"
+#include "shared_warehouse_session_tests.inc"
 
 #include "area_session_registered.inc"
 
@@ -1363,6 +1370,7 @@ int main() {
     test_view();
     test_removed_actor();
     test_player_presence();
+    test_shared_warehouse();
     test_guild_on_public_pawn();
     test_vendor_flow();
     test_vendor_tax_table();

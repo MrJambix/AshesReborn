@@ -606,6 +606,36 @@ DELETE FROM schema_migrations WHERE version = 22;
 COMMIT;
 ```
 
+**Rolling back migration 0026.** Migration 0026 (the shared warehouse) adds three tables, `account_warehouses`, `account_warehouse_items` and `account_warehouse_containers`,
+and copies into the last one what the characters bought; at run time the character service also deletes from `character_warehouse_items` the rows worldd moved into the shared
+warehouse (`merged_legacy_warehouse_guids`). worldd reads the account's warehouse at the join (`GetCharacter`, `shared_warehouse`) and saves it with a character's inventory
+(`SaveInventory` with `shared_warehouse`). The block below first gives each account's oldest character the shared items and containers (its own warehouse again), then drops the
+tables. An item whose place that character's warehouse already holds cannot go back and is lost with the table: look for them first with `SELECT count(*) FROM account_warehouse_items a
+JOIN characters c ON c.account_id = a.account_id JOIN character_warehouse_items w ON w.character_id = c.id AND (w.area, w.node_guid, w.container_guid, w.slot) = (a.area, a.node_guid,
+a.container_guid, a.slot)`. Stop worldd first: a worldd built with the shared warehouse cannot save inventories without the tables.
+
+```sql
+-- rollback of migration 0026 (the shared warehouse)
+BEGIN;
+INSERT INTO character_warehouse_items (character_id, area, node_guid, container_guid, slot, item_record_id, instance_guid, quantity, quality, durability, created_at,
+    persisted_health, persisted_mana, lock_expiration)
+SELECT o.id, a.area, a.node_guid, a.container_guid, a.slot, a.item_record_id, a.instance_guid, a.quantity, a.quality, a.durability, a.created_at,
+    a.persisted_health, a.persisted_mana, a.lock_expiration
+FROM account_warehouse_items a
+JOIN LATERAL (SELECT id FROM characters c WHERE c.account_id = a.account_id ORDER BY c.created_at, c.id LIMIT 1) o ON true
+ON CONFLICT DO NOTHING;
+INSERT INTO character_warehouse_containers (character_id, area, node_guid, container_guid, bought_at)
+SELECT o.id, a.area, a.node_guid, a.container_guid, a.bought_at
+FROM account_warehouse_containers a
+JOIN LATERAL (SELECT id FROM characters c WHERE c.account_id = a.account_id ORDER BY c.created_at, c.id LIMIT 1) o ON true
+ON CONFLICT DO NOTHING;
+DROP TABLE account_warehouse_items;
+DROP TABLE account_warehouse_containers;
+DROP TABLE account_warehouses;
+DELETE FROM schema_migrations WHERE version = 26;
+COMMIT;
+```
+
 **Rolling back migration 0025.** Migration 0025 (the chat ignore list) adds one table, `character_ignored_names`, and writes to nothing else. worldd saves a character's ignore
 list with its progress (`SaveProgress` with `replace_ignored_names`) and reads it at the join (`GetCharacter`, `ignored_names`). Rolling it back loses every saved ignore list and
 nothing else; stop worldd first, or its progress saves fail until it runs a build without the list.

@@ -169,6 +169,19 @@ message Character {
   repeated WarehouseContainer warehouse_containers = 33;
   // The chat ignore list (migration 0025): the names the character ignores, in the order they were added, with the items (include_items). A character that ignores no one has none.
   repeated string ignored_names = 34;
+  // The shared warehouse (migration 0026): the warehouse of the character's account, which all its characters use, with the items (include_items). Set by a store that keeps it; then
+  // warehouse_items and warehouse_containers above (the character's own warehouse from before it was shared) are in it as legacy items and containers too.
+  SharedWarehouse shared_warehouse = 35;
+}
+
+// The shared warehouse of an account (migration 0026). revision is the one worldd last wrote (0: never saved). items are the account's stored items; containers what the account bought
+// (and what any of its characters bought before the warehouse was shared). legacy_items are the items the account's characters kept in their own warehouses before it was shared and that
+// are not in the shared one yet: worldd puts each where it fits and names the ones it put in its save (SaveInventoryRequest.merged_legacy_warehouse_guids).
+message SharedWarehouse {
+  int64 revision = 1;
+  repeated WarehouseItem items = 2;
+  repeated WarehouseContainer containers = 3;
+  repeated WarehouseItem legacy_items = 4;
 }
 
 // A container of the warehouse a character bought: area and node_guid as in WarehouseItem, container_guid the WarehouseStorageItemChunk or WarehouseStorageMaterialTab record.
@@ -396,6 +409,12 @@ message SaveInventoryRequest {
   // same transaction as the items and the wallet, each only where the stored row's revision is lower (an older save that arrives
   // later changes nothing). InvalidArgument, with nothing changed, for a malformed id, a negative revision, or data that is no JSON object.
   repeated MarketplaceRow marketplace_rows = 23;
+  // The shared warehouse (migration 0026): with replace_warehouse and shared_warehouse, warehouse_items is the account's warehouse and warehouse_containers is added to what the account
+  // owns. The items are written only when warehouse_revision is above the revision stored for the account (an older save that arrives later leaves the warehouse alone; the items, the
+  // wallet and the rest of the save are written either way); with them the rows of merged_legacy_warehouse_guids (instance guids) leave the account's characters' own warehouses.
+  bool shared_warehouse = 24;
+  int64 warehouse_revision = 25;
+  repeated string merged_legacy_warehouse_guids = 26;
 }
 
 message SaveInventoryResponse {

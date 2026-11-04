@@ -166,6 +166,38 @@ CharacterResult GrpcServices::get_character(const std::string& id) {
     for (const int64_t recipe : c.known_recipes()) r.character.known_recipes.push_back(recipe);
     for (const int64_t id : c.completed_ftues()) r.character.completed_ftues.push_back(id);
     for (const std::string& n : c.ignored_names()) r.character.ignored_names.push_back(n);
+    const auto warehouse_item = [](const characterv1::WarehouseItem& w) {
+        WarehouseItem wi;
+        wi.area = w.area();
+        wi.node_guid = w.node_guid();
+        wi.container_guid = w.container_guid();
+        wi.item.slot = w.slot();
+        wi.item.item_record_id = w.item_record_id();
+        wi.item.instance_guid = w.instance_guid();
+        wi.item.quantity = w.quantity();
+        wi.item.quality = w.quality();
+        wi.item.durability = w.durability();
+        wi.item.created_at_ms = w.created_at_ms();
+        if (w.has_persisted_health()) wi.item.persisted_health = w.persisted_health();
+        if (w.has_persisted_mana()) wi.item.persisted_mana = w.persisted_mana();
+        wi.item.lock_expiration = w.lock_expiration();
+        return wi;
+    };
+    if (c.has_shared_warehouse()) {
+        SharedWarehouse sw;
+        sw.revision = c.shared_warehouse().revision();
+        for (const auto& w : c.shared_warehouse().items()) sw.items.push_back(warehouse_item(w));
+        for (const auto& w : c.shared_warehouse().containers()) {
+            WarehouseItem wi;
+            wi.area = w.area();
+            wi.node_guid = w.node_guid();
+            wi.container_guid = w.container_guid();
+            wi.container_only = true;
+            sw.items.push_back(std::move(wi));
+        }
+        for (const auto& w : c.shared_warehouse().legacy_items()) sw.legacy.push_back(warehouse_item(w));
+        r.character.shared_warehouse = std::move(sw);
+    }
     for (const auto& w : c.warehouse_items()) {
         WarehouseItem wi;
         wi.area = w.area();
@@ -402,6 +434,15 @@ CallStatus GrpcServices::save_inventory(const std::string& id, const std::vector
     if (warehouse) {
         req.set_replace_warehouse(true);
         for (const WarehouseItem& w : *warehouse) {
+            if (w.meta == WarehouseItem::Meta::Revision) {
+                req.set_shared_warehouse(true);
+                req.set_warehouse_revision(w.revision);
+                continue;
+            }
+            if (w.meta == WarehouseItem::Meta::Merged) {
+                req.add_merged_legacy_warehouse_guids(w.item.instance_guid);
+                continue;
+            }
             if (w.container_only) {
                 auto* c = req.add_warehouse_containers();
                 c->set_area(w.area);

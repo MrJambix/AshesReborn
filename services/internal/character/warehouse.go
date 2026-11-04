@@ -225,11 +225,11 @@ func addWarehouseContainers(ctx context.Context, tx pgx.Tx, characterID string, 
 // warehouse is checked against the bag's items (no instance on both) before anything is written.
 func (s *Store) SaveInventoryEverything(ctx context.Context, characterID string, items []Item, wallet []WalletEntry, replaceWallet bool, jobs []ProcessingJob, replaceJobs bool, known []int64,
 	replaceKnown bool, warehouse []WarehouseItem, replaceWarehouse bool, containers []WarehouseContainer) error {
-	return s.saveInventoryEverything(ctx, characterID, items, wallet, replaceWallet, jobs, replaceJobs, known, replaceKnown, warehouse, replaceWarehouse, containers, nil)
+	return s.saveInventoryEverything(ctx, characterID, items, wallet, replaceWallet, jobs, replaceJobs, known, replaceKnown, warehouse, replaceWarehouse, containers, nil, nil)
 }
 
 func (s *Store) saveInventoryEverything(ctx context.Context, characterID string, items []Item, wallet []WalletEntry, replaceWallet bool, jobs []ProcessingJob, replaceJobs bool, known []int64,
-	replaceKnown bool, warehouse []WarehouseItem, replaceWarehouse bool, containers []WarehouseContainer, market []MarketplaceRow) error {
+	replaceKnown bool, warehouse []WarehouseItem, replaceWarehouse bool, containers []WarehouseContainer, market []MarketplaceRow, shared *SharedWarehouseSave) error {
 	if !idPattern.MatchString(characterID) {
 		return ErrNotFound
 	}
@@ -254,9 +254,15 @@ func (s *Store) saveInventoryEverything(ctx context.Context, characterID string,
 		if err := ValidateWarehouseItems(warehouse, items); err != nil {
 			return err
 		}
+		if shared != nil {
+			if err := shared.Validate(); err != nil {
+				return err
+			}
+		}
 	} else {
 		warehouse = nil
 		containers = nil
+		shared = nil
 	}
 	if len(containers) > MaxWarehouseContainers {
 		return fmt.Errorf("%w: %d warehouse containers (at most %d)", ErrInvalid, len(containers), MaxWarehouseContainers)
@@ -266,5 +272,5 @@ func (s *Store) saveInventoryEverything(ctx context.Context, characterID string,
 			return fmt.Errorf("warehouse container %d: %w", i, err)
 		}
 	}
-	return s.saveInventory(ctx, characterID, items, wallet, jobs, replaceJobs, known, replaceKnown, warehouse, replaceWarehouse, containers, market)
+	return s.saveInventory(ctx, characterID, items, wallet, jobs, replaceJobs, known, replaceKnown, warehouse, replaceWarehouse, containers, market, shared)
 }

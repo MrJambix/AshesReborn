@@ -21,6 +21,10 @@
 //  Buying room.  ServerPurchaseWarehouseStorageItemChunk and ...MaterialTab buy a container of the open window's town (warehouse.h has the rules): the money or Glint goes, the container joins the
 //  window and the lists, and it is saved with the inventory.  A chunk is listed at once, as the base chunk is; a tab's component goes out first and the list names it one reply delay later, as at
 //  an open.  The client asks for the new container's data and for the summary as it does for the others; the summary is also sent, as the window reads what it may still buy from it.
+//
+//  The shared warehouse.  What the window shows and changes is the account's Bank, which every session of the account holds: a move or a purchase counts its revision, and the inventory's
+//  save carries it.  The legacy items (the characters' own warehouses from before) are put in at the join and again when a window opens; the player is told of those still waiting.
+//  Another session of the account with a window open is not sent the change: a move it asks on what it shows is checked against the Bank, and a refusal sends it what is there.
 // ============================================================================
 
 #include "session/player_session.h"
@@ -72,12 +76,24 @@ namespace wire = ::aoc::protocol::wire;
 using bootstrap::Role;
 using protocol::emit::FIntrepidNetworkGUID;
 
+void PlayerSession::merge_legacy_warehouse(const char* why) {
+    if (wh_bank_->legacy.empty()) return;
+    const warehouse::Book* book = world_ ? world_->warehouses() : nullptr;
+    if (!book) return;
+    const world::CityNodes* nodes = world_->city_nodes();
+    const warehouse::MergeResult r = warehouse::merge_legacy(*wh_bank_, *book, item_catalog(), [nodes](int64_t node) { return nodes ? nodes->level_of(node) : 0; });
+    if (r.put == 0) return;
+    inventory_dirty_ = true;
+    inventory_changed_ = true;
+    spdlog::info("[session] {}: {} item(s) of the characters' own warehouses join the account's ({}; {} still wait for room)", name(), r.put, why, r.waiting);
+}
+
 void PlayerSession::list_item_chunk(Connection& conn) {
     const warehouse::Book* book = world_ ? world_->warehouses() : nullptr;
     const std::optional<warehouse::Spec> spec = book ? book->base_chunk() : std::nullopt;
     if (!spec) return;
     std::vector<warehouse::Spec> chunks{*spec};
-    for (const warehouse::Key& key : wh_storage_.bought()) {   // (what the character bought is listed from the join on, as the base chunk is)
+    for (const warehouse::Key& key : wh_bank_->storage.bought()) {   // (what the character bought is listed from the join on, as the base chunk is)
         if (key.area != warehouse::Area::Items) continue;
         if (const auto bought = book->chunk_spec(key.record)) chunks.push_back(*bought);
     }
@@ -105,7 +121,7 @@ void PlayerSession::list_item_chunk(Connection& conn) {
     }, conn);
 }
 
-bool PlayerSession::open_warehouse(Connection& conn, const world::WorldActor& npc, int access_config, Clock::time_point /*now*/) {
+bool PlayerSession::open_warehouse(Connection& conn, const world::WorldActor& npc, int access_config, Clock::time_point now) {
     const auto refuse = [&](const std::string& why) {
         ++wh_refused_;
         spdlog::log(level_for(wh_logged_), "[session] {}: {}'s storage does not open: {}", name(), npc.npc.name, why);
@@ -125,10 +141,11 @@ bool PlayerSession::open_warehouse(Connection& conn, const world::WorldActor& np
         return refuse("the clerk is " + std::to_string(static_cast<int>(std::sqrt(dx * dx + dy * dy + dz * dz) / 100.0)) + " m away (a window opens within 12 m)");
     }
     if (!room_for(4)) return refuse("the connection is busy");
+    merge_legacy_warehouse("a window opens");
     warehouse::Facts facts;
     facts.node = town->guid;
     facts.level = nodes->level_of(town->guid);
-    std::vector<warehouse::Spec> specs = book->owned(town->guid, facts, wh_storage_.bought());
+    std::vector<warehouse::Spec> specs = book->owned(town->guid, facts, wh_bank_->storage.bought());
     // the containers the access config allows: 1 the item chunks, 2 the town's materials, 4 its cargo
     specs.erase(std::remove_if(specs.begin(), specs.end(),
                                [&](const warehouse::Spec& s) {
@@ -198,8 +215,9 @@ bool PlayerSession::open_warehouse(Connection& conn, const world::WorldActor& np
     wh_window_.specs = specs;
     ++wh_opens_;
     size_t held = 0;
-    for (const warehouse::Spec& s : specs) held += wh_storage_.items_of(s.key).size();
+    for (const warehouse::Spec& s : specs) held += wh_bank_->storage.items_of(s.key).size();
     spdlog::log(level_for(wh_logged_), "[session] {}: opens the storage of {} ({} container(s), {} stored item(s))", name(), town->display_name, specs.size(), held);
+    if (!wh_bank_->legacy.empty()) say(conn, "Some items from your characters' old storage are waiting for room in your shared storage.", now);
     return true;
 }
 
@@ -268,7 +286,7 @@ void PlayerSession::on_warehouse_purchase(Connection& conn, const repl::ClientRp
     warehouse::Facts facts;
     facts.node = wh_window_.node;
     facts.level = nodes->level_of(wh_window_.node);
-    const warehouse::Book::Purchase plan = book->purchase(wh_window_.node, *record, tab, facts, wh_storage_.bought());
+    const warehouse::Book::Purchase plan = book->purchase(wh_window_.node, *record, tab, facts, wh_bank_->storage.bought());
     if (!plan.refusal.empty()) return refuse(plan.refusal);
 
     // the price: every kind of Money comes to copper (a gold price is that many gold) and Glint is paid with any kind; another currency is not paid here
@@ -295,10 +313,11 @@ void PlayerSession::on_warehouse_purchase(Connection& conn, const repl::ClientRp
         if (!pay_glint(glint, glint_paid, why)) return refuse(why, "You do not have room for the change.");
     }
     wallet_.pay(copper);
-    wh_storage_.add_bought(plan.key);
+    wh_bank_->storage.add_bought(plan.key);
+    wh_bank_->changed();
 
     // the container joins the window
-    std::vector<warehouse::Spec> specs = book->owned(wh_window_.node, facts, wh_storage_.bought());
+    std::vector<warehouse::Spec> specs = book->owned(wh_window_.node, facts, wh_bank_->storage.bought());
     const auto bit_of = [](const warehouse::Spec& s) { return s.key.area == warehouse::Area::Items ? repl::kAccessGlobalItems : s.key.area == warehouse::Area::Materials ? repl::kAccessNodeMaterials : repl::kAccessNodeCrates; };
     specs.erase(std::remove_if(specs.begin(), specs.end(), [&](const warehouse::Spec& s) { return (wh_access_ & bit_of(s)) == 0; }), specs.end());
     wh_window_.specs = specs;
@@ -411,7 +430,7 @@ bool PlayerSession::warehouse_payload(Connection& conn, const FIntrepidNetworkGU
             return true;   // (it is a warehouse container: the bags' lookup has nothing to say about it)
         }
         if (!within_budget(storage_budget_, "ServerRequestStorageData", now) || !room_for(1)) return true;
-        repl::StoragePayload data = warehouse::payload_of(*spec, wh_storage_);
+        repl::StoragePayload data = warehouse::payload_of(*spec, wh_bank_->storage);
         data.target = container;
         queue("ClientReceiveStoragePayload", [data](bootstrap::PlayerBootstrap& pb) { return pb.container_payload(data); }, conn);
         return true;
@@ -434,7 +453,7 @@ void PlayerSession::refuse_warehouse_request(Connection& conn, const char* what,
     for (const warehouse::Spec& s : wh_window_.specs) {
         for (const WhComponent& w : wh_components_) {
             if (!(w.key == s.key)) continue;
-            repl::StoragePayload data = warehouse::payload_of(s, wh_storage_);
+            repl::StoragePayload data = warehouse::payload_of(s, wh_bank_->storage);
             data.target = w.comp.guid;
             queue("ClientReceiveStoragePayload", [data](bootstrap::PlayerBootstrap& pb) { return pb.container_payload(data); }, conn);
         }
@@ -510,7 +529,7 @@ bool PlayerSession::warehouse_event(Connection& conn, const repl::ItemStorageEve
         return true;
     }
     if (!within_budget(item_budget_, what, now) || !room_for(4)) return true;
-    const warehouse::Result res = warehouse::transfer(inventory_, wh_storage_, item_catalog(), wh_window_, req);
+    const warehouse::Result res = warehouse::transfer(inventory_, wh_bank_->storage, item_catalog(), wh_window_, req);
     if (!res.ok) {
         refuse_warehouse_request(conn, what, res.refusal, now);
         return true;
@@ -554,6 +573,7 @@ bool PlayerSession::warehouse_event(Connection& conn, const repl::ItemStorageEve
             ev.callout = one[0].callout;
         }
     }
+    wh_bank_->changed();
     inventory_dirty_ = true;
     inventory_changed_ = true;
     ++items_applied_;

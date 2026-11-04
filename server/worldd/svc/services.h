@@ -82,7 +82,20 @@ struct WarehouseItem {
     /// Buying room: a row that names a container the character bought and holds no item (aoc.character.v1.WarehouseContainer); `item` says nothing.  It travels with the items so that a purchase
     /// is saved in the call that saves the money paid for it.
     bool          container_only = false;
+    /// The shared warehouse (migration 0026): a row of a save that holds no item and says what the save is.  Revision: the rows are the account's warehouse, at `revision` (the service
+    /// writes them only when that is above the stored one).  Merged: `item.instance_guid` names a legacy item (one a character kept in its own warehouse before it was shared) that is
+    /// now in the shared one.
+    enum class Meta : uint8_t { None, Revision, Merged };
+    Meta          meta = Meta::None;
+    int64_t       revision = 0;
     bool operator==(const WarehouseItem&) const = default;
+};
+
+/// The shared warehouse (migration 0026, aoc.character.v1.SharedWarehouse): the warehouse of the character's account, which all its characters use.
+struct SharedWarehouse {
+    int64_t                    revision = 0;   // the one last written (0: never)
+    std::vector<WarehouseItem> items;          // the account's items, and its containers as container_only rows
+    std::vector<WarehouseItem> legacy;         // the items still in the characters' own warehouses, oldest character first
 };
 
 /// The vendors milestone, step 0: one currency of a character's wallet (aoc.character.v1.WalletEntry): the BASE currency def's Guid (Copper, Node currency) and the balance in that
@@ -284,6 +297,8 @@ struct Character {
     std::optional<SavedQuestLog> quest_log;
     /// Storage clerks, step 0: the items the character keeps in the warehouse (with the items).  A service of an older version sends none.
     std::vector<WarehouseItem> warehouse_items;
+    /// The shared warehouse: the account's (with the items).  nullopt from a service that does not keep it: the character then uses warehouse_items as its own, as before.
+    std::optional<SharedWarehouse> shared_warehouse;
     /// Nodes 1, stage 2: the characters of the same account (id, name), this one included, for OwnerInfo.CharactersNodeData.  Empty when the list is not known
     /// (a service that does not answer ListCharacters, a fake): the join lists this character alone.
     std::vector<AccountCharacter> account_characters;

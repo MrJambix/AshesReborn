@@ -236,7 +236,16 @@ std::unique_ptr<PlayerSession> PlayerSession::join(Connection& conn, PlayerWorld
     p->completed_ftues_ = std::move(finished);
     p->init_quests(world, character);   // quests: the saved log becomes the quest component's arrays, sent with the join
     if (!p->completed_ftues_.empty()) spdlog::info("[session] {}: {} finished tutorial(s) on the character's list, sent with the join", p->pb_.setup().name, p->completed_ftues_.size());
-    p->wh_storage_.load(character.warehouse_items);   // storage clerks, step 0: what the character keeps in the warehouse (the base chunk gets its component below, the tabs at the first open of their town)
+    // storage clerks, step 0, and the shared warehouse: what the account keeps in the warehouse (the base chunk gets its component below, the tabs at the first open of their town).  The
+    // account's Bank is the one its characters' sessions have held since worldd started, when there is one: what this login read may be older than it.
+    if (character.shared_warehouse && character.account_id != 0) {
+        warehouse::Banks& banks = world.warehouse_banks();
+        p->wh_bank_ = banks.find(character.account_id);
+        if (!p->wh_bank_) p->wh_bank_ = banks.add(character.account_id, warehouse::Bank::of(character));
+    } else {
+        p->wh_bank_ = std::make_shared<warehouse::Bank>(warehouse::Bank::of(character));
+    }
+    p->merge_legacy_warehouse("the join");
     p->init_attunements(character);   // Embersprings: the places the character discovered, its home and the last use of it, sent with the join
     p->taught_ = character.known_recipes;   // crafting, step 3: the recipes a game master taught the character (the others are known to the client by their own flag)
     if (!p->taught_.empty() && !p->pb_.set_known_recipes(p->taught_)) {
@@ -715,10 +724,10 @@ void PlayerSession::hand_over_inventory(const char* why, bool periodic) {
     std::vector<svc::InventoryItem> items = inventory_.items();
     const size_t n = items.size();
     if (!market_rows_.empty()) {   // the marketplace: the rows this player's act changed go in the same call (session/player_market.cpp)
-        sink_->save_inventory(character_id_, std::move(items), wallet_.entries(), jobs_, taught_, wh_storage_.rows(), std::move(market_rows_));
+        sink_->save_inventory(character_id_, std::move(items), wallet_.entries(), jobs_, taught_, wh_bank_->rows(), std::move(market_rows_));
         market_rows_.clear();
     } else {
-        sink_->save_inventory(character_id_, std::move(items), wallet_.entries(), jobs_, taught_, wh_storage_.rows());
+        sink_->save_inventory(character_id_, std::move(items), wallet_.entries(), jobs_, taught_, wh_bank_->rows());
     }
     ++inventories_handed_over_;
     spdlog::log(periodic ? level_for(item_periodic_logged_) : spdlog::level::info, "[session] {}: saving the inventory ({} items) ({})", name(), n, why);

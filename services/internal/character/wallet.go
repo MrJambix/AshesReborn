@@ -111,7 +111,7 @@ func (s *Store) SaveInventoryAndWallet(ctx context.Context, characterID string, 
 	if err := ValidateWallet(wallet); err != nil {
 		return err
 	}
-	return s.saveInventory(ctx, characterID, items, wallet, nil, false, nil, false, nil, false, nil, nil)
+	return s.saveInventory(ctx, characterID, items, wallet, nil, false, nil, false, nil, false, nil, nil, nil)
 }
 
 // txExecer is what upsertWallet needs of a transaction.

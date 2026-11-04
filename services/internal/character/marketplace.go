@@ -103,5 +103,5 @@ func (s *Store) SaveInventoryWithMarketplace(ctx context.Context, characterID st
 	if err := ValidateMarketplaceRows(market); err != nil {
 		return err
 	}
-	return s.saveInventoryEverything(ctx, characterID, items, wallet, replaceWallet, jobs, replaceJobs, known, replaceKnown, warehouse, replaceWarehouse, containers, market)
+	return s.saveInventoryEverything(ctx, characterID, items, wallet, replaceWallet, jobs, replaceJobs, known, replaceKnown, warehouse, replaceWarehouse, containers, market, nil)
 }

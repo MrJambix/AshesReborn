@@ -786,7 +786,8 @@ public:
     size_t   warehouse_opens() const { return wh_opens_; }
     size_t   warehouse_moves() const { return wh_moves_; }
     size_t   warehouse_refused() const { return wh_refused_; }
-    const warehouse::Storage& warehouse_storage() const { return wh_storage_; }
+    const warehouse::Storage& warehouse_storage() const { return wh_bank_->storage; }
+    const warehouse::Bank&    warehouse_bank() const { return *wh_bank_; }   // the shared warehouse: the account's (every session of it holds the same), or the character's own
     /// The tax-table requests of the vendor windows, and the tables sent in answer.
     size_t   tax_requests() const { return tax_requests_; }
     size_t   tax_tables_sent() const { return tax_tables_sent_; }
@@ -1060,6 +1061,7 @@ private:
     /// The join's last piece for the warehouse: the character's base item chunk gets its component and OwnerInfo lists it, as retail's login does (the client asks for its data and has it
     /// before any window opens).  Queued behind the join.
     void list_item_chunk(Connection& conn);
+    void merge_legacy_warehouse(const char* why);   // the shared warehouse: the legacy items that fit go in (warehouse::merge_legacy), at the join and when a window opens
     /// The clerk's line "access my storage", first half: the town's tabs get their components (read-only, not listed) and OwnerInfo names the town in WarehouseMaterialTabsByIds and
     /// WarehouseCrateTabsByIds (queued at once).  False, and logged, when the storage does not open.  finish_open_warehouse() follows, after the conversation's other replies.
     bool open_warehouse(Connection& conn, const world::WorldActor& npc, int access_config, Clock::time_point now);
@@ -1695,7 +1697,7 @@ private:
         bootstrap::WarehouseComponent   comp;   // as it is meant to be once the window is open (the tabs listed and writable); the first half of an open sends them read-only and unlisted
     };
     uint32_t                       wh_gen_ = 0;                // counts the opens and closes: a reply of an earlier open that finds it changed is dropped
-    warehouse::Storage             wh_storage_;                // what the character keeps in the warehouse (loaded at the join, saved with the inventory)
+    std::shared_ptr<warehouse::Bank> wh_bank_ = std::make_shared<warehouse::Bank>();   // what the account keeps in the warehouse (taken at the join, saved with the inventory; never null)
     warehouse::OpenWindow          wh_window_;                 // the containers the window has open now
     bool                           wh_open_ = false;
     uint64_t                       wh_clerk_ = 0;              // the clerk's actor id

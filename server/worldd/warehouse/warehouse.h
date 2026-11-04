@@ -23,6 +23,13 @@
 //
 //  The rules of what may go where are the client's own (a material only in a material container, anything else only in an item container) and the owner's of the bags (the item bag
 //  holds no materials).  A container the window does not have open, another town's tab and a place outside the container are refused.
+//
+//  The shared warehouse (migration 0026).  Every character of an account uses one warehouse, a Bank: the item chunks in every town, a town's tabs in that town (a tab stays its town's).
+//  worldd keeps one Bank per account (Banks) from the first join of any of its characters to its end, and every session of the account holds the same one, so two characters online at
+//  once see the same items and a move of one is the other's at once.  Each change counts the revision; a save carries it, and the character service writes the warehouse only when it is
+//  above the stored one (a character's older save that arrives later leaves it alone).  The items the characters kept in their own warehouses before are its legacy items: merge_legacy
+//  puts each where it fits (its own place first, then the first free place of a container of its kind the account owns), and the ones put in are named in every save, which takes them
+//  out of the old table.  One that does not fit waits, and is tried again when a window opens.
 // ============================================================================
 #pragma once
 
@@ -37,7 +44,9 @@
 #include <cmath>
 #include <compare>
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -724,6 +733,145 @@ inline Result transfer(items::Inventory& bags, Storage& wh, const items::ItemCat
         out.ok = true;
         return out;
     }
+}
+
+// ---- the shared warehouse ---------------------------------------------------------------------------------------------------------------------------------------------
+
+/// An account's warehouse, shared by its characters' sessions.  A Bank that is not shared is one character's alone (a character service that keeps no shared warehouse, a test): its
+/// rows are saved as the character's, as before.
+struct Bank {
+    Storage                         storage;
+    bool                            shared = false;
+    int64_t                         revision = 0;   // the stored one at the load, counted up by each change
+    std::vector<svc::WarehouseItem> legacy;         // legacy items that did not fit yet
+    std::vector<std::string>        merged;         // legacy instances put in since the load (every save names them all)
+
+    void changed() { ++revision; }
+
+    /// What a save carries: the storage's rows and, for a shared one, its revision and the merged instances.
+    std::vector<svc::WarehouseItem> rows() const {
+        std::vector<svc::WarehouseItem> out = storage.rows();
+        if (!shared) return out;
+        svc::WarehouseItem rev;
+        rev.meta = svc::WarehouseItem::Meta::Revision;
+        rev.revision = revision;
+        out.push_back(std::move(rev));
+        for (const std::string& guid : merged) {
+            svc::WarehouseItem m;
+            m.meta = svc::WarehouseItem::Meta::Merged;
+            m.item.instance_guid = guid;
+            out.push_back(std::move(m));
+        }
+        return out;
+    }
+
+    /// The Bank of what the character service sent for a character: the account's shared warehouse when it sent one, else the character's own.
+    static Bank of(const svc::Character& c) {
+        Bank b;
+        if (!c.shared_warehouse) {
+            b.storage.load(c.warehouse_items);
+            return b;
+        }
+        b.shared = true;
+        b.revision = c.shared_warehouse->revision;
+        b.storage.load(c.shared_warehouse->items);
+        b.legacy = c.shared_warehouse->legacy;
+        return b;
+    }
+};
+
+/// The Banks of the accounts whose characters played since worldd started, by account.  A Bank stays when its characters log out: it is what the account's warehouse is (its last save
+/// may still be waiting in the saver), so a character that joins later takes it rather than what its login read.
+class Banks {
+public:
+    std::shared_ptr<Bank> find(int64_t account) const {
+        const auto it = by_account_.find(account);
+        return it == by_account_.end() ? nullptr : it->second;
+    }
+    std::shared_ptr<Bank> add(int64_t account, Bank bank) {
+        auto made = std::make_shared<Bank>(std::move(bank));
+        by_account_[account] = made;
+        return made;
+    }
+    size_t size() const { return by_account_.size(); }
+
+private:
+    std::map<int64_t, std::shared_ptr<Bank>> by_account_;
+};
+
+/// What merge_legacy did.
+struct MergeResult {
+    size_t put = 0;       // legacy items now in the storage
+    size_t waiting = 0;   // legacy items that still do not fit
+};
+
+/// Puts the bank's legacy items where they fit: an item's own place when it is free and the account owns the container, else the first free place (in the containers' order, then the
+/// slots') of a container of its kind and town the account owns.  level_of gives a town's ENodeLevel ordinal (a tab's availability may ask it).  An item whose instance the storage
+/// holds already is not put again, only named as merged.  Counts a change when anything moved.
+inline MergeResult merge_legacy(Bank& bank, const Book& book, const items::ItemCatalog& catalog, const std::function<int(int64_t)>& level_of) {
+    MergeResult out;
+    if (bank.legacy.empty()) return out;
+    std::map<int64_t, std::vector<Spec>> by_node;   // the tabs the account owns, by town
+    const auto specs_of = [&](Area area, int64_t node) {
+        std::vector<Spec> specs;
+        if (area == Area::Items) {
+            if (const auto base = book.base_chunk()) specs.push_back(*base);
+            for (const Key& k : bank.storage.bought()) {
+                if (k.area != Area::Items) continue;
+                if (const auto c = book.chunk_spec(k.record)) specs.push_back(*c);
+            }
+            return specs;
+        }
+        auto it = by_node.find(node);
+        if (it == by_node.end()) {
+            Facts facts;
+            facts.node = node;
+            facts.level = level_of ? level_of(node) : 0;
+            it = by_node.emplace(node, book.owned(node, facts, bank.storage.bought())).first;
+        }
+        for (const Spec& s : it->second) {
+            if (s.key.area == area) specs.push_back(s);
+        }
+        return specs;
+    };
+    const size_t merged_before = bank.merged.size();
+    std::vector<svc::WarehouseItem> waiting;
+    for (svc::WarehouseItem& w : bank.legacy) {
+        const auto area = area_of(w.area);
+        if (!area || w.container_only) {
+            waiting.push_back(std::move(w));
+            continue;
+        }
+        if (bank.storage.holds_guid(w.item.instance_guid)) {   // (in already: its legacy row only goes)
+            bank.merged.push_back(w.item.instance_guid);
+            continue;
+        }
+        const Key own{*area, w.node_guid, w.container_guid};
+        const std::vector<Spec> specs = specs_of(*area, *area == Area::Items ? 0 : w.node_guid);
+        std::optional<std::pair<Key, int>> place;
+        for (const Spec& s : specs) {
+            if (s.key == own && detail::why_not_here(s, w.item.slot, w.item, bank.storage, catalog, nullptr).empty()) place = std::make_pair(s.key, w.item.slot);
+        }
+        for (size_t i = 0; !place && i < specs.size(); ++i) {
+            for (int slot = 0; slot < specs[i].slots; ++slot) {
+                if (detail::why_not_here(specs[i], slot, w.item, bank.storage, catalog, nullptr).empty()) {
+                    place = std::make_pair(specs[i].key, slot);
+                    break;
+                }
+            }
+        }
+        if (!place) {
+            waiting.push_back(std::move(w));
+            continue;
+        }
+        bank.storage.put(place->first, place->second, w.item);
+        bank.merged.push_back(w.item.instance_guid);
+        ++out.put;
+    }
+    bank.legacy = std::move(waiting);
+    out.waiting = bank.legacy.size();
+    if (bank.merged.size() != merged_before) bank.changed();
+    return out;
 }
 
 /// The payload a container sends the client: its slots (one element for each, an empty one where nothing lies) and its shape.

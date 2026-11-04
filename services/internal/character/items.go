@@ -231,13 +231,14 @@ func (s *Store) Inventory(ctx context.Context, characterID string) ([]Item, erro
 // (not in part 1 of the complete character), so an empty save is a bug in the caller, and it would erase the character's
 // kit.
 func (s *Store) SaveInventory(ctx context.Context, characterID string, items []Item) error {
-	return s.saveInventory(ctx, characterID, items, nil, nil, false, nil, false, nil, false, nil, nil)
+	return s.saveInventory(ctx, characterID, items, nil, nil, false, nil, false, nil, false, nil, nil, nil)
 }
 
 // saveInventory is SaveInventory and, when wallet is not nil, the wallet's entries stored in the same transaction (SaveInventoryAndWallet) and, when replaceJobs, the character's
-// processing jobs made exactly jobs (SaveInventoryAll) and, when replaceWarehouse, the character's warehouse made exactly warehouse (SaveInventoryEverything).
+// processing jobs made exactly jobs (SaveInventoryAll) and, when replaceWarehouse, the character's warehouse made exactly warehouse (SaveInventoryEverything), or with `shared` the
+// account's (SaveInventoryShared: only when shared.Revision is above the stored one).
 func (s *Store) saveInventory(ctx context.Context, characterID string, items []Item, wallet []WalletEntry, jobs []ProcessingJob, replaceJobs bool, known []int64, replaceKnown bool,
-	warehouse []WarehouseItem, replaceWarehouse bool, containers []WarehouseContainer, market []MarketplaceRow) error {
+	warehouse []WarehouseItem, replaceWarehouse bool, containers []WarehouseContainer, market []MarketplaceRow, shared *SharedWarehouseSave) error {
 	if !idPattern.MatchString(characterID) {
 		return ErrNotFound
 	}
@@ -279,7 +280,11 @@ func (s *Store) saveInventory(ctx context.Context, characterID string, items []I
 			return err
 		}
 	}
-	if replaceWarehouse {
+	if replaceWarehouse && shared != nil {
+		if err := saveSharedWarehouse(ctx, tx, characterID, warehouse, containers, *shared); err != nil {
+			return err
+		}
+	} else if replaceWarehouse {
 		if err := replaceWarehouseItems(ctx, tx, characterID, warehouse); err != nil {
 			return err
 		}

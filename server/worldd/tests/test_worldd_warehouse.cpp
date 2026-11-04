@@ -283,6 +283,89 @@ void test_buying() {
     CHECK(containers == 2 && wh.rows().size() == 3, "a save carries what was bought with the items");
 }
 
+// The shared warehouse: an account's Bank, its save rows, and the legacy items put where they fit.
+svc::WarehouseItem legacy_row(const char* area, int64_t node, int64_t container, int slot, int64_t record, uint32_t n) {
+    svc::WarehouseItem w;
+    w.area = area;
+    w.node_guid = node;
+    w.container_guid = container;
+    w.item = item(ItemContainer::Backpack, slot, record, n);
+    return w;
+}
+
+void test_shared_bank() {
+    const Catalog catalog;
+    const warehouse::Book b = book();
+    const auto level = [](int64_t) { return 0; };
+
+    svc::Character own;
+    own.warehouse_items = {legacy_row("Items", 0, kBaseChunk, 4, kSword, 1)};
+    warehouse::Bank mine = warehouse::Bank::of(own);
+    bool meta = false;
+    for (const svc::WarehouseItem& w : mine.rows()) meta = meta || w.meta != svc::WarehouseItem::Meta::None;
+    CHECK(!mine.shared && mine.storage.at(kChunk, 4) && !meta, "a service with no shared warehouse: the character's own, saved as before");
+
+    svc::Character c;
+    c.account_id = 42;
+    c.warehouse_items = own.warehouse_items;   // (also among the legacy items: ignored)
+    svc::SharedWarehouse sw;
+    sw.revision = 7;
+    svc::WarehouseItem held = legacy_row("Items", 0, kBaseChunk, 0, kPotion, 10);
+    sw.items = {held};
+    sw.legacy = {
+        legacy_row("Items", 0, kBaseChunk, 3, kPotion, 11),          // its own place is free: it stays there
+        legacy_row("Items", 0, kBaseChunk, 0, kSword, 12),           // its place is taken: the first free slot (1)
+        legacy_row("Materials", kNode, kBaseTab, 0, kOre, 13),       // the town's base tab, its own cell
+        legacy_row("Materials", kNode, kBaseTab, 0, kOre, 14),       // the same cell again: the next free one
+        legacy_row("Materials", kNode + 1, kBaseTab, 0, kOre, 15),   // a town with no warehouse in the data: it waits
+        legacy_row("Items", 0, kBaseChunk, 9, kPotion, 10),          // an instance the warehouse holds already: only its legacy row goes
+    };
+    c.shared_warehouse = sw;
+    warehouse::Bank bank = warehouse::Bank::of(c);
+    CHECK(bank.shared && bank.revision == 7 && bank.storage.size() == 1 && bank.legacy.size() == 6, "a shared warehouse loads the account's items and legacy items");
+
+    const warehouse::MergeResult r = warehouse::merge_legacy(bank, b, catalog, level);
+    CHECK(r.put == 4 && r.waiting == 1 && bank.legacy.size() == 1, "four legacy items are put in, one waits");
+    CHECK(bank.storage.at(kChunk, 3) && bank.storage.at(kChunk, 3)->instance_guid == guid_n(11), "an item keeps its own place when it is free");
+    CHECK(bank.storage.at(kChunk, 1) && bank.storage.at(kChunk, 1)->instance_guid == guid_n(12), "an item whose place is taken goes to the first free slot");
+    CHECK(bank.storage.at(kChunk, 0)->instance_guid == guid_n(10) && !bank.storage.at(kChunk, 9), "the warehouse's own item stays, and its legacy copy is not put again");
+    CHECK(bank.storage.at(kTab, 0) && bank.storage.at(kTab, 1) && bank.storage.at(kTab, 1)->instance_guid == guid_n(14), "two materials of one cell: the second takes the next");
+    CHECK(bank.revision == 8 && bank.merged.size() == 5, "the merge counts one change and names the five legacy rows that go");
+
+    size_t revisions = 0, merged = 0, items_saved = 0;
+    int64_t saved_revision = 0;
+    for (const svc::WarehouseItem& w : bank.rows()) {
+        if (w.meta == svc::WarehouseItem::Meta::Revision) {
+            ++revisions;
+            saved_revision = w.revision;
+        } else if (w.meta == svc::WarehouseItem::Meta::Merged) {
+            ++merged;
+        } else if (!w.container_only) {
+            ++items_saved;
+        }
+    }
+    CHECK(revisions == 1 && saved_revision == 8 && merged == 5 && items_saved == 5, "a save carries the items, the revision and the merged instances");
+    CHECK(warehouse::merge_legacy(bank, b, catalog, level).put == 0 && bank.revision == 8, "a merge that puts nothing in counts no change");
+
+    // a full chunk: the item waits until a slot is free
+    warehouse::Bank full;
+    full.shared = true;
+    for (int slot = 0; slot < 40; ++slot) full.storage.put(kChunk, slot, item(ItemContainer::Backpack, slot, kSword, 100 + static_cast<uint32_t>(slot)));
+    full.legacy = {legacy_row("Items", 0, kBaseChunk, 0, kSword, 99)};
+    CHECK(warehouse::merge_legacy(full, b, catalog, level).waiting == 1 && full.revision == 0, "a full chunk: the legacy item waits");
+    full.storage.erase(kChunk, 17);
+    CHECK(warehouse::merge_legacy(full, b, catalog, level).put == 1 && full.storage.at(kChunk, 17) && full.revision == 1, "a slot freed: it goes in");
+
+    // a bought chunk takes what the base chunk has no room for
+    full.storage.add_bought(kChunk2);
+    full.legacy = {legacy_row("Items", 0, kBaseChunk, 0, kSword, 98)};
+    CHECK(warehouse::merge_legacy(full, b, catalog, level).put == 1 && full.storage.at(kChunk2, 0), "the account's bought chunk takes it");
+
+    warehouse::Banks banks;
+    auto first = banks.add(42, warehouse::Bank::of(c));
+    CHECK(banks.find(42) == first && !banks.find(43) && banks.size() == 1, "one Bank per account");
+}
+
 }  // namespace
 
 int main() {
@@ -291,6 +374,7 @@ int main() {
     test_containers();
     test_cargo();
     test_buying();
+    test_shared_bank();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

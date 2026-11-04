@@ -92,6 +92,17 @@ type WarehouseStore interface {
 
 var _ WarehouseStore = (*character.Store)(nil)
 
+// SharedWarehouseStore is the part of character.Store that keeps the warehouse every character of an account uses (migration 0026). A store without it keeps none: GetCharacter sends
+// no shared_warehouse and a save that names one is refused.
+type SharedWarehouseStore interface {
+	SharedWarehouseOf(ctx context.Context, id string) (character.SharedWarehouse, error)
+	SaveInventoryShared(ctx context.Context, id string, items []character.Item, wallet []character.WalletEntry, replaceWallet bool, jobs []character.ProcessingJob, replaceJobs bool,
+		known []int64, replaceKnown bool, warehouse []character.WarehouseItem, containers []character.WarehouseContainer, save character.SharedWarehouseSave,
+		market []character.MarketplaceRow) error
+}
+
+var _ SharedWarehouseStore = (*character.Store)(nil)
+
 // AttunementStore is the part of character.Store that keeps the places a character discovered and its home (Embersprings). A store without it keeps none: GetCharacter sends none.
 type AttunementStore interface {
 	Attunements(ctx context.Context, id string) (character.Attunements, error)
@@ -357,6 +368,17 @@ func (s *Server) GetCharacter(ctx context.Context, r *characterv1.GetCharacterRe
 				out.WarehouseContainers = append(out.WarehouseContainers, &characterv1.WarehouseContainer{Area: b.Area, NodeGuid: b.NodeGUID, ContainerGuid: b.ContainerGUID})
 			}
 		}
+		if ss, ok := s.store.(SharedWarehouseStore); ok {
+			shared, err := ss.SharedWarehouseOf(ctx, c.ID)
+			if err != nil {
+				return nil, toStatus(ctx, err)
+			}
+			sw := &characterv1.SharedWarehouse{Revision: shared.Revision, Items: toProtoWarehouse(shared.Items), LegacyItems: toProtoWarehouse(shared.Legacy)}
+			for _, b := range shared.Containers {
+				sw.Containers = append(sw.Containers, &characterv1.WarehouseContainer{Area: b.Area, NodeGuid: b.NodeGUID, ContainerGuid: b.ContainerGUID})
+			}
+			out.SharedWarehouse = sw
+		}
 		if as, ok := s.store.(AttunementStore); ok {
 			a, err := as.Attunements(ctx, c.ID)
 			if err != nil {
@@ -587,6 +609,27 @@ func (s *Server) SaveInventory(ctx context.Context, r *characterv1.SaveInventory
 		bought := make([]character.WarehouseContainer, 0, len(r.GetWarehouseContainers()))
 		for _, c := range r.GetWarehouseContainers() {
 			bought = append(bought, character.WarehouseContainer{Area: c.GetArea(), NodeGUID: c.GetNodeGuid(), ContainerGUID: c.GetContainerGuid()})
+		}
+		if r.GetSharedWarehouse() {
+			ss, ok := s.store.(SharedWarehouseStore)
+			if !ok {
+				return nil, status.Error(codes.Unimplemented, "this character store keeps no shared warehouse")
+			}
+			market := make([]character.MarketplaceRow, 0, len(r.GetMarketplaceRows()))
+			for _, m := range r.GetMarketplaceRows() {
+				market = append(market, character.MarketplaceRow{ID: m.GetId(), Revision: m.GetRevision(), Gone: m.GetGone(), Data: m.GetData()})
+			}
+			if len(market) > 0 {
+				if _, ok := s.store.(MarketplaceStore); !ok {
+					return nil, status.Error(codes.Unimplemented, "this character store keeps no marketplace")
+				}
+			}
+			save := character.SharedWarehouseSave{Revision: r.GetWarehouseRevision(), MergedLegacy: r.GetMergedLegacyWarehouseGuids()}
+			if err := ss.SaveInventoryShared(ctx, r.GetId(), items, wallet, r.GetReplaceWallet(), fromProtoJobs(r.GetProcessingJobs()), r.GetReplaceProcessingJobs(),
+				r.GetKnownRecipes(), r.GetReplaceKnownRecipes(), stored, bought, save, market); err != nil {
+				return nil, toStatus(ctx, err)
+			}
+			return &characterv1.SaveInventoryResponse{Saved: int32(len(items))}, nil
 		}
 		if len(r.GetMarketplaceRows()) > 0 {
 			ms, ok := s.store.(MarketplaceStore)
