@@ -227,6 +227,9 @@ bool NpcWorld::ground_npc(Npc& n, world::WorldActor& actor) {
         // a city node's person has a height that is right to 1-168 cm: a tight window, so that it never takes a roof, a ledge or the pit's terrain for its floor
         found = a->npc.ground_by_data ? ground_by_data_at(a->x, a->y, hint, &gz)
                                       : nav_->ground_height(a->x, a->y, hint, &gz, 1500.0, 1500.0);
+        // within the agent's radius of a wall or a ledge's edge the map has no polygon at the exact place, as for a town's people: the floor of the nearest polygon a step off, at its height, is its
+        // ground (the scan of 4 November 2026, test_worldd_npc_placement: 46 NPCs of the open world went 15 m and more down to the terrain from a floor 1 m beside them, 57 in caves had none)
+        if (!found && !a->npc.ground_by_data) found = ground_by_data_at(a->x, a->y, hint, &gz);
         // (a city node's people keep their data height when no surface is within reach: their town's floor is not in the baked ground, whose terrain lies 50 m below it)
         // (so does a point whose terrain is more than the reach above it: it stands in a cave under the landscape, the Anvils' halls, and the terrain is the mountain over it, not its floor:
         // Maryl Amberstone of A Heavy Load stood 165 m up on the mountain top)

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+﻿# SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
@@ -13,7 +13,7 @@
 #      .\scripts\run_tests.ps1 -Heavy                  # also run the heavy tests (below)
 #      .\scripts\run_tests.ps1 -Jobs 6                 # build at most 6 projects and 6 compiler processes at a time (see build.ps1)
 #
-#  The heavy tests (test_worldd_region_load: 1 GB of ground, about a minute, wall-clock checks) are NOT in the default gate: on a PC that is also building or
+#  The heavy tests (test_worldd_region_load, test_worldd_npc_placement: 1 GB of ground, about a minute, wall-clock checks) are NOT in the default gate: on a PC that is also building or
 #  playing a timing check can flip, and the PC hard-resets under load.  -Heavy runs them (G1 review B I1); the plan's last task and the lead do, alone, under the
 #  heavy-job lock.  fixtures/test-baseline.txt does not list them.
 #
@@ -57,7 +57,7 @@ if (-not $NoBuild) {
 $ErrorActionPreference = 'Continue'
 Push-Location $root
 try {
-    $heavyTests = @('test_worldd_region_load')
+    $heavyTests = @('test_worldd_region_load', 'test_worldd_npc_placement')
     $skippers = New-Object System.Collections.Generic.List[string]
     $lines = @(foreach ($exe in Get-ChildItem $dist -Filter 'test_*.exe' | Where-Object { $Heavy -or ($heavyTests -notcontains $_.BaseName) } | Sort-Object Name) {
         # test_worldd_node_pop has a half that is opt-in because it reads the baked ground (AOC_REAL_GROUND=1: the five city nodes' bowls on the real heightfield, 0.2 s): it runs whenever

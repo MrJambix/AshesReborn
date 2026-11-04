@@ -508,6 +508,13 @@ target_compile_definitions(test_worldd_region_load PRIVATE
     LOAD_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv"
     LOAD_NAV_PATH="${PROJECT_SOURCE_DIR}/dist/content/area_nav.bin")
 
+# where every NPC of the region stands once grounded, against its data's height (heavy, like region_load: the chunked area_nav.bin, run alone)
+worldd_add_test(test_worldd_npc_placement)
+target_compile_definitions(test_worldd_npc_placement PRIVATE
+    PLACEMENT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
+    PLACEMENT_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv"
+    PLACEMENT_NAV_PATH="${PROJECT_SOURCE_DIR}/dist/content/area_nav.bin")
+
 # the mounts (the mounts milestone, stage 2): the mount actor, its controller and the session on the real content.db of the working tree
 worldd_add_test(test_worldd_mounts)
 target_compile_definitions(test_worldd_mounts PRIVATE

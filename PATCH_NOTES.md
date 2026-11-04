@@ -4,6 +4,7 @@
 
 ### Fixed
 - People who stand in caves under the mountains, such as in the Anvils' halls, are back on the cave floor. Some were standing on the mountain top far above, so you could not find them. Maryl Amberstone is back where "A Heavy Load" sends you, so you can hand her the parts.
+- About a hundred creatures and people who stand at the edge of a ledge, a cave floor or a walkway are back on it. Some had dropped to the ground 15 m or more below.
 
 ## 2026-11-04: Reflect, huntable creatures and quest crates
 
