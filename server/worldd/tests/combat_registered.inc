@@ -14,6 +14,7 @@
 #include "combat_fire_notify_tests.inc"
 #include "combat_player_cast_tests.inc"
 #include "combat_npc_hits_tests.inc"
+#include "combat_reflect_tests.inc"
 #include "combat_creature_gates_tests.inc"
 #include "combat_creature_swing_tests.inc"
 #include "combat_humanoid_tests.inc"
