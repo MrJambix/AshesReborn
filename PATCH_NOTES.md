@@ -1,6 +1,6 @@
 # Patch notes
 
-## Next update: Bard melodies
+## 2026-11-04: Bard melodies
 
 ### Fixed
 - Bard: the heal, mana and Pep that the Cheerful, Pensive and Epic melodies send to an ally at a finisher now show flying to them. Before, the heal arrived but nothing was seen leaving your hands.
