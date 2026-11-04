@@ -173,6 +173,9 @@ static void test_standing() {
     CHECK(w.add(1006, s, &found) && found && std::fabs(reg.find(1006)->z - 1096.0) < 0.5,
           "a height no surface is near (a placement drawn at the wrong height): the terrain's is the ground, the NPC stands on the plain");
     CHECK(w.add(1008, s, &found) && !found, "far outside the terrain: no ground, stands");
+    reg.add(make_npc(1014, 1000, 1000, -15000));     // 160 m under the plain, no surface near: a cave under the landscape (Maryl Amberstone in the Anvils' halls)
+    CHECK(w.add(1014, s, &found) && !found && std::fabs(reg.find(1014)->z - (-15000.0)) < 0.5,
+          "a height with the terrain far above it (a cave): it keeps the data's height, not the mountain over it");
     CHECK(!w.add(1010, s), "a gatherable is not an NPC");
     CHECK(!w.add(9999, s), "an unknown actor is refused");
     CHECK(!w.add(1000, s), "a second add is refused");
@@ -183,7 +186,7 @@ static void test_standing() {
     nan = s;
     nan.foot_offset = 1e9;
     CHECK(!w.add(1012, nan), "a half height of 1e9 is refused");
-    CHECK(w.size() == 5, "five NPCs under its care");
+    CHECK(w.size() == 6, "six NPCs under its care");
     // the first tick starts the NPCs' clock: their timestamps (the loader's 0) become the clock's, and nothing is sent for it
     const uint32_t version_before = reg.find(1000)->version;
     w.tick(5000.0);

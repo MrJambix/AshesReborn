@@ -184,7 +184,8 @@ bool NpcWorld::add(uint64_t actor_id, const NpcMotionSetup& setup, bool* ground_
         // the exact surface for most NPCs) and sleeps; `chunks_resident` grounds it when the chunk comes, with a floor of the navmesh where the chunk has one.
         // A city node's people (`ground_by_data`) keep the height the data gave them: the terrain under a bowl is 50 m below the town's floor, so it would bury them.
         double terrain = 0;
-        const bool have_terrain = !a->npc.ground_by_data && nav_->terrain_height(a->x, a->y, &terrain);
+        // (nor does a point in a cave, whose terrain is the mountain more than the reach over it: see ground_npc)
+        const bool have_terrain = !a->npc.ground_by_data && nav_->terrain_height(a->x, a->y, &terrain) && terrain <= a->z - setup.foot_offset + 1500.0;
         const double hint = have_terrain ? terrain : a->z - setup.foot_offset;
         n.mover.place(a->x, a->y, hint, setup.home_yaw);
         n.mode = Mode::Stand;
@@ -227,7 +228,9 @@ bool NpcWorld::ground_npc(Npc& n, world::WorldActor& actor) {
         found = a->npc.ground_by_data ? ground_by_data_at(a->x, a->y, hint, &gz)
                                       : nav_->ground_height(a->x, a->y, hint, &gz, 1500.0, 1500.0);
         // (a city node's people keep their data height when no surface is within reach: their town's floor is not in the baked ground, whose terrain lies 50 m below it)
-        if (!found && !a->npc.ground_by_data && nav_->terrain_height(a->x, a->y, &terrain)) {
+        // (so does a point whose terrain is more than the reach above it: it stands in a cave under the landscape, the Anvils' halls, and the terrain is the mountain over it, not its floor:
+        // Maryl Amberstone of A Heavy Load stood 165 m up on the mountain top)
+        if (!found && !a->npc.ground_by_data && nav_->terrain_height(a->x, a->y, &terrain) && terrain <= hint + 1500.0) {
             // the data's height is out of reach of any surface here (a placement drawn at the wrong height): the terrain's is the ground
             hint = terrain;
             found = nav_->ground_height(a->x, a->y, hint, &gz, 1500.0, 1500.0);
