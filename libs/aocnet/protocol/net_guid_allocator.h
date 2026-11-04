@@ -31,10 +31,10 @@
 //
 //  Lifecycle:
 //    * allocate_player_block() — called on player connect → returns the
-//      base NetGUID for that player's block.
-//    * release_player_block(base) — called on player disconnect.  Marks
-//      the block as free for reuse.  In the MVP we just leak; reuse is
-//      a TODO for long-running servers.
+//      base NetGUID for that player's block.  A released block is reused
+//      before a new slot is issued.
+//    * release_player_block(base) — called on player disconnect.  Returns
+//      the block's slot to the free list for a later player.
 // ============================================================================
 #pragma once
 
@@ -42,6 +42,7 @@
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 #include <spdlog/spdlog.h>
 
 namespace aoc { namespace protocol {
@@ -95,7 +96,16 @@ public:
     /// Thread-safe.  Returns a valid block or an all-zero block if
     /// exhausted (only happens at >16M concurrent players).
     PlayerNetGuidBlock allocate_player_block(const std::string& player_key) {
-        const uint64_t slot = next_slot_.fetch_add(1, std::memory_order_relaxed);
+        uint64_t slot = 0;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (!free_slots_.empty()) {
+                slot = free_slots_.back();
+                free_slots_.pop_back();
+            } else {
+                slot = next_slot_.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
         const uint64_t base = kDynamicBase + slot * kBlockSize;
 
         if (base + kBlockSize < base) {
@@ -138,15 +148,17 @@ public:
         return it->second;
     }
 
-    /// Called on player disconnect.  MVP: just records the release.
-    /// Reuse of released blocks is a future optimization.
+    /// Called on player disconnect.  Returns the block's slot to the free list
+    /// so a later player reuses it.
     void release_player_block(const std::string& player_key) {
         std::lock_guard<std::mutex> lk(mu_);
         auto it = player_to_block_.find(player_key);
         if (it == player_to_block_.end()) return;
+        const uint64_t slot = (it->second.base - kDynamicBase) / kBlockSize;
         spdlog::info("[NetGuidAllocator] Released block for \"{}\" "
                      "(base=0x{:x})", player_key, it->second.base);
         player_to_block_.erase(it);
+        free_slots_.push_back(slot);
     }
 // Cyb with C O A
 
@@ -163,6 +175,7 @@ private:
     std::atomic<uint64_t> next_slot_{0};
     mutable std::mutex mu_;
     std::unordered_map<std::string, PlayerNetGuidBlock> player_to_block_;
+    std::vector<uint64_t> free_slots_;   // slots returned by release_player_block, reused before issuing a new one
 };
 
 }} // namespace aoc::protocol

@@ -83,7 +83,7 @@ ReassemblyResult reassemble_partial_bunches(const std::vector<ReassemblyInput>& 
             if (b.is_partial) {
                 partial_by_channel[b.channel].push_back({
                     pkt_idx, b_idx, &b, in.raw_buf, in.raw_len,
-                    Direction::ServerToClient  // TODO: track direction per-packet
+                    in.direction
                 });
             }
         }

@@ -79,6 +79,7 @@ struct ReassemblyInput {
     const ParsedPacket* parsed;
     const uint8_t* raw_buf;
     size_t raw_len;
+    Direction direction = Direction::ServerToClient;   // which way this packet travelled (used to label the reassembled bunches)
 };
 
 ReassemblyResult reassemble_partial_bunches(const std::vector<ReassemblyInput>& packets);
