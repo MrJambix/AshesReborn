@@ -285,6 +285,14 @@ struct Dash {
 // displacement (3,659 / 2,319 = 1.58).
 constexpr Dash kDashes[] = {{"Bard_Misc_Flourish", 3659.0}, {"Ranger_Disengage", 2500.0}, {"Tank_Charge", 5050.0}, {"Tank_Grapple", 1650.0},
                             {"Summoner_Transpose", 1950.0}, {"Rogue_Shadowstep", 3000.0}, {"Ranger_Dash", 2500.0}};
+// A held ability whose effects last a time of their own, not until the key's release: Reflect braces for 3 s ("the first incoming attack within the next 3 seconds").
+// [R: capture 1065 line 17257: both effects at +90 ms, kept through two blocked hits, the montage cleared at +2931 and the effects gone at +2996; the client sent no
+// cancel in any of the three recorded casts (ability_timings.h: end 2931, 3 casts)]. Seconds after the trigger.
+struct FixedHold {
+    const char* ability;
+    double      seconds;
+};
+constexpr FixedHold kFixedHolds[] = {{"Tank_Reflect", 2.931}};
 // An ability whose activation requirement reads what only the client knows: the time of its last arrow, and which way it holds. The client asks only when it holds [the requirement's text]; the server takes its word.
 constexpr const char* kClientJudged[] = {"Ranger_Dash", "Summoner_PetCommand_Sic"};
 
@@ -3148,6 +3156,13 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
         cast.end_due = std::max(t + table_end, *cast.cost_due + 0.05);
         cast.clears_montage = true;
     }
+    // ... but a held ability with a recorded time of its own (Reflect) ends there whatever the key does: the montage is cleared and its effects go (step_end)
+    for (const FixedHold& fh : kFixedHolds) {
+        if (row.name != fh.ability || cast.own_effects.empty() || cast.end_due) continue;
+        cast.fixed_hold = true;
+        cast.end_due = std::max(t + fh.seconds, *cast.cost_due + 0.05);
+        cast.clears_montage = has_montage;
+    }
     if (!loop) {
         bool direct = false, projectile = false;
         const bool aimed = !cast.target_actors.empty();
@@ -3790,7 +3805,7 @@ void AbilityPipeline::step_own(Cast& cast, double t) {
     ItemScope item_scope(*this, cast.item_stats);
     const AbilityDef& def = *cast.def;
     // A quick tap may be released before this delayed step ever creates a Held entry.
-    if (cast.held_release_due && *cast.held_release_due <= t) return;
+    if (!cast.fixed_hold && cast.held_release_due && *cast.held_release_due <= t) return;
     AbilityChange c;
     for (const EffectDef* e : cast.own_effects) {
         // an effect the character's talents gate (the Salvo's Expeditious) starts only when its requirement holds
@@ -3800,8 +3815,8 @@ void AbilityPipeline::step_own(Cast& cast, double t) {
         apply_effect(c, *e, 1, std::nullopt, t, false, def.row.guid);
     }
     sync_engine_effects();
-    // a held ability (the key stays down: Guard, Reflect) ends with the client's cancel
-    if (def.row.hold_animation) {
+    // a held ability (the key stays down: Guard) ends with the client's cancel; one with a recorded time (Reflect) ends with its cast (end_due)
+    if (def.row.hold_animation && !cast.fixed_hold) {
         held_.erase(std::remove_if(held_.begin(), held_.end(), [&](const Held& h) { return h.ability == def.row.guid; }), held_.end());
         held_.push_back({cast.client_id, def.row.guid, cast.held_release_due});
         if (held_.size() > 16) held_.erase(held_.begin());
@@ -3816,7 +3831,7 @@ void AbilityPipeline::release_held(int32_t client_id, double t) {
         if (h.client_id == client_id && !h.end_due) h.end_due = due;
     }
     for (Cast& cast : casts_) {
-        if (cast.client_id == client_id && cast.def->row.hold_animation && cast.own_due && !cast.held_release_due) {
+        if (cast.client_id == client_id && cast.def->row.hold_animation && !cast.fixed_hold && cast.own_due && !cast.held_release_due) {
             cast.held_release_due = due;
         }
     }

@@ -50,3 +50,31 @@ void test_kill_markers_by_tags() {
     CHECK(quest::compute_locations(old_file, points).empty(), "a query the file does not hold gives none");
 }
 AOC_REGISTER_TEST(test_kill_markers_by_tags);
+
+void test_interact_marker_on_quest_object() {
+    std::printf("an instance the registry holds as a quest object is marked where it stands (The Great Mirage's vessel: its set is placed at the origin)\n");
+    world::ActorRegistry reg;
+    const auto add = [&](uint64_t id, world::ActorKind kind, int64_t instance, double x, double y, double z) {
+        world::WorldActor a;
+        a.id = id;
+        a.actor.guid.ObjectId = id;
+        a.kind = kind;
+        a.x = x;
+        a.y = y;
+        a.z = z;
+        a.npc.instance_guid = instance;
+        a.npc.home_x = x;
+        a.npc.home_y = y;
+        return reg.add(std::move(a));
+    };
+    constexpr int64_t kVessel = 6064634737651941398ll, kWolf = 9800100;
+    CHECK(add(9800102, world::ActorKind::Prop, kVessel, -708969, 611443, 23834) && add(9800104, world::ActorKind::Npc, kWolf, 1000, 2000, 30), "(the vessel and a wolf)");
+    quest::RegistryPoints points(reg, nullptr);
+    std::vector<quest::MarkerPoint> at;
+    points.npc_places(kVessel, at);
+    CHECK(at.size() == 1 && at[0].x == -708969 && at[0].y == 611443 && at[0].z == 23834, "the quest object has its place (no population data is asked)");
+    at.clear();
+    points.npc_places(kWolf, at);
+    CHECK(at.size() == 1 && at[0].x == 1000, "a creature still has its own");
+}
+AOC_REGISTER_TEST(test_interact_marker_on_quest_object);

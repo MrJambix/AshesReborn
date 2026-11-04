@@ -673,6 +673,7 @@ private:
         bootstrap::ActiveAbilityItem          item;
         std::vector<const abilities::EffectDef*> own_effects;   // the infinite effects the ability puts on its caster itself (no hit applies them)
         std::optional<double>                 held_release_due;   // a release heard before the held effect's delayed start
+        bool                                  fixed_hold = false;   // a held ability whose effects last a recorded time (kFixedHolds): its end_due ends them, the key's release does not
         bool                                  toggle_off = false;   // the ability is a loop that is on: this trigger ends it
         int64_t                               chain_owner = 0;      // a chain (Cleric_Mend's five projectiles that fire one hit): the one projectile this cast fires
         int64_t                               instance = -1;

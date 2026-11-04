@@ -1,5 +1,11 @@
 # Patch notes
 
+## 2026-11-03: Tank Reflect and The Great Mirage
+
+### Fixed
+- Tank: Reflect's buff no longer stays on your bar after use. It lasts its 3 seconds, then drops off by itself, even if you tap the key instead of holding it.
+- "The Great Mirage": the Vaelune vessel on Eastwatch Rise now shows on your map once you reach the rise, so you can find it and use it.
+
 ## 2026-11-03: One warehouse for all your characters
 
 ### New

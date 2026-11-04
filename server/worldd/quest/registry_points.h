@@ -5,7 +5,7 @@
 //  quest/registry_points.h  (quests milestone, "map markers")
 //
 //  The places of the world's people and creatures, for the map markers of an objective (quest/markers.h):
-//    * the people (an NPC a Dialogue objective names, an instance an objective tracks) stand where the actor registry has them: the spot each spawned at, which is its place in the
+//    * the people (an NPC a Dialogue objective names, an instance an objective tracks) and the quest objects stand where the actor registry has them: the spot each spawned at, which is its place in the
 //      data.  An instance the registry does not have (a prop this server does not make, a person outside its area) is marked where the population data places it;
 //    * the creatures of a Kill objective are the spawn points of the population the objective names, read from the population data (a set's placements, each with the offset of
 //      each member, and the placements of the sets that hold a named instance): the points do not depend on which of them are alive or filtered out of this server's area.
@@ -84,7 +84,8 @@ private:
         if (live_built_) return;
         live_built_ = true;
         registry_.for_each([&](const world::WorldActor& a) {
-            if (a.kind != world::ActorKind::Npc || a.npc.instance_guid == 0) return;
+            // a person, and a quest object an Interact objective names (The Great Mirage's vessel, whose set is placed at the origin: the data's places give none)
+            if ((a.kind != world::ActorKind::Npc && a.kind != world::ActorKind::Prop) || a.npc.instance_guid == 0) return;
             live_[a.npc.instance_guid].push_back({a.npc.home_x, a.npc.home_y, a.z});   // (the place it spawned at: a walker is marked where it lives)
         });
         for (auto& [instance, places] : live_) sort_from(places, 0);
