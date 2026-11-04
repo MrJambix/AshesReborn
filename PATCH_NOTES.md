@@ -1,5 +1,13 @@
 # Patch notes
 
+## 2026-11-03: One warehouse for all your characters
+
+### New
+- Your warehouse is now shared by every character on your account. Put something in with one character and take it out with another.
+- The item storage is the same in every town. Material and cargo storage still belong to their town: your other characters see what you left there when they visit that town.
+- Storage you bought with any character now counts for all of them.
+- Your characters' old warehouses are moved in by themselves when you log in. Anything that doesn't fit waits, and you'll see a message when you open the warehouse; make room and open it again to bring the rest in.
+
 ## 2026-11-03: Faster loading into the world
 
 ### Changed
