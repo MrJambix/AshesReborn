@@ -114,6 +114,7 @@ public:
     std::unique_ptr<stats::CharacterStats> cs;
     npc::ai::NpcAi                         ai;
     bool                                   hostile = false;
+    bool                                   huntable = false;   // a huntable creature is passive: it never attacks (no proximity aggro, no fighting back)
     bool                                   dead = false;
     bool                                   flags_in_combat = false;
     uint64_t                               flags_target = 0;
@@ -238,12 +239,14 @@ CombatWorld::Npc* CombatWorld::make_combatant(const world::WorldActor& a) {
     }
     n->aligns.assign(bp.alignments.begin(), bp.alignments.end());
     n->hostile = data_.relation(n->aligns, CombatData::player_alignments()) == Relation::Hostile;
+    n->huntable = huntable_ && huntable_(a.npc);   // a huntable creature is passive: it never starts or returns a fight
     n->kit = kit_of(leaf);
     npc::ai::Params p;
     p.aggro_radius_cm = a.npc.aggro_radius_cm > 0 ? a.npc.aggro_radius_cm : cfg_.default_aggro_cm;
     // who may start a fight by noticing a player: a creature hostile to players whose data does not switch its aggro off (retest 3: a Timid Grem, whose instance overrides the radius with 0, and a
     // huntable, whose alignment is Friendly, never attack first)
     p.proximity_aggro = notices_players(n->hostile, a.npc);
+    if (n->huntable) p.proximity_aggro = false;   // (a huntable never attacks first, whatever its alignment says)
     p.leash_radius_cm = a.npc.leash_radius_cm > 0 ? a.npc.leash_radius_cm : std::max(cfg_.default_leash_cm, p.aggro_radius_cm * 3.0);
     n->link_radius_cm = cfg_.default_link_cm;
     if (const npc::SensesRow* row = senses_ ? senses_->find(a.npc.archetype) : nullptr) {
@@ -1618,6 +1621,7 @@ Delivery CombatWorld::apply_hit_to_npc(uint64_t npc_actor, uint64_t attacker, co
         const Fighter* f = by ? &by->fighter() : fighter_of(attacker);
         if (f && data_.relation(f->alignments(), n->aligns) == Relation::Friendly) provokes = false;
     }
+    if (n->huntable) provokes = false;   // (a huntable creature never fights back: it is hunted, not fought)
     if (provokes) n->attackers.insert(attacker);
     ++stats_.player_hits;
     const double health_before = n->health();

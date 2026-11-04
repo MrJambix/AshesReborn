@@ -17,10 +17,12 @@
 //      pipeline effect is taken off when its reaction reached it.
 //
 //  What this file serves: the events Hit (OwnerHits) and Ability (Consume), the instigators Owner and Instigator (who put the effect on: the holder itself, unless a
-//  creature's hit left it), and the targets Owner and Instigator (the holder), Targets (the hit's) and HitInstigator (who hit the holder).
-//  The hit taken (Hit, OwnerIsHit) is raised for the Cleric's reactions (Defiant Light) and the Tank's Vengeance (its cooldown drops 0.5 s for each hit that hurts, 1 s for a block:
-//  instigator Instigator, a self hit and a ModifyCooldownsIds row, all served) only: the other classes' react with Guard, Dodge, Camouflage, Stealth, Thorns and Reflect, none of them
-//  checked yet, Guard's and Dodge's stamina rules are A7's, and Reflect's HitSource instigator is not served.
+//  creature's hit left it), and the targets Owner and Instigator (the holder), HitSource (the source of the hit that hit the holder: the creature that made it), Targets
+//  (the hit's) and HitInstigator (who hit the holder).
+//  The hit taken (Hit, OwnerIsHit) is raised for the Cleric's reactions (Defiant Light), the Tank's Vengeance (its cooldown drops 0.5 s for each hit that hurts, 1 s for a
+//  block: instigator Instigator, a self hit and a ModifyCooldownsIds row, all served), the Tank's Reflect (Tank_Reflect_Trigger and its Refreshing, on the hit's source) and
+//  the Ranger's Thorns (on the hit's instigator).  Guard, Dodge, Camouflage, Stealth and the other classes' hit-taken reactions (the NPC shields, the Proc and Summoner
+//  ones) are still left alone: Guard's and Dodge's stamina rules are A7's, and the rest need bindings, instigators or targets this file does not serve yet.
 //  The rest of the bindings, instigators and targets of the 335 records are left alone and said once in the log when a reaction would need them.
 // ============================================================================
 #include "session/ability_pipeline.h"
@@ -45,6 +47,7 @@ namespace {
 constexpr int kTargetOwner = 1;
 constexpr int kTargetTargets = 8;
 constexpr int kTargetInstigator = 2;
+constexpr int kTargetHitSource = 4;
 constexpr int kTargetHitInstigator = 16;
 constexpr int kTargetInstigatorsPet = 8192;
 
@@ -61,6 +64,12 @@ int binding_of(const content::ReactionRow& r, int kind) {
         case kKindAbility: return r.bind_ability;
         default: return 0;
     }
+}
+
+/// The hit-taken (OwnerIsHit) reactions whose shape this file serves: the Cleric's Defiant Light, the Tank's Vengeance and Reflect, and the Ranger's Thorns.
+/// The rest (Guard, Dodge, Camouflage, Stealth, the NPC shields and the Proc and Summoner ones) wait on rules this file does not serve yet (see the head).
+bool hit_taken_reaction_served(const std::string& name) {
+    return name.rfind("Cleric_", 0) == 0 || name.rfind("Tank_Vengeance_", 0) == 0 || name.rfind("Tank_Reflect_", 0) == 0 || name.rfind("Ranger_Thorns", 0) == 0;
 }
 
 }  // namespace
@@ -151,7 +160,7 @@ void AbilityPipeline::run_reactions(AbilityChange& c, int kind, int bit, const R
         for (const int64_t reaction_guid : carrier->reactions) {
             const ReactionDef* r = catalog_->reaction(reaction_guid);
             if (!r || (binding_of(r->row, kind) & bit) == 0) continue;
-            if (kind == kKindHit && bit == kBitOwnerIsHit && r->row.name.rfind("Cleric_", 0) != 0 && r->row.name.rfind("Tank_Vengeance_", 0) != 0) continue;   // (see the file's head)
+            if (kind == kKindHit && bit == kBitOwnerIsHit && !hit_taken_reaction_served(r->row.name)) continue;   // (see the file's head)
             const int limit = r->row.global_limit > 0 ? r->row.global_limit : r->row.instigator_limit;
             if (limit > 0 && reaction_procs_[reaction_guid] >= limit) continue;
             if (r->row.trigger_expr != 0) {
@@ -274,7 +283,9 @@ void AbilityPipeline::fire_reaction(AbilityChange& c, const ReactionDef& r, int6
         if (reaction_noted_.insert(row.guid).second) spdlog::info("[abilities] the reaction {} is cast by {}, which is not served yet: it does not fire", row.name, row.instigator);
         return;
     }
-    const int served = kTargetOwner | kTargetInstigator | kTargetTargets | kTargetHitInstigator;
+    int served = kTargetOwner | kTargetInstigator | kTargetTargets | kTargetHitInstigator;
+    // a hit-taken event also serves the hit's source (the creature that hit the holder); an owner's own hit has no such actor, so its HitSource stays unserved
+    if (rc.hit && rc.hit->attacker != 0) served |= kTargetHitSource;
     if ((row.targets_mask & ~served) != 0 && reaction_noted_.insert(-row.guid).second) {
         spdlog::info("[abilities] the reaction {} lands on targets (mask {}) that are not all served yet: the holder and the hit's targets get its hits", row.name, row.targets_mask);
     }
@@ -329,6 +340,10 @@ void AbilityPipeline::fire_reaction(AbilityChange& c, const ReactionDef& r, int6
             ++applied;
         }
         if ((row.targets_mask & kTargetHitInstigator) != 0 && rc.hit && rc.hit->attacker != 0) {
+            apply_hit_on_targets(c, *hit, {rc.hit->attacker}, t, src, nullptr);
+            ++applied;
+        }
+        if ((row.targets_mask & kTargetHitSource) != 0 && rc.hit && rc.hit->attacker != 0) {
             apply_hit_on_targets(c, *hit, {rc.hit->attacker}, t, src, nullptr);
             ++applied;
         }
