@@ -1,5 +1,11 @@
 # Patch notes
 
+## 2026-11-03: Commission boards
+
+### New
+- Commission boards in the towns now work. Use one to see its commissions (eight at a time, refreshed every 30 to 60 minutes, the same for everyone), take one, and it goes into your journal as a quest.
+- Finish a commission and claim it to get its reward: experience, Glint (the node currency the town crate certificates cost) and a commission lootbox.
+
 ## 2026-11-03: Tank Reflect and The Great Mirage
 
 ### Fixed
