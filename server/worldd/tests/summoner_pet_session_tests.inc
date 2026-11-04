@@ -66,6 +66,15 @@ static void test_summoner_pet_session() {
             }
             CHECK(on_bar > 0 && the_players == on_bar, "every slot of the pet bar names the Player as its instigator");
         }
+        {   // a swap replaces the bar's first three slots: they hold THIS pet's abilities, not the previous pet's
+            const auto& bar = r.h.s->action_bar_now();
+            int on_this_pet = 0;
+            for (int i = 0; i < 3; ++i) {
+                const auto* s = bar.at(repl::ActionbarBank::Pet, i);
+                if (s && pets::pet_of_ability(s->ability_id) == d.effect) ++on_this_pet;
+            }
+            CHECK(on_this_pet == 3, "the pet bar's first three slots hold this pet's abilities after the swap");
+        }
         {   // what the client needs to find a relationship between the owner and the pet
             const repl::AlignmentContainer* inherited = nullptr;
             const repl::AlignmentContainer* own = nullptr;
