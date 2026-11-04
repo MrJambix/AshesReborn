@@ -185,10 +185,10 @@ bool PlayerSession::deliver_quest_rewards(Connection& conn, const std::vector<in
     h.durability_loss = 0;
     h.items = rolled.loot;
     h.items.insert(h.items.end(), rolled.direct.begin(), rolled.direct.end());
-    // a quest-bound crate is carried, not stored (ONE call places it)
+    // a quest-bound crate is carried, not stored (ONE call places it): a crate is an item whose record lists the cargo slot alone, which carry_quest_crate checks
     if (const quest::QuestBook* qb = world_->quests()) {
         for (auto it = h.items.begin(); it != h.items.end();) {
-            if (qb->crate_of(it->item) != 0 && qb->item_links(it->item) && carry_quest_crate(conn, *it, now)) it = h.items.erase(it);
+            if (qb->item_links(it->item) && carry_quest_crate(conn, *it, now)) it = h.items.erase(it);
             else ++it;
         }
     }
