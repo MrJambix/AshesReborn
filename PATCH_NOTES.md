@@ -1,5 +1,17 @@
 # Patch notes
 
+## 2026-11-03: The forging furnace is back, and more
+
+### Fixed
+- The forging furnace of "Echoes of the Unbroken" is back, and its "stoke the fire" step can be done. Other quest props of the same kind (some quest wagons, tents and boats, reward caches) are back as well.
+- "Heartwood Beat": the Ancient Splinters near the Ancient Tree now appear, and gathering one counts toward the quest.
+- Creatures that ran home after a chase and could not get there (from water, from a ledge) no longer heal to full and ignore you over and over: they are put back home.
+- Creatures that can't find a path to you (you on a wall, a ledge or a rock) now come as close as they can, instead of standing where they were.
+- The character select screen shows your characters in the armor they wear.
+
+### New
+- More hunting creatures: where a creature can be a hunting kind or a plain one, it is now more often the hunting kind (deer, otters, swiftclaws and more).
+
 ## 2026-11-03: Game master tools: the game's own map
 
 ### New
