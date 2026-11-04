@@ -80,6 +80,7 @@ void NpcAi::reset_now() {
     threat_.clear();
     target_ = 0;
     pending_fight_ = false;
+    reset_began_ = -1;
 }
 
 Orders NpcAi::think(const Sense& s) {
@@ -110,10 +111,13 @@ Orders NpcAi::think(const Sense& s) {
         o.move = Orders::Move::Home;
         o.dest = s.home;
         o.speed_cm_s = params_.run_home_speed_cm_s;
-        if (home_dist <= params_.reset_arrive_cm) {
+        if (reset_began_ < 0) reset_began_ = s.now;
+        const bool home = home_dist <= params_.reset_arrive_cm;
+        if (home || s.now - reset_began_ >= params_.reset_timeout) {
             state_ = State::Idle;
             o.move = Orders::Move::Release;
             o.reset_done = true;
+            o.reset_timed_out = !home;
         }
         return o;
     }
@@ -146,6 +150,7 @@ Orders NpcAi::think(const Sense& s) {
         threat_.clear();
         target_ = 0;
         state_ = State::Reset;
+        reset_began_ = s.now;
         o.began_reset = true;
         o.reset_reason = reason;
         o.move = Orders::Move::Home;

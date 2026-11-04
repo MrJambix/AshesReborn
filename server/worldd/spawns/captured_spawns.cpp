@@ -479,14 +479,20 @@ std::optional<world::WorldActor> instantiate(const OpenTemplate& open, const Min
         w.y = p.y;
         w.z = p.z;
         w.yaw_degrees = p.yaw_degrees;
+        // (a plain actor's open, generic_npc.h plain_actor_open, has its own class's schema or AActor's: none of the state-machine actor's properties below, and its interactable component is a
+        // dynamic one.  Its own guid, where its class replicates one, is made from the seed as the state-machine actor's: a reward cache's InteractableGuid, a commission board's BoardGuid.
+        // A board's CommissionBoardId is not sent: its Blueprint gives its own, and its wire form is not checked against the client)
+        const bool state_machine = actor.schema->command("InteractableBaseGuid.A") != nullptr;
         uint64_t seed = p.seed ? p.seed : w.id;
-        const char* const word_paths[4] = {"InteractableBaseGuid.A", "InteractableBaseGuid.B", "InteractableBaseGuid.C", "InteractableBaseGuid.D"};
-        for (const char* path : word_paths) {
-            if (!set_path(actor, path, repl::Value::i64(static_cast<int32_t>(splitmix(seed) >> 16)), e)) { error = e; return std::nullopt; }
+        for (const char* guid : {"InteractableBaseGuid", "InteractableGuid", "BoardGuid"}) {
+            if (!actor.schema->command(std::string(guid) + ".A")) continue;
+            for (const char* word : {".A", ".B", ".C", ".D"}) {
+                if (!set_path(actor, (std::string(guid) + word).c_str(), repl::Value::i64(static_cast<int32_t>(splitmix(seed) >> 16)), e)) { error = e; return std::nullopt; }
+            }
         }
-        if (!set_path(actor, "InteractableActorDefId.Guid", repl::Value::i64(p.actor_def), e)) { error = e; return std::nullopt; }
+        if (state_machine && !set_path(actor, "InteractableActorDefId.Guid", repl::Value::i64(p.actor_def), e)) { error = e; return std::nullopt; }
         // the actor names its own interactable component (the recorded one's reference means nothing here) and none of the components the template does not carry
-        if (repl::Subobject* ic = sub("UInteractableComponent")) {
+        if (repl::Subobject* ic = sub("UInteractableComponent"); ic && state_machine) {
             if (!set_path(actor, "InteractableComponent", repl::Value(ic->guid), e)) { error = e; return std::nullopt; }
         }
         for (const char* field : {"SynchronizedMontageComponent", "StatsComponent", "Instigators"}) {

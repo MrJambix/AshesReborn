@@ -307,11 +307,22 @@ bool PlayerWorld::load_area(const spawns::AreaConfig& area, std::string& error) 
         if (auto data = content_->object_data(oe)) {
             objects_.emplace(std::move(*data));
             // the interactable definitions that are quest objects: the ones an Interact objective names, and the ones whose use gives an item that a Collect or hand-in objective asks for.  Only the
-            // objectives of quests that can be played count: a disabled quest, a Destiny quest and a "zLegacy" quest are left out (the starter gear's sparkles belong to such quests alone)
+            // objectives of quests that can be played count: a disabled quest, a Destiny quest and a "zLegacy" quest that nothing offers are left out (the starter gear's sparkles belong to
+            // such quests alone).  A "zLegacy" quest that a person, a dialogue or a zone offers is played: Caroline Dey's Heartwood Beat (zLegacy_SQ_LionholdNorth_0002_TreeFragments)
+            // asks for the Ancient Splinters of 15 branches near the Ancient Tree
             std::set<int64_t> props, asked;
             if (quests_) {
-                for (const auto& [guid, q] : quests_->data().quests) {
-                    if (q.disabled || q.flavor == "Destiny" || q.name.rfind("zLegacy", 0) == 0) continue;
+                const content::QuestData& qd = quests_->data();
+                std::set<int64_t> offered;
+                for (const auto* offers : {&qd.instance_offers, &qd.asset_offers}) {
+                    for (const auto& [owner, rows] : *offers) {
+                        for (const content::QuestOfferRow& r : rows) offered.insert(r.quest);
+                    }
+                }
+                for (const auto& [node, row] : qd.accepts) offered.insert(row.quest);
+                for (const auto& [zoi, list] : qd.zoi_quests) offered.insert(list.begin(), list.end());
+                for (const auto& [guid, q] : qd.quests) {
+                    if (q.disabled || q.flavor == "Destiny" || (q.name.rfind("zLegacy", 0) == 0 && offered.count(guid) == 0)) continue;
                     for (const content::QuestObjectiveRow& o : q.objectives) {
                         if (o.type == "Interact") props.insert(o.components.begin(), o.components.end());
                         if (o.type == "Collect" || o.type == "TurnIn") asked.insert(o.items.begin(), o.items.end());
@@ -434,7 +445,8 @@ bool PlayerWorld::load_area(const spawns::AreaConfig& area, std::string& error) 
     spdlog::info("[area] {}", area_report_->describe());
     prop_slots_.assign(area_report_->props.size(), PropSlot{});
     for (size_t i = 0; i < prop_slots_.size(); ++i) prop_slots_[i].actor = area_report_->props[i].actor;
-    if (!area_report_->props.empty()) spdlog::info("[area] quest objects: {} made (from {} recorded template(s))", area_report_->props.size(), generic_ ? generic_->props_made() : 0);
+    if (!area_report_->props.empty()) spdlog::info("[area] quest objects: {} made (from {} recorded template(s), {} of them opened as plain actors)", area_report_->props.size(), generic_ ? generic_->props_made() : 0,
+                                                 generic_ ? generic_->plain_props_made() : 0);
     if (looks_) {
         const auto& lc = looks_->counts();
         spdlog::info("[looks] the area's people: {} dressed ({} customizations from the recorded pool, {} plain), {} named by the data, {} by their Blueprint, {} with no name, {} left as recorded", lc.dressed, lc.from_pool,
@@ -564,8 +576,9 @@ void PlayerWorld::log_huntables() const {
     }
     std::vector<std::pair<std::string, size_t>> counts;
     for (const auto& [def, n] : by_def) counts.emplace_back(names.count(def) ? names[def] : std::to_string(def), n);
-    spdlog::info("[hunt] huntable mobs in the area: {} of {} NPCs ({} kinds, eight blocks with the hunting interactable{}); a Bow in Equipment slot 38 hunts a corpse for a carcass or a trainable and Hunter XP",
-                 total, registry_.count(world::ActorKind::Npc), by_def.size(), generic_ && !generic_->has_hunting_block() ? "; NOT: the Raven's captured open is missing, so they are plain creatures" : "");
+    spdlog::info("[hunt] huntable mobs in the area: {} of {} NPCs ({} kinds, eight blocks with the hunting interactable{}, drawn x{:g} at a shared point: --hunt-weight); a Bow in Equipment slot 38 hunts a corpse for a carcass or a trainable and Hunter XP",
+                 total, registry_.count(world::ActorKind::Npc), by_def.size(), generic_ && !generic_->has_hunting_block() ? "; NOT: the Raven's captured open is missing, so they are plain creatures" : "",
+                 generic_config_.hunt_weight);
     log_counts("[hunt] by kind: ", counts);
 }
 

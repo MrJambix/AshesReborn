@@ -109,6 +109,9 @@ struct GenericConfig {
     std::map<int64_t, std::string> hunting_names;
     /// false (worldd --no-gathering): the world does not look the defs up and no creature is huntable.
     bool                     hunting = true;
+    /// What a huntable asset's weight in a point's draw is multiplied by (worldd --hunt-weight; ours, not the data's): above 1, a point that may be a Hunting_Deer or a Deer is the
+    /// huntable more often.  1: the data's weights.
+    double                   hunt_weight = 1.0;
     /// Quests part 3, slice 1: the interactable definitions of the quest objects (content::ObjectData).  A Blueprint that is no pawn and whose instance names one of them is a quest object
     /// (a body, a crate, a root, a building site): it is made from a recorded one.  Empty: no quest object is made.
     std::set<int64_t>        prop_components;
@@ -141,6 +144,24 @@ const char* verdict_name(Verdict v);
 /// The native class of the recorded quest object, which every quest object is made from (GenericConfig::prop_classes).
 inline constexpr const char* kQuestObjectClass = "InteractableStateMachineBase";
 
+/// Whether a native class is the recorded quest object's or derives from it (TreasureMoundInteractableBase, the usmap): its open is the recorded one's as it is, its own properties left out.
+bool state_machine_class(const std::string& native);
+
+/// Whether a quest object of this native class is opened as a plain actor (plain_actor_open): an AActor subclass that is no pawn and not of the recorded class.  The furnace of
+/// JUN_HAR_ARCQ_1204, wagons, tents and boats (Actor), the reward caches (TrackedInteractableActor), the commission boards (CommissionBulletinBoard), the Harbinger camps
+/// (LevelSpawnActor) ... (the usmap: none of them has an interactable component of its own).
+bool plain_actor_class(const std::string& native);
+
+/// The schema a plain actor's open is written with: the class's own where it replicates properties of its own (read from the client's FClassParams: TrackedInteractableActor's
+/// InteractableGuid, CommissionBulletinBoard's BoardGuid and CommissionBoardId), else AActor's (Actor, AoCActor, StaticMeshActor, LevelSpawnActor and ContentSocket replicate none).
+const schema::ClassSchema* plain_actor_schema(const std::string& native);
+
+/// Turns the recorded quest object's open into a plain actor's: the actor block keeps the properties every actor has (AActor's, handles 1 to 18, which come first in any actor class's
+/// RepLayout) under `actor_schema` (plain_actor_schema), and the interactable component is sent as a dynamic subobject of the class `interactable_class` (a recorded one's), as the retail
+/// server adds one to a spawned actor whose population instance names an interaction (29 retail opens: townsfolk, hunting creatures, service buildings).  False when the open has no actor
+/// block or the schema is no actor's.
+bool plain_actor_open(OpenTemplate& t, const repl::ExportChain& interactable_class, const schema::ClassSchema* actor_schema);
+
 /// Reads prop_classes.tsv (tools/mapc: mapc prop-classes; the header "archetype\tnative\tparents", then one line per Blueprint) into `out`: archetype path to native class.  False with
 /// `error` when the file cannot be read, has another header or holds no line.
 bool load_prop_classes(const std::string& path, std::map<std::string, std::string>& out, std::string& error);
@@ -171,6 +192,8 @@ public:
     /// definitions are put in when it is made (spawns::instantiate).  nullptr with `why` when the captures hold none.  The pointer is valid as long as this object.
     const OpenTemplate* prop_template(const content::NpcAssetRow& asset, Verdict* why = nullptr) const;
     size_t props_made() const { return props_made_; }
+    /// ... of which opened as plain actors (plain_actor_open)
+    size_t plain_props_made() const { return plain_props_made_; }
 
     /// A captured open for an NPC whose data does not make it the crate seller the open was recorded from: `open` itself when its interactable offers no crate sale, when the data names its
     /// component (the instance's InteractComponentDefId, else the asset's), or when the captures hold no plain conversation; else a copy with the interactable of a plain conversation.
@@ -217,6 +240,7 @@ private:
     mutable size_t           conversations_made_ = 0;
     mutable size_t           stations_made_ = 0;
     mutable size_t           props_made_ = 0;
+    mutable size_t           plain_props_made_ = 0;
     mutable std::map<std::string, OpenTemplate> made_;     // by archetype path (stable addresses)
     mutable std::set<uint64_t>                  minted_;   // the static NetGUIDs handed out
     mutable std::map<std::string, repl::ExportChain> exports_;   // the archetype exports, by archetype path (stable addresses)

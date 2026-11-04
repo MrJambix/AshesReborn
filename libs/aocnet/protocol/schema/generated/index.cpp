@@ -20,6 +20,7 @@
 #include "protocol/schema/generated/AActor.h"
 #include "protocol/schema/generated/AAoCAbilityLingeringEffect.h"
 #include "protocol/schema/generated/AAoCActor.h"
+#include "protocol/schema/generated/ACommissionBulletinBoard.h"
 #include "protocol/schema/generated/AAoCAttunablePlayerSpawner.h"
 #include "protocol/schema/generated/AAoCGameStateBase.h"
 #include "protocol/schema/generated/AAoCPlayerController.h"
@@ -35,6 +36,7 @@
 #include "protocol/schema/generated/AGatherableActor.h"
 #include "protocol/schema/generated/AInfo.h"
 #include "protocol/schema/generated/AInteractableStateMachineBase.h"
+#include "protocol/schema/generated/ATrackedInteractableActor.h"
 #include "protocol/schema/generated/AIntrepidStateIFA.h"
 #include "protocol/schema/generated/ALootPile.h"
 #include "protocol/schema/generated/ANPCCharacter.h"
@@ -104,6 +106,7 @@ constexpr Entry kByName[] = {
     {"AAutonomousPlayerCharacter", &kAAutonomousPlayerCharacter},
     {"ABaseCharacter", &kABaseCharacter},
     {"ACharacter", &kACharacter},
+    {"ACommissionBulletinBoard", &kACommissionBulletinBoard},
     {"AController", &kAController},
     {"ACraftingStationBase", &kACraftingStationBase},
     {"AFastCraftingActor", &kAFastCraftingActor},
@@ -121,6 +124,7 @@ constexpr Entry kByName[] = {
     {"APlayerLootPile", &kAPlayerLootPile},
     {"APlayerState", &kAPlayerState},
     {"AProcessingStationActor", &kAProcessingStationActor},
+    {"ATrackedInteractableActor", &kATrackedInteractableActor},
     {"AoCGameStateBP_C", &kAoCGameStateBP_C},
     {"AoCPlayerControllerBP_C", &kAoCPlayerControllerBP_C},
     {"AoCPlayerStateBP_C", &kAoCPlayerStateBP_C},
@@ -200,6 +204,7 @@ constexpr const ClassSchema* kAll[] = {
     &kAAutonomousPlayerCharacter,
     &kABaseCharacter,
     &kACharacter,
+    &kACommissionBulletinBoard,
     &kAController,
     &kACraftingStationBase,
     &kAFastCraftingActor,
@@ -217,6 +222,7 @@ constexpr const ClassSchema* kAll[] = {
     &kAPlayerLootPile,
     &kAPlayerState,
     &kAProcessingStationActor,
+    &kATrackedInteractableActor,
     &kAoCGameStateBP_C,
     &kAoCPlayerControllerBP_C,
     &kAoCPlayerStateBP_C,

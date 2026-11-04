@@ -9,6 +9,7 @@
 #include <sqlite3.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
@@ -652,6 +653,28 @@ bool AbilityContent::effect_fragilities(int64_t effect, std::vector<int64_t>& ou
 
 bool AbilityContent::mods(const std::string& kind, int64_t owner, std::vector<ModRow>& out, std::string& error) const {
     out.clear();
+    if (!mods_of_data(kind, owner, out, error)) return false;
+    // ours, not the data's: Grit (Tank_Grit) gives MagicalMitigation 0.1 without Supernatural Grit too, so the talent's own 0.1 makes it 0.2.  A second mod on the stat, the
+    // constant 0.1 of the data's expressions; the pipeline adds the mods of one stat together
+    constexpr int64_t kTankGritEffect = 6064628594091360257;
+    if (kind == "effect" && owner == kTankGritEffect) {
+        const auto it = std::find_if(out.begin(), out.end(), [](const ModRow& m) { return m.stat_name == "MagicalMitigation"; });
+        int64_t tenth = 0;
+        if (it != out.end() && run(db_, "SELECT id FROM ab_expr WHERE text = '0.1' AND error = '' ORDER BY id LIMIT 1", [](sqlite3_stmt*) {}, [&](sqlite3_stmt* s) {
+                tenth = col_i64(s, 0);
+                return true;
+            }, error) && tenth != 0) {
+            ModRow always = *it;
+            always.ord = static_cast<int>(out.size());
+            always.value_expr = tenth;
+            out.push_back(std::move(always));
+        }
+        error.clear();
+    }
+    return true;
+}
+
+bool AbilityContent::mods_of_data(const std::string& kind, int64_t owner, std::vector<ModRow>& out, std::string& error) const {
     return run(db_, kModsSql, [&](sqlite3_stmt* s) {
         sqlite3_bind_text(s, 1, kind.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(s, 2, owner);

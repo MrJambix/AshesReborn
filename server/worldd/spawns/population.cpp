@@ -219,7 +219,12 @@ bool spawn_point(const content::PopulationData& data, const TemplateSource& temp
             bool is_generic = false;
             Verdict why = Verdict::Generic;
             const OpenTemplate* open = templates.find(a->second, &is_generic, &why, &inst);
-            all.push_back({&a->second, weight > 0 ? weight : 1.0, open, is_generic, why, Why::Spawns, set_guid});
+            double w = weight > 0 ? weight : 1.0;
+            if (templates.generic) {   // a huntable is drawn more often (GenericConfig::hunt_weight)
+                const GenericConfig& g = templates.generic->config();
+                if (g.hunting && g.hunt_weight > 0 && g.hunting_defs.count(a->second.interaction_def) != 0) w *= g.hunt_weight;
+            }
+            all.push_back({&a->second, w, open, is_generic, why, Why::Spawns, set_guid});
             if (open) shown.push_back(all.back());
         }
     }

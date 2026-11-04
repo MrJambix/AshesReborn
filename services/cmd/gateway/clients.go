@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"google.golang.org/grpc"
@@ -49,7 +50,27 @@ func (c characters) List(ctx context.Context, accountID int64) ([]*characterv1.C
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	r, err := c.c.ListCharacters(ctx, &characterv1.ListCharactersRequest{AccountId: accountID})
-	return r.GetCharacters(), err
+	if err != nil {
+		return nil, err
+	}
+	chars := r.GetCharacters()
+	// The list holds no items: character select dresses each character in
+	// what it wears (aocchar.Record's field 101), so each one's worn items
+	// come from its own GetCharacter, the call worldd makes at login. A
+	// failure leaves that character undressed rather than failing the list.
+	for _, ch := range chars {
+		g, err := c.c.GetCharacter(ctx, &characterv1.GetCharacterRequest{Id: ch.GetId(), IncludeItems: true})
+		if err != nil {
+			slog.Warn("character select: the worn items are not read", "character", ch.GetId(), "err", err)
+			continue
+		}
+		for _, it := range g.GetCharacter().GetItems() {
+			if it.GetContainer() == characterv1.ItemContainer_ITEM_CONTAINER_EQUIPMENT {
+				ch.Items = append(ch.Items, it)
+			}
+		}
+	}
+	return chars, nil
 }
 
 func (c characters) Get(ctx context.Context, id string) (*characterv1.Character, error) {

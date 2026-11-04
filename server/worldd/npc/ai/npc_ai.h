@@ -60,6 +60,9 @@ struct Params {
     double repath_interval = 0.5;         // seconds between two orders to walk to a moving target
     double repath_distance_cm = 150.0;    // ... unless the target moved less than this
     double reset_arrive_cm = 150.0;       // within this of home it is home
+    /// seconds a reset may take: a creature that is not home by then (a walk that ended short of a home in water or off the navmesh) is put home, so it does not leash, heal and
+    /// ignore its attackers over and over (modelled)
+    double reset_timeout = 20.0;
     double proximity_threat = 1.0;        // what coming into the aggro radius adds
     double chase_speed_cm_s = 600.0;
     double run_home_speed_cm_s = 900.0;
@@ -101,6 +104,7 @@ struct Orders {
     bool         began_reset = false; // the leash broke or the table emptied
     const char*  reset_reason = "";   // why (for the log), set with began_reset
     bool         reset_done = false;  // it reached home
+    bool         reset_timed_out = false;   // ... or its reset_timeout ran out short of it: the caller puts it home
 };
 
 class NpcAi {
@@ -142,6 +146,7 @@ private:
     combat::Vec3 last_order_dest_;
     combat::Vec3 anchor_;               // where the fight began
     bool        pending_fight_ = false;
+    double      reset_began_ = -1;      // when its reset began (-1: at its next thought)
 };
 
 }  // namespace aoc::worldd::npc::ai

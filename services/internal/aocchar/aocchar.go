@@ -21,6 +21,8 @@
 package aocchar
 
 import (
+	"math"
+
 	"google.golang.org/protobuf/encoding/protowire"
 
 	characterv1 "aocrop/services/gen/aoc/character/v1"
@@ -36,8 +38,13 @@ func Record(c *characterv1.Character, worldID string) []byte {
 	info = appendVarint(info, 12, 30)
 	info = appendVarint(info, 14, 2)
 
-	var equipment []byte // field 101: equipped items, none yet
+	// field 101: the inventory character select dresses the character in,
+	// Inventory { 1 character_id, 2 equipment ItemList }, the worn items of
+	// c.Items (the client's descriptors; it reads them into
+	// FCharacterEquipmentData, one FStorageContainerItemData a slot)
+	var equipment []byte
 	equipment = appendBytes(equipment, 1, []byte(c.GetId()))
+	equipment = appendBytes(equipment, 2, wornItems(c))
 
 	var b []byte
 	b = appendVarint(b, 2, level)
@@ -73,6 +80,33 @@ func information(c *characterv1.Character) []byte {
 	b = appendVarint(b, 5, uint64(max(c.GetRaceId(), 0)))
 	b = appendVarint(b, 6, uint64(max(c.GetClassId(), 0)))
 	return appendVarint(b, 9, 1)
+}
+
+// wornItems encodes the Equipment items of c as an aoc_items.ItemList:
+// repeated ItemData items = 1, each with slot_index 1 (the client's
+// EEquipSlot, as the Equipment container stores it), item_record 2,
+// quantity 4, quality 5, durability 9 and item_guid 10. Zero values are left
+// out, as proto3 does, so the head (slot 0) carries no slot.
+func wornItems(c *characterv1.Character) []byte {
+	var list []byte
+	for _, it := range c.GetItems() {
+		if it.GetContainer() != characterv1.ItemContainer_ITEM_CONTAINER_EQUIPMENT || it.GetItemRecordId() == 0 {
+			continue
+		}
+		var d []byte
+		d = appendVarint(d, 1, uint64(max(it.GetSlot(), 0)))
+		d = appendVarint(d, 2, uint64(it.GetItemRecordId()))
+		d = appendVarint(d, 4, uint64(max(it.GetQuantity(), 0)))
+		d = appendVarint(d, 5, uint64(max(it.GetQuality(), 0)))
+		if dur := it.GetDurability(); dur != 0 {
+			d = protowire.AppendTag(d, 9, protowire.Fixed32Type)
+			d = protowire.AppendFixed32(d, math.Float32bits(dur))
+		}
+		d = appendBytes(d, 10, []byte(it.GetInstanceGuid()))
+		list = protowire.AppendTag(list, 1, protowire.BytesType)
+		list = protowire.AppendBytes(list, d)
+	}
+	return list
 }
 
 // appendVarint and appendBytes write nothing for a zero or empty value: the

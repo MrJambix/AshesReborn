@@ -2088,9 +2088,10 @@ void CombatWorld::land_for_player(uint64_t by, uint64_t target, const abilities:
         spdlog::debug("[combat] the hit {} does not run on {}: {}", hit.row.name, target, why);
         return;
     }
-    // a pet's numbers are its owner's, times what its own effects add (Amplify)
+    // a pet's numbers are its owner's, times what its own effects add (Amplify), and its damage times our own bonus (kPetDamageBonus: ours, not the data's)
     if (src.pet != 0) {
-        double damage = 1.0, healing = 1.0;
+        constexpr double kPetDamageBonus = 1.2;
+        double damage = kPetDamageBonus, healing = 1.0;
         if (const auto pet = npcs_.find(src.pet); pet != npcs_.end()) {
             for (const Npc::HeldEffect& h : pet->second->effects) {
                 for (const stats::EffectMod& m : h.mods) {
@@ -3245,10 +3246,27 @@ void CombatWorld::think(Npc& n, double now) {
                          distance_xy_cm(s.self, n.ai.leash_anchor(s.home)) / 100.0, n.ai.params().anchor_at_fight_start ? "where the fight began" : "home", distance_xy_cm(s.self, s.home) / 100.0);
         }
         begin_reset(n, now);
+        // no way home on foot (a home in water or off the navmesh): it is put home at once, as a game master's reset leaves it; else it would stay in its reset, ignoring its
+        // attackers, until a wander passed its home, then leash and heal again in the next fight
+        const npc::Mover* m = npcs_world_ ? npcs_world_->mover(n.actor_id) : nullptr;
+        if (m && !m->moving() && distance_xy_cm(s.self, s.home) > n.ai.params().reset_arrive_cm) {
+            spdlog::info("[combat] {} ({}) has no way home on foot from {:.1f} m away: it is put home", n.leaf, n.actor_id, distance_xy_cm(s.self, s.home) / 100.0);
+            npcs_world_->warp(n.actor_id, s.home.x, s.home.y, s.home.z);
+            n.ai.revive();
+            n.returning = false;
+            npcs_world_->release(n.actor_id);
+        }
     }
     if (o.reset_done) {
         n.returning = false;
-        if (npcs_world_) npcs_world_->release(n.actor_id);
+        if (npcs_world_) {
+            if (o.reset_timed_out) {   // its walk home ended short of it
+                spdlog::info("[combat] {} ({}) is not home {:.0f} s after its reset began ({:.1f} m away): it is put home", n.leaf, n.actor_id, n.ai.params().reset_timeout,
+                             distance_xy_cm(s.self, s.home) / 100.0);
+                npcs_world_->warp(n.actor_id, s.home.x, s.home.y, s.home.z);
+            }
+            npcs_world_->release(n.actor_id);
+        }
     }
     if (o.in_combat) set_flags(n, true, o.target);
     else if (n.ai.state() == npc::ai::State::Idle || n.ai.state() == npc::ai::State::Reset) set_flags(n, false, 0);

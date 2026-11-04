@@ -116,3 +116,18 @@ func TestZeroValuesAreLeftOut(t *testing.T) {
 		}
 	}
 }
+
+// Field 101 carries the worn items as Inventory.equipment, an ItemList of
+// ItemData (slot_index 1, item_record 2, quantity 4, quality 5, durability 9
+// as a float, item_guid 10); an item in another container stays out.
+func TestWornItemsDressTheCharacter(t *testing.T) {
+	c := &characterv1.Character{Id: id, Items: []*characterv1.Item{
+		{Container: characterv1.ItemContainer_ITEM_CONTAINER_EQUIPMENT, Slot: 3, ItemRecordId: 77, Quantity: 1, Quality: 6, Durability: 1, InstanceGuid: "ab"},
+		{Container: characterv1.ItemContainer_ITEM_CONTAINER_BACKPACK, Slot: 0, ItemRecordId: 88, Quantity: 5},
+	}}
+	data := "0803" + "104d" + "2001" + "2806" + "4d0000803f" + "52026162"
+	want := "2a20" + idHex + "a206" + "06" + "4801" + "601e" + "7002" + "aa0637" + "0a20" + idHex + "1213" + "0a11" + data
+	if got := hex.EncodeToString(Record(c, "")); got != want {
+		t.Errorf("Record = %s\nwant   %s", got, want)
+	}
+}

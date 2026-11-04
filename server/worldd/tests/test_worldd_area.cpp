@@ -24,6 +24,7 @@
 #include "combat/hit_resolver.h"
 #include "content/content_db.h"
 #include "items/inventory.h"
+#include "protocol/repl/block_reader.h"
 #include "protocol/repl/replicator.h"
 #include "protocol/schema/generated/index.h"
 #include "npc/area_npcs.h"
@@ -1215,7 +1216,86 @@ static void test_prop_classes(const spawns::CapturedData& captured) {
     const spawns::OpenTemplate* old_furnace = unchecked.prop_template(asset_of(furnace), &v);
     CHECK(old_furnace && old_furnace->category == "prop", "without the table the furnace is made from the recorded quest object (what closed the client's connection)");
     v = spawns::Verdict::Generic;
-    CHECK(checked.prop_template(asset_of(furnace), &v) == nullptr && v == spawns::Verdict::OtherClass, "with the table the furnace is not made: another class than the recorded quest object's");
+    const spawns::OpenTemplate* plain = checked.prop_template(asset_of(furnace), &v);
+    CHECK(plain && plain->category == "prop" && v == spawns::Verdict::Generic && plain != old_furnace, "with the table the furnace is made as a plain actor (its own template)");
+    if (plain) {
+        const schema::ClassSchema* actor_schema = schema::gen::find_class_schema("AActor");
+        const spawns::ParsedBlock& ab = plain->actor_block();
+        uint32_t top = 0;
+        for (const auto& [handle, value] : ab.state.state.values()) top = std::max<uint32_t>(top, handle);
+        CHECK(ab.schema == actor_schema && ab.state.schema == actor_schema && top >= 1 && top <= actor_schema->commands.size(),
+              "its actor block has AActor's schema and no handle past AActor's 18 (the client read 19 and closed the connection)");
+        const int ic = plain->find("UInteractableComponent");
+        CHECK(ic > 0 && plain->blocks[static_cast<size_t>(ic)].kind == 2 && plain->blocks[static_cast<size_t>(ic)].name.empty() &&
+                  !plain->blocks[static_cast<size_t>(ic)].class_chain.empty(),
+              "its interactable component is a dynamic subobject with a class chain (as retail adds one to a townsperson or a hunting creature)");
+        // made into a world actor with the furnace instance's definitions, its open reads back under the client's classes: AActor for the actor, the component's own
+        spawns::InstanceParams p;
+        p.x = 1000;
+        p.y = 2000;
+        p.z = 300;
+        p.component_def = 6064634568702230573;   // the furnace instance's interactable definition
+        p.interact_def = 6064634568783101998;
+        std::string err;
+        auto w = spawns::instantiate(*plain, mint, p, err);
+        CHECK(w.has_value(), (std::string("the plain furnace is instantiated ") + err).c_str());
+        if (w) {
+            repl::ActorShadow shadow;
+            std::vector<repl::ContentBlock> blocks;
+            CHECK(repl::collect_open_blocks(w->actor, shadow, blocks), "its open's blocks are written");
+            bool actor_reads = false, component_reads = false;
+            for (const repl::ContentBlock& b : blocks) {
+                const schema::ClassSchema* cls = b.sub ? b.sub->obj.schema : actor_schema;
+                if (!cls) continue;
+                std::string why;
+                const auto back = repl::load_object_state(*cls, b.payload.data(), b.payload.bit_pos(), b.has_rep_layout, &why);
+                if (!b.sub) actor_reads = back.has_value();
+                if (b.sub && std::string(cls->name) == "UInteractableComponent" && back) {
+                    const repl::Value* def = back->state.get(*cls, "ComponentDefId.Guid");
+                    component_reads = def && def->get_if<int64_t>() && *def->get_if<int64_t>() == p.component_def && b.sub->dynamic_class.has_value();
+                }
+            }
+            CHECK(actor_reads, "the actor block reads back to its last bit under AActor's schema (the furnace's class: a plain Actor)");
+            CHECK(component_reads, "the dynamic interactable component reads back and names the furnace's definition");
+        }
+    }
+    // the classes that replicate properties of their own (read from the client's FClassParams) are written with their own schema, their guid made from the point's seed
+    struct Own {
+        const char* archetype;
+        const char* schema;
+        const char* guid;
+    };
+    for (const Own& o : {Own{"/Game/DesignAssets/Quests/BaseObjects/Event_RewardCache_KaelarRVR.Default__Event_RewardCache_KaelarRVR_C", "ATrackedInteractableActor", "InteractableGuid"},
+                         Own{"/Game/DesignAssets/Quests/Commissions/CommissionBoard_NodeDefault.Default__CommissionBoard_NodeDefault_C", "ACommissionBulletinBoard", "BoardGuid"}}) {
+        v = spawns::Verdict::Generic;
+        const spawns::OpenTemplate* own = checked.prop_template(asset_of(o.archetype), &v);
+        const schema::ClassSchema* cls = schema::gen::find_class_schema(o.schema);
+        CHECK(own && cls && own->actor_block().schema == cls, (std::string(o.schema) + ": its open is written with the class's own schema").c_str());
+        if (!own || !cls) continue;
+        spawns::InstanceParams p;
+        p.seed = 0x1234567890abcdefull;
+        p.component_def = 6064634568702230573;
+        std::string err;
+        auto w = spawns::instantiate(*own, mint, p, err);
+        CHECK(w.has_value(), (std::string(o.schema) + ": instantiated " + err).c_str());
+        if (!w) continue;
+        repl::ActorShadow shadow;
+        std::vector<repl::ContentBlock> blocks;
+        bool reads = false;
+        if (repl::collect_open_blocks(w->actor, shadow, blocks)) {
+            for (const repl::ContentBlock& b : blocks) {
+                if (b.sub) continue;
+                const auto back = repl::load_object_state(*cls, b.payload.data(), b.payload.bit_pos(), b.has_rep_layout);
+                const repl::Value* a = back ? back->state.get(*cls, (std::string(o.guid) + ".A").c_str()) : nullptr;
+                reads = a && a->get_if<int64_t>() && *a->get_if<int64_t>() != 0;
+            }
+        }
+        CHECK(reads, (std::string(o.schema) + ": the actor block reads back under the class's schema with its " + o.guid + " set").c_str());
+    }
+    v = spawns::Verdict::Generic;
+    const spawns::OpenTemplate* mound = checked.prop_template(asset_of("/Game/DesignAssets/Interactables/Quest/TreasureHunt/Test_TreasureMound.Default__Test_TreasureMound_C"), &v);
+    CHECK(mound && mound->actor_block().schema && std::string(mound->actor_block().schema->name) == "AInteractableStateMachineBase",
+          "a TreasureMoundInteractableBase (a child of the recorded class) keeps the recorded open");
     v = spawns::Verdict::Generic;
     const spawns::OpenTemplate* piece = checked.prop_template(asset_of(sword), &v);
     CHECK(piece && piece->category == "prop" && v == spawns::Verdict::Generic, "a Blueprint of the recorded class is made as before");

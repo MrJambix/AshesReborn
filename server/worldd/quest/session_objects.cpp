@@ -64,6 +64,19 @@ namespace wire = ::aoc::protocol::wire;
 using bootstrap::Role;
 using protocol::emit::FIntrepidNetworkGUID;
 
+namespace {
+// the definition a quest object is used by: its own, else, for an object whose instance and asset name none and whose actor definition says what a use gives (307 of the 639
+// objects with an actor definition: Heartwood Beat's splinters, the Remains), the component's default, ICD_Default_Id_Not_Set.  The client keeps the template's definition
+// (modelled: no recording opens such an object)
+const content::InteractableRow* prop_definition(const content::ObjectData& objects, const world::WorldActor& a) {
+    constexpr int64_t kDefaultIcd = 6064633945789432949;   // ICD_Default_Id_Not_Set
+    if (const auto it = objects.interactables.find(a.prop.component_def); it != objects.interactables.end()) return &it->second;
+    if (a.prop.component_def != 0 || a.prop.actor_def == 0) return nullptr;
+    const auto it = objects.interactables.find(kDefaultIcd);
+    return it == objects.interactables.end() ? nullptr : &it->second;
+}
+}   // namespace
+
 void PlayerSession::on_prop_interact(Connection& conn, const world::WorldActor& a, Clock::time_point now) {
     const std::string label = a.npc.archetype.empty() ? std::string("a quest object") : spawns::blueprint_leaf(a.npc.archetype);
     const auto ignore = [&](const std::string& why) {
@@ -72,9 +85,9 @@ void PlayerSession::on_prop_interact(Connection& conn, const world::WorldActor& 
     };
     const content::ObjectData* objects = world_ ? world_->objects() : nullptr;
     if (!objects) return ignore("the world has no quest objects");
-    const auto def = objects->interactables.find(a.prop.component_def);
-    if (def == objects->interactables.end()) return ignore("its interactable definition is not in the data");
-    const content::InteractableRow& row = def->second;
+    const content::InteractableRow* def = prop_definition(*objects, a);
+    if (!def) return ignore("its interactable definition is not in the data");
+    const content::InteractableRow& row = *def;
     if (view_->state_of(a.id) != world::ClientState::Awake) return ignore("the client does not have that object open");
     // an object that starts a quest (a book, a gravestone): its use opens the conversation of its population instance, which offers the quest, as talking to a person does
     // (when nothing is on offer for this character any more, open_dialogue says so and the object is used as any other)
@@ -134,9 +147,9 @@ void PlayerSession::finish_prop_use(Connection& conn, uint64_t actor_id, Clock::
     const world::WorldActor* a = registry_ ? registry_->find(actor_id) : nullptr;
     const content::ObjectData* objects = world_ ? world_->objects() : nullptr;
     if (!a || !objects) return;
-    const auto def = objects->interactables.find(a->prop.component_def);
-    if (def == objects->interactables.end()) return;
-    const content::InteractableRow& row = def->second;
+    const content::InteractableRow* def = prop_definition(*objects, *a);
+    if (!def) return;
+    const content::InteractableRow& row = *def;
     if (!room_for(24)) return;
     ++prop_uses_;
     const std::string label = spawns::blueprint_leaf(a->npc.archetype);

@@ -636,11 +636,26 @@ void NpcWorld::pursue_step(Npc& n, double) {
     }
     if (pathfinds_this_step_ >= cfg_.max_pathfinds_per_step || iterations_this_step_ >= cfg_.max_search_iterations_per_step) return;   // the next step
     ++pathfinds_this_step_;
-    const bool found = n.mover.move_to(at, n.pursue_speed, n.pursue_stop, 0);
+    // a target the navmesh does not reach (up on a wall, a ledge, a rock the walking map leaves out) is walked to as near as the navmesh gets, so the creature comes to the foot of
+    // it and fights from there if its attack reaches, rather than standing where it was (modelled: no recording shows a creature that cannot reach its target)
+    bool found = n.mover.move_to(at, n.pursue_speed, n.pursue_stop, 0, /*allow_partial=*/true);
     iterations_this_step_ += n.mover.last_search_iterations();
+    if (!found && n.mover.last_fail() == nav::PathResult::Fail::NoEndPoly && iterations_this_step_ < cfg_.max_search_iterations_per_step) {
+        // the target stands off the navmesh: the way to a point 4 m short of it, on the creature's side
+        const double dx = g.x - at.x, dy = g.y - at.y, len = std::hypot(dx, dy);
+        if (len > 400.0) {
+            const nav::Vec3 near{at.x + dx / len * 400.0, at.y + dy / len * 400.0, at.z};
+            found = n.mover.move_to(near, n.pursue_speed, 0, 0, /*allow_partial=*/true);
+            iterations_this_step_ += n.mover.last_search_iterations();
+        }
+    }
     n.pursue_x = n.pursue_plan_x = at.x;
     n.pursue_y = n.pursue_plan_y = at.y;
     if (!found) n.pursue = nullptr;   // no way to the target: the AI's next order tries again (a search that fails is not repeated at every step)
+    else if (n.mover.remaining() < 100.0) {   // as near as it gets already: it stands, and the AI's next order looks again (no search at every step)
+        n.mover.stop();
+        n.pursue = nullptr;
+    }
 }
 
 void NpcWorld::advance_npc(Npc& n, double t) {

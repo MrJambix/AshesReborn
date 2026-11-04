@@ -970,7 +970,10 @@ void AbilityPipeline::apply_effect(AbilityChange& c, const EffectDef& def, int s
             if (std::isfinite(v) && v > 0) shield = static_cast<float>(shield.value_or(0.0f) + v);
             continue;
         }
-        mods.push_back({m.stat_guid, v});
+        // two mods of one stat are one (no effect of the data has two; Grit has, AbilityContent::mods)
+        const auto same = std::find_if(mods.begin(), mods.end(), [&](const stats::EffectMod& o) { return o.stat == m.stat_guid; });
+        if (same != mods.end()) same->value += v;
+        else mods.push_back({m.stat_guid, v});
     }
     auto give_shield = [&](EffectInst& e) {
         if (!shield) return;

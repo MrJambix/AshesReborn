@@ -8,6 +8,8 @@
 // ============================================================================
 #include "spawns/generic_npc.h"
 
+#include "protocol/schema/generated/index.h"
+
 #include <algorithm>
 #include <bit>
 #include <cctype>
@@ -430,13 +432,21 @@ const OpenTemplate* GenericNpcs::prop_template(const content::NpcAssetRow& asset
     bool allowed = false;
     for (const char* folder : kFolders) allowed = allowed || path.rfind(folder, 0) == 0;
     if (!allowed) return fail(Verdict::NotPawn);
-    // ... and of the recorded one's native class: the folders hold plain actors as well (a furnace, a wagon, a tent), whose class has none of the properties the open writes
+    // ... and of the recorded one's native class: the folders hold plain actors as well (a furnace, a wagon, a tent), whose class has none of the properties the open writes.  Those are
+    // opened as plain actors (plain_actor_open): the actor block of AActor's properties only, and a dynamic interactable component
+    bool plain = false;
+    std::string native;
     if (!config_.prop_classes.empty()) {
         const auto c = config_.prop_classes.find(path);
-        if (c == config_.prop_classes.end() || c->second != kQuestObjectClass) return fail(Verdict::OtherClass);
+        if (c == config_.prop_classes.end()) return fail(Verdict::OtherClass);
+        native = c->second;
+        if (!state_machine_class(native)) {
+            if (!plain_actor_class(native)) return fail(Verdict::OtherClass);
+            plain = true;
+        }
     }
     // (kept under a key of its own: template_for looks a pawn up by the plain path, so a Blueprint that is a quest object in one place and a pawn in another must not hand the prop's open to the pawn)
-    const std::string key = path + "#prop";
+    const std::string key = path + (plain ? "#prop-actor" : "#prop");
     if (const auto it = made_.find(key); it != made_.end()) return &it->second;
     // the donor: a recorded quest object with its two blocks (the Sword of Judication's piece when the captures hold it, else the first)
     const OpenTemplate* donor = nullptr;
@@ -446,6 +456,18 @@ const OpenTemplate* GenericNpcs::prop_template(const content::NpcAssetRow& asset
     }
     if (!donor) return fail(Verdict::NoDonor);
     OpenTemplate t = *donor;
+    if (plain) {
+        // the class of a dynamic interactable component, from a recorded open that sent one so (a townsperson's, a hunting creature's)
+        const repl::ExportChain* dynamic = nullptr;
+        for (const OpenTemplate& o : captured_->opens()) {
+            for (const ParsedBlock& b : o.blocks) {
+                if (b.kind == 2 && b.cls == "UInteractableComponent") dynamic = &b.class_chain;
+            }
+            if (dynamic) break;
+        }
+        if (!dynamic || !plain_actor_open(t, *dynamic, plain_actor_schema(native))) return fail(Verdict::NoDonor);
+        ++plain_props_made_;
+    }
     t.archetype_path = path;
     t.capture = t.channel = t.packet = 0;   // made here: no capture opened it
     const repl::ExportChain* exported = archetype_export(path);
@@ -453,6 +475,46 @@ const OpenTemplate* GenericNpcs::prop_template(const content::NpcAssetRow& asset
     t.archetype = *exported;
     ++props_made_;
     return &made_.emplace(key, std::move(t)).first->second;
+}
+
+bool state_machine_class(const std::string& native) { return native == kQuestObjectClass || native == "TreasureMoundInteractableBase"; }
+
+bool plain_actor_class(const std::string& native) {
+    static const char* const kClasses[] = {"Actor", "AoCActor", "StaticMeshActor", "TrackedInteractableActor", "CommissionBulletinBoard", "ContentSocket", "LevelSpawnActor"};
+    for (const char* c : kClasses) {
+        if (native == c) return true;
+    }
+    return false;
+}
+
+const schema::ClassSchema* plain_actor_schema(const std::string& native) {
+    if (native == "TrackedInteractableActor") return schema::gen::find_class_schema("ATrackedInteractableActor");
+    if (native == "CommissionBulletinBoard") return schema::gen::find_class_schema("ACommissionBulletinBoard");
+    return schema::gen::find_class_schema("AActor");
+}
+
+bool plain_actor_open(OpenTemplate& t, const repl::ExportChain& interactable_class, const schema::ClassSchema* actor_schema) {
+    const schema::ClassSchema* actor = schema::gen::find_class_schema("AActor");
+    if (!actor || !actor_schema || !actor_schema->is_actor || t.blocks.empty() || t.blocks.front().kind != 0) return false;
+    ParsedBlock& a = t.blocks.front();
+    // AActor's handles come first in every actor class's RepLayout: the recorded class's own (19 on) are dropped, the rest read the same under AActor's schema
+    std::vector<uint32_t> own;
+    for (const auto& [handle, value] : a.state.state.values()) {
+        if (handle > actor->commands.size()) own.push_back(handle);
+    }
+    for (const uint32_t h : own) a.state.state.erase(h);
+    a.state.arrays = {};
+    a.state.schema = actor_schema;
+    a.schema = actor_schema;
+    a.cls = actor_schema->name;
+    for (ParsedBlock& b : t.blocks) {
+        if (b.kind == 0 || b.cls != "UInteractableComponent") continue;
+        b.kind = 2;
+        b.name.clear();
+        b.checksum = 0;
+        b.class_chain = interactable_class;
+    }
+    return true;
 }
 
 const OpenTemplate* GenericNpcs::make_plain(const content::NpcAssetRow& asset, Verdict* why, bool talks) const {

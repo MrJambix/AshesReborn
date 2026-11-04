@@ -91,7 +91,14 @@ func (f *fakeServices) GetCharacter(ctx context.Context, r *characterv1.GetChara
 	if err := f.record(ctx, r); err != nil {
 		return nil, err
 	}
-	return &characterv1.GetCharacterResponse{Character: &characterv1.Character{Id: r.GetId(), AccountId: 42}}, nil
+	c := &characterv1.Character{Id: r.GetId(), AccountId: 42}
+	if r.GetIncludeItems() { // one worn item and one in the backpack
+		c.Items = []*characterv1.Item{
+			{Container: characterv1.ItemContainer_ITEM_CONTAINER_EQUIPMENT, Slot: 3, ItemRecordId: 77},
+			{Container: characterv1.ItemContainer_ITEM_CONTAINER_BACKPACK, Slot: 0, ItemRecordId: 88},
+		}
+	}
+	return &characterv1.GetCharacterResponse{Character: c}, nil
 }
 
 func (f *fakeServices) CreateCharacter(ctx context.Context, r *characterv1.CreateCharacterRequest) (*characterv1.CreateCharacterResponse, error) {
@@ -207,7 +214,13 @@ func TestAdaptersPassRequestsAndBoundEachCall(t *testing.T) {
 	if err != nil || len(list) != 2 {
 		t.Errorf("List = %v %v", list, err)
 	}
-	check("List", &characterv1.ListCharactersRequest{AccountId: 42})
+	// the list, then each character's items: the last call reads the second's
+	check("List", &characterv1.GetCharacterRequest{Id: "b", IncludeItems: true})
+	for _, ch := range list {
+		if items := ch.GetItems(); len(items) != 1 || items[0].GetItemRecordId() != 77 {
+			t.Errorf("List: %s carries %v, want only its worn item", ch.GetId(), items)
+		}
+	}
 
 	got, err := c.Get(ctx, "abc")
 	if err != nil || got.GetId() != "abc" {

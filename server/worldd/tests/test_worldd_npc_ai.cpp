@@ -206,6 +206,15 @@ void test_fight_and_leash() {
     gone.think(make_sense(0.0, home, home, {player(1, 700, 0)}));
     o = gone.think(make_sense(1.0, {500, 0, 0}, home, {}));
     CHECK(gone.state() == State::Reset && o.began_reset, "a target that is not known any more is dropped from the table: reset");
+    // a walk home that ends short of it (a home in water or off the navmesh): the reset ends at reset_timeout, so it does not stay deaf to its attackers
+    o = gone.think(make_sense(1.0 + p.reset_timeout - 1.0, {500, 0, 0}, home, {}));
+    CHECK(gone.state() == State::Reset && !o.reset_done, "short of home before its reset_timeout: still resetting");
+    o = gone.think(make_sense(1.0 + p.reset_timeout, {500, 0, 0}, home, {}));
+    CHECK(gone.state() == State::Idle && o.reset_done && o.reset_timed_out, "at its reset_timeout it is done, short of home (the caller puts it home)");
+    gone.notice(1, 10.0, 1.0 + p.reset_timeout + 0.1);
+    CHECK(!gone.threat().empty(), "...and it takes threat again");
+    o = ai.think(make_sense(now + 0.5, home, home, {}, 200.0));
+    CHECK(!o.reset_timed_out, "a reset that reached home did not time out");
     // two attackers: it keeps the first until the second has 110 %
     NpcAi two(p);
     two.think(make_sense(0.0, home, home, {player(1, 300, 0), player(2, 400, 0)}));

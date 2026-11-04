@@ -305,6 +305,10 @@ int main(int argc, char** argv) {
     std::string npc_exclude;
     app.add_flag("--no-generic-npcs", no_generic_npcs, "only the NPCs whose Blueprint a retail capture opened spawn (stage 1's NPCs); the rest are not made")
         ->envname("AOC_NO_GENERIC_NPCS");
+    double hunt_weight = 5.0;
+    app.add_option("--hunt-weight", hunt_weight, "what a huntable creature's weight in a spawn point's draw is multiplied by (1: the data's; 5: a point shared with the plain kind is the huntable more often)")
+        ->envname("AOC_HUNT_WEIGHT")
+        ->capture_default_str();
     app.add_option("--npc-exclude", npc_exclude,
                    "the kill switch for one NPC type: Blueprint names (Goblin_Gravehide, Hawk_C ...) or archetype paths, comma separated, that are not spawned "
                    "(the log counts each type that is)")
@@ -708,6 +712,7 @@ int main(int argc, char** argv) {
             spawns::GenericConfig generic;
             generic.enabled = !no_generic_npcs;
             generic.hunting = !no_gathering;   // Gathering stage 3: with harvesting off a creature is not huntable (no hunting interactable)
+            generic.hunt_weight = hunt_weight;
             for (size_t start = 0; start <= npc_exclude.size();) {
                 const size_t comma = npc_exclude.find(',', start);
                 std::string one = npc_exclude.substr(start, comma == std::string::npos ? std::string::npos : comma - start);

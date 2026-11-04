@@ -326,6 +326,8 @@ public:
     bool effect_hits(int64_t effect, std::vector<EffectHitRow>& out, std::string& error) const;
     /// The stat mods of an effect (kind "effect") or a hit ("hit"), in order.
     bool mods(const std::string& kind, int64_t owner, std::vector<ModRow>& out, std::string& error) const;
+    /// ... as the data has them (mods adds ours: Grit's magical mitigation)
+    bool mods_of_data(const std::string& kind, int64_t owner, std::vector<ModRow>& out, std::string& error) const;
     std::optional<ProjectileRow> projectile(int64_t guid, std::string& error) const;
     std::optional<ZoneRow> zone(int64_t guid, std::string& error) const;
 
