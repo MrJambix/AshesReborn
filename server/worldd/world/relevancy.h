@@ -50,6 +50,11 @@ struct RelevancyConfig {
     /// Opens a connection may start in one pass: a teleport would open hundreds at once (retail's burst did; a 1,028-byte packet window does
     /// not like it). Closes are cheap and not capped.
     size_t max_opens_per_tick = 16;
+    /// ... and in a pass that starts with at most `quiet_packets_in_flight` packets unacknowledged: the fill after the phase-in, a teleport or a respawn, when nothing else
+    /// is in flight, so that the 350 m ring (about 450 actors in the Riverlands) is in within a second instead of three.  The view's pacing (ActorView::Config's
+    /// queue and window limits) still ends a pass whose own sends fill the queue, and a busy connection keeps the plain cap.
+    size_t max_opens_per_tick_quiet = 48;
+    size_t quiet_packets_in_flight = 24;
 };
 // CoA x C_Y_B
 

@@ -718,6 +718,42 @@ static void test_edge() {
     std::filesystem::remove(path, ec);
 }
 
+// ---- a player still loading in -------------------------------------------------------------------------------------------------------
+
+// The join to the phase-in is about 30 s of the client's own loading, and the view (and with it NpcWorld::note_player) runs only after it.  The window follows the player from
+// the join on (PlayerWorld::note_loading_player), so that the chunks round the login spot are in when the view first opens the NPCs, and no NPC is woken for it.
+static void test_loading() {
+    std::printf("a player still loading in\n");
+    const std::string path = navfix::write_chunk_file("loading");
+    std::string err;
+    auto n = AreaNav::load(path, &err);
+    if (!n) { CHECK(false, "the fixture opens"); return; }
+    {
+        aoc::protocol::ServerGuidAllocator guids{60, 0x6ee87ee4u};
+        PlayerWorld w(nullptr, "no content.db in this test", bootstrap::GameStateMode::Tier2, 60, guids);
+        spdlog::set_level(spdlog::level::off);
+        AreaNav* ground = n.get();
+        CHECK(w.adopt_ground(std::move(n), err), "the world adopts the chunked ground");
+        const double px = 2000, py = 6000;
+        CHECK(!ground->ready_at(px, py), "the login spot's chunk is not in the window at the start");
+        double t = 0;
+        for (int i = 0; i < 400 && !ground->ready_at(px, py); ++i) {
+            t = i * 0.05;
+            w.note_loading_player(9, px, py);
+            w.tick_world(t);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        CHECK(ground->ready_at(px, py), "the window loads the chunks round a player that is still loading in");
+        CHECK(w.npcs() && w.npcs()->player_points(t).empty(), "and the NPC world is not told of it: no NPC is woken for a player that is not in the world yet");
+        w.note_player(9, px, py);
+        CHECK(w.npcs()->player_points(t).size() == 1, "once its view runs, the NPC world's note takes over");
+        w.forget_player(9);
+        CHECK(w.npcs()->player_points(t).empty(), "a player who left is forgotten");
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 // ---- the real ground -----------------------------------------------------------------------------------------------------------------
 
 static void test_real() {
@@ -879,6 +915,7 @@ int main() {
     test_read_failure();
     test_npcs();
     test_edge();
+    test_loading();
     test_real();
     std::printf("test_worldd_nav_window: %d passed, %d failed (%.1f s)\n", g_pass, g_fail, ms_since(t0) / 1000.0);
     return g_fail == 0 ? 0 : 1;

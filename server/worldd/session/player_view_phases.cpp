@@ -96,6 +96,11 @@ void PlayerSession::tick_after(Clock::time_point now, const TickPlan& plan) {
             last_position_log_ = now;
             log_position(now);
         }
+    } else if (npc_world_) {
+        // the join and the client's loading (about 30 s to the phase-in): the ground's window loads the chunks round the login spot meanwhile, so that the NPCs there stand on
+        // their ground when the view first opens them; no NPC is woken for a player that is not in the world yet
+        const GoodPosition at = checker_.good();
+        npc_world_->note_loading_player(static_cast<uint64_t>(pb_.setup().player_id), at.x, at.y);
     }
     if (!save_clock_started_) {
         save_clock_started_ = true;

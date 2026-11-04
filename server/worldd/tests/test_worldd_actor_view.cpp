@@ -543,12 +543,26 @@ static void test_view_cap_and_exports() {
     ActorView v(reg, cfg, reserved_3_to_6());
     for (int i = 0; i < 100; ++i) reg.add(make_npc(10000 + i * 100, 5000 + i * 100, 0));   // 50 m to 150 m
     v.tick(p.s, 0, 0, p.t);
-    CHECK(v.stats().opens == 16 && v.stats().capped == 1, "the first pass opens 16 of 100 (the cap)");
+    CHECK(v.stats().opens == 48 && v.stats().capped == 1, "the first pass, on a quiet connection, opens 48 of 100 (the quiet cap: the fill after a phase-in or a teleport)");
     bool nearest = true;
-    for (int i = 0; i < 100; ++i) nearest = nearest && ((i < 16) == (v.state_of(10000 + i * 100) == world::ClientState::Awake));
-    CHECK(nearest, "the 16 are the nearest");
+    for (int i = 0; i < 100; ++i) nearest = nearest && ((i < 48) == (v.state_of(10000 + i * 100) == world::ClientState::Awake));
+    CHECK(nearest, "the 48 are the nearest");
     for (int i = 0; i < 7; ++i) run(v, p, 0, 0, 1);
-    CHECK(v.stats().opens == 100 && v.count(world::ClientState::Awake) == 100, "seven more passes open the rest");
+    CHECK(v.stats().opens == 100 && v.count(world::ClientState::Awake) == 100, "more passes open the rest");
+    {   // a pass that starts with packets in flight keeps the plain cap
+        world::ActorRegistry regb;
+        Pair pb;
+        ActorView::Config cb = view_config();
+        cb.relevancy.quiet_packets_in_flight = 0;
+        ActorView vb(regb, cb, reserved_3_to_6());
+        regb.add(make_npc(20000, 5000, 0));
+        vb.tick(pb.s, 0, 0, pb.t);
+        pb.t += milliseconds(200);
+        const size_t sent = pb.s.flush(pb.t).size();   // sent and never delivered: unacknowledged
+        for (int i = 1; i < 100; ++i) regb.add(make_npc(20000 + i * 100, 5000 + i * 100, 0));
+        vb.tick(pb.s, 0, 0, pb.t);
+        CHECK(sent > 0 && pb.s.packets_in_flight() > 0 && vb.stats().opens == 1 + 16 && vb.stats().capped == 1, "with packets in flight a pass opens 16 (the plain cap)");
+    }
     CHECK(v.channels_in_use() == 100, "100 channels in use");
     std::set<uint32_t> channels;
     for (int i = 0; i < 100; ++i) channels.insert(v.channel_of(10000 + i * 100));

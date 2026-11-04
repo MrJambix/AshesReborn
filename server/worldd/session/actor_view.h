@@ -58,7 +58,8 @@
 //  pass.  Exports are marked acknowledged from the Connection's ack events (on_ack), once per object, as the replicator's ExportAcks needs.
 //
 //  Cost.  A pass visits the actors in the 350 m ring and the ones the view tracks: with a few hundred actors that is a few microseconds each
-//  (the tests measure it: test_worldd_actor_view).  Opens per pass are capped (RelevancyConfig::max_opens_per_tick), nearest first.
+//  (the tests measure it: test_worldd_actor_view).  Opens per pass are capped (RelevancyConfig::max_opens_per_tick, or
+//  max_opens_per_tick_quiet in a pass that starts with few packets in flight), nearest first.
 // ============================================================================
 #pragma once
 // C.Y.B with C-O-A

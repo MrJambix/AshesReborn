@@ -1,5 +1,11 @@
 # Patch notes
 
+## 2026-11-03: Faster loading into the world
+
+### Changed
+- When the loading screen ends, the creatures, players and resources around you appear about three times faster, nearest first: everything nearby is there within about a second instead of two to three. The same goes after a respawn or a teleport.
+- When you log in away from the starting area, the creatures near you stand on their real ground and move from the moment you arrive, instead of standing still for a few seconds first.
+
 ## 2026-11-03: The forging furnace is back, and more
 
 ### Fixed

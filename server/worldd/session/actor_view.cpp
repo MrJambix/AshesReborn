@@ -749,6 +749,8 @@ void ActorView::pass(Connection& conn, double x, double y, Clock::time_point now
     scan(x, y);
     if (profile.on) profile.view_scan_us += tick_profile_us_since(scan_started);
 
+    // a quiet connection (the fill after the phase-in or a teleport) takes more opens in a pass: relevancy.h
+    const size_t max_opens = conn.packets_in_flight() <= cfg.quiet_packets_in_flight ? std::max(cfg.max_opens_per_tick, cfg.max_opens_per_tick_quiet) : cfg.max_opens_per_tick;
     size_t opens = 0;
     bool capped = false;
     for (size_t index = 0; index < cands_.size(); ++index) {
@@ -773,7 +775,7 @@ void ActorView::pass(Connection& conn, double x, double y, Clock::time_point now
                     entries_.erase(it);
                     break;
                 }
-                if (opens >= cfg.max_opens_per_tick) {
+                if (opens >= max_opens) {
                     capped = true;
                     entries_.erase(it);
                     break;
@@ -791,7 +793,7 @@ void ActorView::pass(Connection& conn, double x, double y, Clock::time_point now
                 // position is sent whole when it wakes anyway (E1 review A2: re-opening on every move made each walker 160-170 m away, or near
                 // another player, a whole snapshot about five times a second)
                 if (c.ring == Ring::Snapshot && a->reliable_version == e.sent_reliable && e.sent_version != 0) break;
-                if (opens >= cfg.max_opens_per_tick) {
+                if (opens >= max_opens) {
                     capped = true;
                     break;
                 }

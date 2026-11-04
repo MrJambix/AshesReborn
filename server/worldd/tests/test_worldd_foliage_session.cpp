@@ -1755,13 +1755,13 @@ static void test_view_load() {
             tour_other_closes = tourist.closes_destroyed + tourist.closes_relevancy + tourist.closes_other;
         }
     }
-    std::printf("    without state actors: %.1f us a 20 ms step (%zu actors tracked, %zu snapshots, %zu passes capped by the 16 opens)\n", step_us[0], tracked[0], snapshots[0], capped[0]);
+    std::printf("    without state actors: %.1f us a 20 ms step (%zu actors tracked, %zu snapshots, %zu passes capped by the opens cap)\n", step_us[0], tracked[0], snapshots[0], capped[0]);
     std::printf("    with 1,421 state actors: %.1f us a 20 ms step (%zu actors tracked, %zu snapshots, %zu passes capped); %zu state actors sent at login, the last %.0f ms after the phase-in\n", step_us[1],
                 tracked[1], snapshots[1], capped[1], opens_at_login[1], last_open_ms[1]);
     std::printf("    a tour of all %zu cells (a stop at each centre): %zu cells and %zu components delivered, %zu opens (%.1f KB each on the wire, exports included), the view tracking %zu at the end; "
                 "%.0f ms of real time; the process grew by %.1f MB\n", tour_cells, tour_cells, tour_components, tour_opens, tour_kb_per_open, tour_tracked, tour_ms, tour_mb);
     CHECK(opens_at_login[0] == 0 && opens_at_login[1] >= 3, "the player is sent the state actors of the cells around him at login (none without them)");
-    CHECK(last_open_ms[1] < 4000.0, "the last of them arrives within four seconds of the phase-in (retail: 4.1 to 4.7 s after its capture began; the view paces 16 opens a pass)");
+    CHECK(last_open_ms[1] < 4000.0, "the last of them arrives within four seconds of the phase-in (retail: 4.1 to 4.7 s after its capture began; the view paces its opens: 16 a pass, 48 on a quiet connection)");
     CHECK(step_us[1] < step_us[0] + 2000.0 && step_us[1] < 20000.0, "a standing player's step costs less than 2 ms more with all the cells tracked");
     CHECK(tour_cells == 1421 && tour_components == 17762 && tour_uninitialized == 0, "a player who stops in every cell is sent all 1,421 state actors, 17,762 components, each initialized");
     std::printf("    (the tour: %zu opens, %zu Dormancy closes, %zu other closes)\n", tour_opens, tour_dormancy, tour_other_closes);
@@ -1827,7 +1827,7 @@ static void test_login_in_the_real_world() {
     const auto& st = p.s->actor_view()->stats();
     std::printf("    the area: %zu actors in the registry (%zu creatures, %zu nodes), loaded in %.1f s\n", registry_size, npcs, nodes, load_s);
     std::printf("    in the first 10 s after the phase-in the view opened %zu actors (%zu as snapshots, %zu awake), %zu state actors among them, the first at %.0f ms and the last at %.0f ms; "
-                "%zu passes held opens back at the cap of 16, %zu were throttled by the connection\n",
+                "%zu passes held opens back at the cap (16, or 48 on a quiet connection), %zu were throttled by the connection\n",
                 st.opens + st.snapshots, st.snapshots, st.opens, client.opens.size(), first_ms, last_ms, st.capped, st.throttled);
     const auto t0 = std::chrono::steady_clock::now();
     const int steps = 1500;

@@ -121,6 +121,7 @@ inline Result run_scan_scene(bool paced) {
     ActorView::Config cfg = view_config();
     cfg.max_packets_in_flight = paced ? 20 : 1000000;
     cfg.max_queued_bunches = paced ? 24 : 1000000;
+    cfg.relevancy.max_opens_per_tick_quiet = 0;   // the plain cap of 16 at every pass, as when the digests below were taken: the scene checks the scan's order, not the pacing
     ActorView v(reg, cfg, reserved_3_to_6());
     Lcg rng{0x5ca17e57ull};
     constexpr int kCreatures = 600, kMirrored = 60;

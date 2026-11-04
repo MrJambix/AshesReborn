@@ -805,7 +805,7 @@ void PlayerWorld::preload_window() {
 void PlayerWorld::drive_window(double now_seconds) {
     // the players' chunks come in, the chunks nobody is near go out; the NPCs of a chunk that came in are stood on its ground
     const auto a = std::chrono::steady_clock::now();
-    nav_->set_interest(npcs_->player_points(now_seconds));
+    nav_->set_interest(window_points(now_seconds));
     const auto b = std::chrono::steady_clock::now();
     const std::vector<nav::ChunkKey> arrived = nav_->pump(kWindowBudgetMs);
     const auto c = std::chrono::steady_clock::now();
@@ -836,16 +836,33 @@ void PlayerWorld::drive_window(double now_seconds) {
     }
 }
 
+std::vector<std::pair<double, double>> PlayerWorld::window_points(double now_seconds, size_t* loading) {
+    std::vector<std::pair<double, double>> pts = npcs_->player_points(now_seconds);
+    size_t n = 0;
+    for (auto it = loading_.begin(); it != loading_.end();) {
+        if (it->second.at < now_seconds - kLoadingTtlSeconds) {   // (a session that ended without forget_player, or one whose view runs again and was noted since)
+            it = loading_.erase(it);
+            continue;
+        }
+        pts.emplace_back(it->second.x, it->second.y);
+        ++n;
+        ++it;
+    }
+    if (loading) *loading = n;
+    return pts;
+}
+
 void PlayerWorld::log_window(double now_seconds, const nav::WindowStats& w) {
-    // where each noted player stands in the ground's terms, and how much of the NPCs still wait for their chunk
+    // where each noted player stands in the ground's terms, and how much of the NPCs still wait for their chunk (the players still loading in are listed last)
     std::string where;
-    size_t players = 0;
-    for (const auto& [px, py] : npcs_->player_points(now_seconds)) {
+    size_t players = 0, loading = 0;
+    for (const auto& [px, py] : window_points(now_seconds, &loading)) {
         const nav::ChunkKey k = nav_->chunk_at(px, py);
         const bool here = nav_->ready_at(px, py);
         ++players;
         if (players <= 8) where += (where.empty() ? "" : ", ") + std::string("(") + std::to_string(k.x) + "," + std::to_string(k.y) + (here ? " ready)" : " LOADING)");
     }
+    if (loading > 0) where += " (the last " + std::to_string(loading) + " still loading in)";
     const npc::NpcWorld::Stats ns = npcs_->stats();
     spdlog::info("[nav] window: {} chunks ({} of {} tiles) resident, {} committed, {} players{}{}; NPCs waiting for their chunk {} of {}, {} awake, {} walking; chunks loaded {} / dropped {} / failed {} / retried {}, "
                  "{} deferred for room, {} dropped for a nearer one; planned {} times, {} skipped",
@@ -1960,7 +1977,13 @@ uint64_t PlayerWorld::respawn_npc(uint32_t spawn_ref, double now) {
     return id;
 }
 
+void PlayerWorld::note_loading_player(uint64_t player_id, double x, double y) {
+    if (!std::isfinite(x) || !std::isfinite(y)) return;
+    loading_[player_id] = {x, y, world_clock_};
+}
+
 void PlayerWorld::note_player(uint64_t player_id, double x, double y) {
+    loading_.erase(player_id);   // (the view runs: the NPC world's note covers the window from now on)
     if (npcs_) npcs_->note_player(player_id, x, y, world_clock_);
     if (!nav_ || !nav_->has_region() || !std::isfinite(x) || !std::isfinite(y)) return;
     // the region's edge (G1 stage 1): beyond it there is no navmesh and nothing spawns, but the player is not held: no wall, and the move checks do not look at the ground
@@ -1986,6 +2009,7 @@ void PlayerWorld::note_player(uint64_t player_id, double x, double y) {
 
 void PlayerWorld::forget_player(uint64_t player_id) {
     if (npcs_) npcs_->forget_player(player_id);
+    loading_.erase(player_id);
     outside_.erase(player_id);
     outside_logged_at_.erase(player_id);
     exit_loud_.erase(player_id);
