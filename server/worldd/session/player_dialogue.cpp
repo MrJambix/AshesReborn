@@ -69,6 +69,7 @@ public:
     double                          player_x = 0, player_y = 0, npc_x = 0, npc_y = 0;
     bool                            has_npc = false;
     int64_t                         citizen_node = 0;
+    bool                            citizenship_cooldown = false;   // the account renounced lately and may not join yet
     const world::CityNodes*         nodes = nullptr;
     const quest::QuestLog*          quests = nullptr;   // quests: the character's log (null: it has none)
     const professions::Professions* professions = nullptr;   // the character's professions (null, or not valid(): every one at Novice level 1)
@@ -116,9 +117,10 @@ public:
             return ExprValue::of(*v);
         }
         // the world around: worldd runs no elections, constructions, expansions or buy orders yet, and has no mayors
+        if (name == "Node_HasPlayerCitizenshipCooldown") return ExprValue::of(citizenship_cooldown ? 1 : 0);
+        if (name == "Node_CanPlayerBecomeCitizen") return ExprValue::of(citizen_node == 0 && !citizenship_cooldown ? 1 : 0);
         static const char* const kNodeActivity[] = {"Node_NumOfServiceBuildingsInState", "Node_NumOfServiceBuilding", "Node_IsNodeMayorElectionActive", "Node_IsNodeMayorPrevoteActive",
-                                                    "Node_IsExpansionInGivenState", "Node_IsBuyOrderActive", "Node_IsPlayerMayorCandidate", "Node_IsPlayerMayorCurrentNode",
-                                                    "Node_HasPlayerCitizenshipCooldown", "Node_CanPlayerBecomeCitizen"};
+                                                    "Node_IsExpansionInGivenState", "Node_IsBuyOrderActive", "Node_IsPlayerMayorCandidate", "Node_IsPlayerMayorCurrentNode"};
         for (const char* f : kNodeActivity) {
             if (name == f) return ExprValue::of(0);
         }
@@ -149,6 +151,7 @@ std::unique_ptr<dialogue::Facts> PlayerSession::dialogue_facts(const world::Worl
         f->npc_y = npc->y;
     }
     f->citizen_node = pb_.setup().citizen_node;
+    f->citizenship_cooldown = citizenship_.node_guid == 0 && citizenship_.renounce_cooldown_until_ms > wall_ms();
     f->nodes = world_ ? world_->city_nodes() : nullptr;
     if (quests_on_) f->quests = &quest_log_;
     f->professions = &professions_;
@@ -327,6 +330,12 @@ void PlayerSession::on_dialogue_choice(Connection& conn, const repl::ClientRpc& 
         open_talk_shop(conn, *npc, r.open_vendor, now);
     }
     if (r.outcome == dialogue::Outcome::Changed) run_talk_actions(conn, r, *npc, now);   // quests: the line's actions, the node left and the nodes entered
+    // node citizenship: the Node Administrator's lines open the join dialog or the renounce warning (session/player_citizenship.cpp)
+    if (r.citizenship != 0 && r.outcome == dialogue::Outcome::Changed) {
+        spdlog::log(level_for(dialogue_logged_), "[session] {}: chose line {} of node {}: it opens the {}", name(), response->choice_index, response->node,
+                    r.citizenship == 1 ? "citizenship dialog" : "renounce warning");
+        open_citizenship_dialog(conn, *npc, r.citizenship == 1, r.citizenship_vendor, now);
+    }
     switch (r.outcome) {
         case dialogue::Outcome::Changed:
             ++dialogue_steps_;

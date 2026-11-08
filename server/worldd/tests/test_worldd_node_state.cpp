@@ -11,7 +11,7 @@
 //    the summaries  NodeWire::summary for all 49 nodes the client asks about, against the 49 retail summaries: the layout, the level, the plots of the layout at that level,
 //                   the essence and the relic slots; the siege summaries rebuilt from the node to retail's exact bits
 //    the session    a Tier3 join sends the maps in the GameState's open and the account's characters in OwnerInfo; the client's bunch of 49 + 49 requests is answered in retail's order
-//                   (every siege summary, then every node summary); a repeated request is one answer; an unknown node and the citizenship window are not answered; the cooldowns are
+//                   (every siege summary, then every node summary); a repeated request is one answer; an unknown node is not answered, the citizenship window is (an empty one); the cooldowns are
 //                   one empty answer; a level change reaches the client as a delta of the maps; a client that joins later has the new levels (a server hop re-sends everything)
 //    the console    the client's ServerSetNodeLevel, ServerAddNodeExperience, ServerGMGetNodeData ...: received and logged with the GM switch off, forwarded to the node service
 //                   with it on; GrpcNodeControl over gRPC against an in-process fake of the service: the token, the calls, the answers, an unreachable service
@@ -823,14 +823,23 @@ static void test_requests() {
     h.settle();
     std::vector<repl::RpcCall> cd;
     const std::vector<std::string> cd_names = pc_calls_from(h, cd_from, &cd);
-    if (cd_names != std::vector<std::string>{"ClientReceiveAllCurrentNodeSiegeCooldowns"}) {
+    std::vector<std::string> sorted = cd_names;
+    std::sort(sorted.begin(), sorted.end());
+    if (sorted != std::vector<std::string>{"ClientPopulateCitizenshipData", "ClientReceiveAllCurrentNodeSiegeCooldowns"}) {
         std::printf("    (the PlayerController got:");
         for (const std::string& n : cd_names) std::printf(" %s", n.c_str());
         std::printf("; cooldown answers sent %zu, requests %zu)\n", h.s->siege_cooldowns_sent(), h.s->node_requests());
     }
-    CHECK(cd_names == std::vector<std::string>{"ClientReceiveAllCurrentNodeSiegeCooldowns"}, "ServerRequestAllNodeSiegeCooldowns is answered (the empty array); the citizenship window is not");
-    CHECK(cd.size() == 1 && cd[0].param_bits == 1, "the cooldown answer is one bit, as retail's");
-    CHECK(h.s->citizenship_requests() == 1 && h.s->siege_cooldowns_sent() == 1, "(the citizenship request is counted and logged once)");
+    CHECK(sorted == std::vector<std::string>{"ClientPopulateCitizenshipData", "ClientReceiveAllCurrentNodeSiegeCooldowns"},
+          "ServerRequestAllNodeSiegeCooldowns is answered (the empty array), and the citizenship window (node citizenship)");
+    size_t cooldown_bits = 0, window_bits = 0;
+    for (const repl::RpcCall& c : cd) {
+        if (std::string(c.rpc->name) == "ClientReceiveAllCurrentNodeSiegeCooldowns") cooldown_bits = c.param_bits;
+        if (std::string(c.rpc->name) == "ClientPopulateCitizenshipData") window_bits = c.param_bits;
+    }
+    CHECK(cooldown_bits == 1, "the cooldown answer is one bit, as retail's");
+    CHECK(window_bits == 1 + 1024, "the window of a character with no citizenship: its send bit and the empty struct (1,024 bits)");
+    CHECK(h.s->citizenship_requests() == 1 && h.s->siege_cooldowns_sent() == 1, "(the citizenship request is counted once)");
 }
 
 static void test_level_change() {

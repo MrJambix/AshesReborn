@@ -606,6 +606,19 @@ DELETE FROM schema_migrations WHERE version = 22;
 COMMIT;
 ```
 
+**Rolling back migration 0027.** Migration 0027 (node citizenship) adds one table, `account_citizenship`, and writes to nothing else. worldd saves an account's
+citizenship with the progress of the character that acts (`SaveProgress` with `replace_citizenship`) and reads it at the join (`GetCharacter`, `citizenship`). Rolling it
+back makes every account a non-citizen again and loses the renounce cooldowns, and nothing else (the Tax Vouchers paid stay spent); stop worldd first, or its progress saves
+fail until it runs a build without citizenship.
+
+```sql
+-- rollback of migration 0027 (node citizenship)
+BEGIN;
+DROP TABLE account_citizenship;
+DELETE FROM schema_migrations WHERE version = 27;
+COMMIT;
+```
+
 **Rolling back migration 0026.** Migration 0026 (the shared warehouse) adds three tables, `account_warehouses`, `account_warehouse_items` and `account_warehouse_containers`,
 and copies into the last one what the characters bought; at run time the character service also deletes from `character_warehouse_items` the rows worldd moved into the shared
 warehouse (`merged_legacy_warehouse_guids`). worldd reads the account's warehouse at the join (`GetCharacter`, `shared_warehouse`) and saves it with a character's inventory

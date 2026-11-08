@@ -1570,6 +1570,26 @@ bool PlayerBootstrap::set_ignored_names(const std::vector<std::string>& names) {
     return owner->obj.state.set(*owner->obj.schema, "IgnoredCharacterNames", Value(std::move(list)));
 }
 
+bool PlayerBootstrap::set_citizen_node(int64_t node) {
+    setup_.citizen_node = node;
+    for (AccountCharacterNode& c : setup_.account_characters) c.citizen_node = node;
+    if (!ok_ || mode_ != GameStateMode::Tier3) return false;
+    repl::Subobject* owner = component(setup_.guids.owner_info);
+    if (!owner) return false;
+    if (!owner->obj.state.set(*owner->obj.schema, "CitizenNodeGuid", Value::i64(node))) return false;
+    if (setup_.account_characters.empty()) return true;
+    repl::ArrayValue list;
+    for (const AccountCharacterNode& c : setup_.account_characters) {
+        repl::ElementState e;
+        e.values[1] = Value::str("");   // CharacterId: retail leaves it empty
+        e.values[2] = Value::str(c.guid_hex);
+        e.values[3] = Value::str(c.name);
+        e.values[4] = Value::i64(c.citizen_node);
+        list.elements.push_back(std::move(e));
+    }
+    return owner->obj.state.set(*owner->obj.schema, "CharactersNodeData", Value(std::move(list)));
+}
+
 bool PlayerBootstrap::set_active_stations(const std::vector<std::array<int32_t, 4>>& stations) {
     if (!ok_) return false;
     repl::Subobject* owner = component(setup_.guids.owner_info);

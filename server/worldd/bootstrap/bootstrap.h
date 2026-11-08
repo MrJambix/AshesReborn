@@ -350,6 +350,9 @@ public:
     /// OwnerInfo.IgnoredCharacterNames: the names the player ignores, which the client's ignore list window shows (UFriendsListMenu reads the component's array).  Sent with the next
     /// currencies_update().  False when the pawn has no OwnerInfo or the list is over 200 names.
     bool set_ignored_names(const std::vector<std::string>& names);
+    /// Node citizenship: the account's node (0: none) in OwnerInfo.CitizenNodeGuid and every entry of CharactersNodeData (the account's characters share it), and in setup().
+    /// Nothing goes out until the next OwnerInfo update (currencies_update()).  False when the pawn has no OwnerInfo (a mode that is not Tier3 keeps only setup()).
+    bool set_citizen_node(int64_t node);
     /// OwnerInfo.ActiveProcessingStations: the stations where the player has a job running or waiting, each as the four words of its StationGuid.  Sent with the next currencies_update() (the
     /// pawn's update that carries the OwnerInfo changes).  False when the pawn has no OwnerInfo.
     bool set_active_stations(const std::vector<std::array<int32_t, 4>>& stations);

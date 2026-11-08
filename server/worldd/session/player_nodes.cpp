@@ -109,17 +109,7 @@ void PlayerSession::on_siege_cooldowns_request() {
     cooldowns_pending_ = true;
 }
 
-// The citizenship window (ServerSetEssentialCitizenshipWindowData -> ClientPopulateCitizenshipData): its struct, FEssentialCitizenshipWindowData, is a NetSerialize struct
-// whose layout is not decoded (33 to 219 kbit in the captures; evidence.md section 4.4).  A default cannot be written without it (UE always sends a struct parameter), and a
-// guessed payload could make the client drop the connection, so the request is logged and not answered: the citizenship panel of the node window stays empty until the
-// citizenship milestone decodes the struct.
-void PlayerSession::on_citizenship_window_request() {
-    ++citizenship_requests_;
-    if (citizenship_logged_) return;
-    citizenship_logged_ = true;
-    spdlog::info("[nodes] {}: the client asks for the citizenship window's data (ServerSetEssentialCitizenshipWindowData): not answered, the struct's layout is not decoded yet "
-                 "(the citizenship milestone); further ones are not logged", name());
-}
+// (The citizenship window's request, ServerSetEssentialCitizenshipWindowData, is answered in session/player_citizenship.cpp.)
 // C.Y.B with CoA
 
 void PlayerSession::run_nodes(Connection& conn) {
@@ -250,7 +240,6 @@ void PlayerSession::register_nodes_rpcs(RpcTable& t) {
     t.add(RpcScope::PlayerController, "ServerRequestNodeSummary", [](PlayerSession& s, const RpcContext& c) { s.on_node_summary_request(c.rpc); });
     t.add(RpcScope::PlayerController, "ServerRequestCurrentSiegeSummary", [](PlayerSession& s, const RpcContext& c) { s.on_siege_summary_request(c.rpc); });
     t.add(RpcScope::PlayerController, "ServerRequestAllNodeSiegeCooldowns", [](PlayerSession& s, const RpcContext&) { s.on_siege_cooldowns_request(); });
-    t.add(RpcScope::PlayerController, "ServerSetEssentialCitizenshipWindowData", [](PlayerSession& s, const RpcContext&) { s.on_citizenship_window_request(); });
     t.add(RpcScope::PlayerController, "ServerSetNodeLevel", [](PlayerSession& s, const RpcContext& c) { s.on_gm_node_rpc(c.rpc, c.now); });
     t.add(RpcScope::PlayerController, "ServerAddNodeExperience", [](PlayerSession& s, const RpcContext& c) { s.on_gm_node_rpc(c.rpc, c.now); });
     t.add_prefix(RpcScope::PlayerController, "ServerGM", [](PlayerSession& s, const RpcContext& c) { s.on_gm_node_rpc(c.rpc, c.now); });

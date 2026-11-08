@@ -140,7 +140,14 @@ void PlayerSession::on_open_vendor(Connection& conn, const repl::ClientRpc& rpc,
     };
     if (dead_) return refuse("the character is dead");
     // the NPC the client may name is the one it talks to; the shopkeeper's own guid in the request is not what decides
-    if (!talk_.open()) return refuse("no conversation is open");
+    if (!talk_.open()) {
+        // node citizenship: the join dialog's purchase button names the shop of the tax receipts of the Node Administrator who offered it, after the conversation went on
+        if (const world::WorldActor* offered = citizenship_offer_npc(request->vendor, now)) {
+            open_talk_shop(conn, *offered, request->vendor, now);
+            return;
+        }
+        return refuse("no conversation is open");
+    }
     const world::WorldActor* npc = registry_ ? registry_->find(talk_.state().source) : nullptr;
     if (!npc) return refuse("the NPC the player talks to is gone");
     open_talk_shop(conn, *npc, request->vendor, now);

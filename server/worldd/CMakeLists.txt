@@ -307,6 +307,8 @@ add_library(worldd_core STATIC
     vendor/node_tax.cpp
     vendor/node_tax.h
     vendor/node_tax_table.h
+    world/citizenship.cpp
+    world/citizenship.h
     world/city_nodes.cpp
     world/city_nodes.h
     world/node_control.h

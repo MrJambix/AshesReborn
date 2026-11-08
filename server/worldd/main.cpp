@@ -35,6 +35,7 @@
 #include "svc/world_admin.h"
 #include "svc/world_stream.h"
 #include "svc/city_node_control.h"
+#include "world/citizenship.h"
 #include "world/city_nodes.h"
 #include "world/node_layout_data.h"
 #include "world/node_scenery.h"
@@ -669,6 +670,16 @@ int main(int argc, char** argv) {
                              city_nodes->zones(), seed_error);
             }
             players.set_city_nodes(city_nodes.get());
+            std::string citizenship_error;
+            if (auto rules = world::CitizenshipRules::load(content_db_path, citizenship_error)) {
+                std::string levels;
+                for (const auto& [level, secs] : rules->cooldown_secs) levels += (levels.empty() ? "" : ", ") + std::to_string(level);
+                spdlog::info("[nodes] citizenship: nodes at level {} take citizens; joining costs {} Tax Receipts, dues {} every {} weeks", levels, rules->join_cost, rules->dues_cost,
+                             rules->dues_weeks);
+                players.set_citizenship_rules(std::move(*rules));
+            } else {
+                spdlog::warn("[nodes] no citizenship ({}): the Node Administrators' citizenship lines open nothing", citizenship_error);
+            }
             std::string wire_error;
             node_wire = world::NodeWire::load(content_db_path, *city_nodes, wire_error);
             if (!node_wire) {

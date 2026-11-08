@@ -28,6 +28,7 @@
 #include "session/members/based_move.inc"
 #include "session/members/view_phases.inc"
 #include "session/members/market.inc"
+#include "session/members/citizenship.inc"
 #include "session/members/commissions.inc"
 #include "session/members/mount_command.inc"
 #include "session/members/surface_move.inc"

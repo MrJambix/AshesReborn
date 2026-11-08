@@ -193,6 +193,10 @@ std::unique_ptr<PlayerSession> PlayerSession::join(Connection& conn, PlayerWorld
     // Nodes 1, stage 2: the GameState's node maps at the join, and OwnerInfo's list of the account's characters.  The registry's version is read BEFORE the maps are made: a
     // change that lands in between is sent again by run_nodes at the first tick (harmless: the arrays then differ in nothing).
     uint64_t nodes_version = 0;
+    // node citizenship: the account's (what this worldd changed since it started is newer than what the login read)
+    const svc::Citizenship citizenship = world.account_citizenship(character.account_id) ? *world.account_citizenship(character.account_id)
+                                                                                            : character.citizenship.value_or(svc::Citizenship{});
+    built.setup->citizen_node = citizenship.node_guid;
     if (world.gamestate_mode() == bootstrap::GameStateMode::Tier3) {
         if (world.city_nodes() && world.node_wire()) {
             nodes_version = world.city_nodes()->version();
@@ -206,6 +210,7 @@ std::unique_ptr<PlayerSession> PlayerSession::join(Connection& conn, PlayerWorld
             n.guid_hex = other.id;
             for (char& c : n.guid_hex) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             n.name = other.name;
+            n.citizen_node = citizenship.node_guid;   // citizenship is the account's
             listed_self = listed_self || n.guid_hex == own;
             built.setup->account_characters.push_back(std::move(n));
         }
@@ -213,6 +218,7 @@ std::unique_ptr<PlayerSession> PlayerSession::join(Connection& conn, PlayerWorld
             bootstrap::AccountCharacterNode n;
             n.guid_hex = own;
             n.name = built.setup->name;
+            n.citizen_node = citizenship.node_guid;
             built.setup->account_characters.insert(built.setup->account_characters.begin(), std::move(n));
         }
     }
@@ -228,6 +234,7 @@ std::unique_ptr<PlayerSession> PlayerSession::join(Connection& conn, PlayerWorld
                           character.class_id, built.progress));
     p->wallet_ = purse;
     p->account_id_ = character.account_id;
+    p->citizenship_ = citizenship;
     p->gm_level_ = character.gm_level;
     p->auto_attack_settings_ = character.auto_attack_settings;
     p->jobs_ = character.processing_jobs;   // crafting, step 1: the jobs run on the wall clock, whether the character was logged in or not
@@ -706,6 +713,10 @@ void PlayerSession::hand_over_progress(const char* why) {
     for (const int n : attunements_.discovered) p.attunements.push_back(n);
     p.home_attunement = attunements_.home;
     p.home_last_used_ms = attunements_.home_last_used_ms;
+    if (citizenship_changed_) {   // node citizenship: the account's, once this session changed it (a session that did not leaves what another may have saved)
+        p.replace_citizenship = true;
+        p.citizenship = citizenship_;
+    }
     p.replace_completed_ftues = true;   // missing systems, step 0: the finished tutorials go whole with every hand-over (what the session holds is what the character has)
     p.completed_ftues = completed_ftues_;
     if (chat_room_ && chat_peer_) {

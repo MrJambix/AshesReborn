@@ -166,6 +166,10 @@ CharacterResult GrpcServices::get_character(const std::string& id) {
     for (const int64_t recipe : c.known_recipes()) r.character.known_recipes.push_back(recipe);
     for (const int64_t id : c.completed_ftues()) r.character.completed_ftues.push_back(id);
     for (const std::string& n : c.ignored_names()) r.character.ignored_names.push_back(n);
+    if (c.has_citizenship()) {
+        const characterv1::Citizenship& cz = c.citizenship();
+        r.character.citizenship = Citizenship{cz.node_guid(), cz.primary_character_id(), cz.joined_ms(), cz.dues_due_ms(), cz.renounce_cooldown_until_ms()};
+    }
     const auto warehouse_item = [](const characterv1::WarehouseItem& w) {
         WarehouseItem wi;
         wi.area = w.area();
@@ -324,6 +328,18 @@ CallStatus GrpcServices::save_progress(const std::string& id, const Progress& pr
     for (const int64_t id : progress.completed_ftues) req.add_completed_ftues(id);
     req.set_replace_ignored_names(progress.replace_ignored_names);
     for (const std::string& n : progress.ignored_names) req.add_ignored_names(n);
+    if (progress.replace_citizenship) {
+        req.set_replace_citizenship(true);
+        const Citizenship& cz = progress.citizenship;
+        if (cz.node_guid != 0 || cz.renounce_cooldown_until_ms != 0) {   // none: unset, and the row goes
+            auto* out = req.mutable_citizenship();
+            out->set_node_guid(cz.node_guid);
+            out->set_primary_character_id(cz.primary_character_id);
+            out->set_joined_ms(cz.joined_ms);
+            out->set_dues_due_ms(cz.dues_due_ms);
+            out->set_renounce_cooldown_until_ms(cz.renounce_cooldown_until_ms);
+        }
+    }
     req.set_replace_attunements(progress.replace_attunements);
     for (const int32_t n : progress.attunements) req.add_attunements(n);
     req.set_home_attunement(progress.home_attunement);

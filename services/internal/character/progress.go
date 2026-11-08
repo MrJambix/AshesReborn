@@ -52,6 +52,10 @@ type Progress struct {
 	// Embersprings: with ReplaceAttunements the character's discovered places, home and last use of the home respawn become exactly Attunements (attunements.go); without it they are left alone.
 	ReplaceAttunements bool
 	Attunements        Attunements
+	// Node citizenship: with ReplaceCitizenship the citizenship of the character's account becomes exactly Citizenship (citizenship.go; an empty one removes it); without it it
+	// is left alone.
+	ReplaceCitizenship bool
+	Citizenship        Citizenship
 }
 
 // C-Y-B x C O A
@@ -123,6 +127,13 @@ func (p Progress) Validate() error {
 		}
 	} else if len(p.IgnoredNames) > 0 {
 		return fmt.Errorf("%w: ignored names are given without replace_ignored_names", ErrInvalid)
+	}
+	if p.ReplaceCitizenship {
+		if err := ValidateCitizenship(p.Citizenship); err != nil {
+			return err
+		}
+	} else if p.Citizenship != (Citizenship{}) {
+		return fmt.Errorf("%w: a citizenship is given without replace_citizenship", ErrInvalid)
 	}
 	if p.ReplaceAttunements {
 		if err := ValidateAttunements(p.Attunements); err != nil {
@@ -239,6 +250,11 @@ func (s *Store) SaveProgress(ctx context.Context, characterID string, p Progress
 	if p.ReplaceAttunements {
 		if err := replaceAttunements(ctx, tx, characterID, p.Attunements); err != nil {
 			return Character{}, itemsError(err)
+		}
+	}
+	if p.ReplaceCitizenship {
+		if err := replaceCitizenship(ctx, tx, characterID, p.Citizenship); err != nil {
+			return Character{}, err
 		}
 	}
 	if err := saveAutoAttackSettings(ctx, tx, c.AccountID, p.AutoAttackSettings); err != nil {
