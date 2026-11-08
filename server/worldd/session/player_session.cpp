@@ -358,6 +358,11 @@ std::unique_ptr<PlayerSession> PlayerSession::join(Connection& conn, PlayerWorld
                  setup.name, setup.server_id, setup.player_id, mode_name(world.gamestate_mode()), p->channels_[0], p->channels_[1],
                  p->channels_[2], p->channels_[3], setup.x, setup.y, setup.z);
     for (const std::string& note : p->notes_) spdlog::info("[session] {}: {}", setup.name, note);
+    {   // the game hour the join's ClientSetTime starts this player's sky at (world/world_clock.h)
+        const double hour = setup.clock.hour(setup.world_time);
+        spdlog::info("[clock] {}: the join sets the client's game time to {} (hour {:.2f}, {}; game time {:.0f} s)", setup.name, world::hour_text(hour), hour,
+                     world::WorldClock::is_night(hour) ? "night" : "day", setup.clock.game_time(setup.world_time));
+    }
     if (p->inventory_.size() == 0) {
         spdlog::warn("[session] {}: the character has no items (the character service gives a character its class's starting kit when it starts: is it running a build with items?)", setup.name);
     }
@@ -542,8 +547,8 @@ void PlayerSession::log_position(Clock::time_point) {
                  (nav->has_region() && !nav->in_region(at.x, at.y) ? ", outside the Riverlands" : "");
     }
     const double from_login = npc_world_ ? std::hypot(at.x - npc_world_->area().center_x, at.y - npc_world_->area().center_y) / 100.0 : 0.0;
-    spdlog::info("[session] {}: at ({:.0f}, {:.0f}, {:.0f}) cm, {:.0f} m from the login spot, movement mode {}{}; {} moves acknowledged, {} refused, {} dropped as stale{}; its view holds {} awake and {} dormant actors",
-                 name(), at.x, at.y, at.z, from_login, static_cast<unsigned>(at.movement_mode), mounted() ? " (mounted)" : "", moves_acked_, moves_refused_, moves_stale_, based_move_summary() + ground,
+    spdlog::info("[session] {}: at ({:.0f}, {:.0f}, {:.0f}) cm, {:.0f} m from the login spot, movement mode {}{}; {} moves acknowledged, {} refused ({} under the ground), {} dropped as stale{}; its view holds {} awake and {} dormant actors",
+                 name(), at.x, at.y, at.z, from_login, static_cast<unsigned>(at.movement_mode), mounted() ? " (mounted)" : "", moves_acked_, moves_refused_, moves_surface_refused_, moves_stale_, based_move_summary() + ground,
                  view_ ? view_->count(world::ClientState::Awake) : 0, view_ ? view_->count(world::ClientState::Dormant) : 0);
 }
 

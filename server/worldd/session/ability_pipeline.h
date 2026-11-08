@@ -21,7 +21,7 @@
 //               does not compile refuses the ability (NoFormula), logged. A ClientInstanceId the pipeline has seen lately is dropped with no answer.
 //    cast       one trigger makes up to four steps, each at its own time after the trigger (the montage's notifies):
 //                 item       the ability item (ReplicatedActiveAbilities): the ability, a ServerInstanceId from the pawn's counter, the montage's
-//                            static NetGUID by the call's AnimationIndex (ab_montage.net_guid), PlayRate 1.0, MontageGroup (DefaultGroup;
+//                            static NetGUID by the call's AnimationIndex (ab_montage.net_guid), PlayRate (the character's speed stat for an ability whose table rows say which one, else 1.0), MontageGroup (DefaultGroup;
 //                            Flourish EmoteGroup, the songs SongGroup), Targets the caster when the call named one; the previous item
 //                            of the pipeline goes in the same update (every retail reply says "deleted 1"). The median of the recorded casts where
 //                            ability_timings.h has the ability (50 to 110 ms for most, per kind of cast), else about 300 ms after the trigger
@@ -56,9 +56,9 @@
 //               the ability put on its caster off (kLoopedCasts in ability_pipeline.cpp has the offsets).
 //    launches   an ability whose montage launches projectiles at moments of its own (the Ranger's Air Strike, Raining Death and Barrage) is played by the SERVER: every launch is a step of the cast at the
 //               time of the montage's notify and what it launches lands after its flight (kTimedCasts in ability_pipeline.cpp has the table). A hit the client asks for that fires projectiles (Maim's wave) sends them.
-//    flights    an ordinary cast with one projectile (the charged shots and the bolts, the Bard's Mock and its heals, the Sleep Dart, the Throw, the Mend) lands its hit when the projectile gets to the
+//    flights    an ordinary cast with one projectile (the charged shots and the bolts, the Bard's Mock and its heals, the Sleep Dart, the Throw, the Mend, a ranged weapon swing) lands its hit when the projectile gets to the
 //               target: the montage's launch notify over the client's play rate, plus the target's distance over the projectile's speed (kShotCasts); a cast at the caster himself has no flight.
-//               One that sends several projectiles (the Discordance's three notes, kNoteCasts) does so for each of them, and a hit that fires a bounce when it lands (kBounces) sends the
+//               One that sends several projectiles (the Discordance's three notes, a Shortbow volley, kNoteCasts) does so for each of them, and a hit that fires a bounce when it lands (kBounces) sends the
 //               projectile on from the enemy just hit to another one near it, where it lands its hits when it gets there.
 //    hits       a hit applies to the caster when its mask names Self (1) and its requirement holds: the ability's own hits (ab_ability_hit "hit"), the
 //               hits of the projectiles it fires when it has a target (the caster), the first overlap of the zones it spawns (the Initial and
@@ -258,6 +258,7 @@ struct NoteCast {
     int         key;          // the key (in the ability's ProjectilesIds) of the projectile this launch sends
     double      fire;         // the montage time of its FireProjectile notify, seconds
     bool        magical;      // the client plays the montage at MagicalSpeed (else at PhysicalSpeed)
+    int         animation = -1;   // the AnimationIndex of the montage this launch is for (-1: any); a weapon swing has a row for each arrow of each step
 };
 
 /// A hit that fires further hits when it lands (its RecursiveHit child, which fires a projectile): the projectile flies on from the enemy just hit to another enemy near it, and its hits land there
@@ -267,6 +268,17 @@ struct BounceRule {
     double      radius;       // how far from the enemy just hit the next one may stand, cm
     int         max_bounces;  // how many times in a row the projectile may fly on
     bool        random;       // the next enemy is drawn at random (else: the nearest one that this cast has not hit yet, to the enemy just hit and to the caster)
+};
+
+/// An ability whose projectile is a ball that flies on from where the caster stands and hurts every enemy its body touches, each again and again while it stays inside the ball (the Mage's Ball
+/// Lightning): the server flies it, a step every kBallStep, and lands its hits as the projectile's ordinary hits (ability_pipeline.cpp has the table).
+struct BallCast {
+    const char* ability;
+    double      bar;      // the montage time where the cast bar ends, seconds: the client plays the bar up to here, so this over the seconds the bar took is its play rate
+    double      fire;     // the montage launches the ball this long after the bar's end, in montage seconds
+    double      period;   // the least time between two hits on one enemy, seconds, counted from that enemy's last hit
+    double      ahead;    // the ball starts this far ahead of the caster, along the way the caster faces, cm ...
+    double      up;       // ... and this far above the middle of the caster's body
 };
 
 class AbilityPipeline {
@@ -289,14 +301,16 @@ public:
     static constexpr double kRequestWindow = 5.0;
     /// A consumable's cast takes the request for its apply hit this long after its cost step: a meal's is asked about seven seconds after the use [R: 6.95-6.98 s].
     static constexpr double kItemRequestWindow = 15.0;
+    /// How long after the press a cast that asks the client for its hit, and whose montage end the recordings do not show, stays open for a Dodge (or until its hit is asked for): the median montage end of the recorded
+    /// abilities (1.36 s), rounded up [an estimate].
+    static constexpr double kDodgeHold = 1.4;
     /// A consumable's ability item, cost and stack removal come in one packet this long after the use [R: the retail captures of a food, an elixir and four scrolls:
     /// 54-113 ms, median about 65].
     static constexpr double kItemCastDelay = 0.065;
     static constexpr int    kMaxRequestsPerHit = 8;
     static constexpr double kMinRequestGap = 0.100;
     /// A beam (the wand's finisher) keeps the client asking for its tick hit for as long as it burns: up to a dozen requests about 100 ms apart, the closest 68 ms.
-    /// A cast of a beam step takes that many requests per hit, that close together.
-    static constexpr int    kBeamRequestsPerHit = 24;
+    /// A cast of a beam step takes its requests that close together; how many of each hit it takes is in `kBeamHits` (ability_pipeline.cpp).
     static constexpr double kBeamRequestGap = 0.050;
     static constexpr size_t kMaxRecords = 16;
     /// The most casts waiting for their steps at once.
@@ -413,8 +427,21 @@ public:
 
     /// ServerEndAbility: the client ends the instance with this ServerInstanceId (an ability of ours it started): kEndDelay later the item's montage is
     /// cleared and ClientEndAbility(its ClientInstanceId) is sent [R: Cleric_SoothingGlow, the retail capture: +259 ms]. False for an instance that is none of ours
-    /// or was ended already.
+    /// or was ended already. A cast bar it ends before its end is cancelled: what a cast that had paid already took (Smite, the Arcane Circle) comes back, as after a Dodge.
     bool end_request(int32_t server_instance_id, double now);
+
+    /// A Dodge the server took: every cast bar the character is in ends (the game's rule). Nothing of the cast is paid, nothing fires and the montage ends; what a cast had paid already (the Mana and other stats
+    /// it took, the effect stacks it took, the charge that started its cooldown, the class resource that its payment gave) is given back, and the client gets ClientEndAbility for the cast. A cast whose bar is over (the client's request for
+    /// its branch came, a held cast's key went up) is not touched here, nor is a cast with no bar (a weapon swing, a song, the Salvo, the Barrage, a channel, a stance: end_by_dodge ends all of them except the song). Returns how many casts ended.
+    size_t end_cast_bars(double now, const char* why);
+
+    /// A Dodge the server took (the game's rule): a Dodge cancels an ability that has not gone out yet and gives back what it paid. Once something of it has gone out (a hit the client asked for or that landed, a projectile
+    /// or a volley launched, an effect started, a cast bar's end) the Dodge does nothing to it: no cancel, no refund, no message, and what is in the air still hits. It cancels the cast bars the character is in
+    /// (end_cast_bars), every other cast that is running (the Salvo, the Barrage, the Air Strike, the Raining Death, the held abilities, and an ordinary ability in its wind up before the cost step and the hit)
+    /// and the weapon swing under way, each before its first arrow, hit or effect. Nothing of a cancelled cast is paid, nothing fires, the hits the client would still ask for are not taken, what it paid comes back and the client is told with ClientEndAbility for it.
+    /// A Melody and a Sprint go on, and a Rest ends in the runtime. A consumable (its item is used at the press), a pet command and a leap, a charge, a teleport or a dash are gone out at the press and are left alone; an ability
+    /// with no hit of its own is gone out once it is paid. Returns how many casts and swings were cancelled.
+    size_t end_by_dodge(double now);
 
     /// RequestHitVerification_Server: what the client says it hit. `own` of the `components` are the caster's own (nothing else is in this world).
     enum class HitVerdict : uint8_t {
@@ -447,7 +474,17 @@ public:
     /// An NPC's hit on the caster, resolved by the world: its stat mods move the character's Health through the shields, the confirmation names the NPC as the
     /// instigator and carries the flags (Lethal when the hit took the last Health). The change and the confirmation are an event.
     void receive_hit(const combat::IncomingHit& hit, double now);
-    /// A pet ability, on its owner's side.  It pays the ability's `_OwnerCost` hit (false, and nothing paid: the Essence is not there) and says its cooldown.
+    // ---- a Summoner's pet
+    /// What a pet's ability costs its owner: the Essence it takes from each stat (all the ability's cost hits added up) and the cooldown it starts.
+    struct PetPayment {
+        std::vector<std::pair<int64_t, double>> costs;   // (stat, amount)
+        double                                  cooldown = 0;
+    };
+    /// Whether the owner can pay for a pet's ability now (the Essence is there), and what it costs.  It pays and starts nothing, so a cast the world then refuses costs nothing.
+    bool can_pay_pet_ability(int64_t ability, double now, PetPayment& out);
+    /// Takes what can_pay_pet_ability worked out: the Essence, and the cooldown the ability starts on its owner.
+    void commit_pet_payment(int64_t ability, const PetPayment& pay, double now);
+    /// A pet ability, on its owner's side.  It pays the ability's `_OwnerCost` hits (false, and nothing paid: the Essence is not there) and says its cooldown: can_pay_pet_ability, then commit_pet_payment.
     bool pay_pet_ability(int64_t ability, double now, double& cooldown);
     /// A pet's ability's cooldown shows on its owner's Cooldowns, where the bar's slot reads it [R: the Stance Swap, 476, 477: CD 0.1, charges 0].
     void start_pet_cooldown(int64_t ability, double seconds, double now);
@@ -577,6 +614,8 @@ private:
         bool    source_is_target = false;
         /// The confirmation's Source is this actor, the enemy a bounce flew from (the child hit names it, the next enemy is its target); 0: no Source
         uint64_t source_actor = 0;
+        /// The hit reaches its targets wherever they stand: a ball that flew on from the caster hurts what it touches, however far from the caster that is by now. Every other check of the hit holds.
+        bool    reach_free = false;
     };
     /// A hit the character made, as the reactions that listen to hits see it (OwnerHits).
     struct HitEvent {
@@ -608,6 +647,7 @@ private:
         bool                     aims_others = false;   // plan E1, stage 3: its mask names enemies or allies other than the caster
         bool                     server_self_use = false; // authorized consumable: scheduled only after its item cost is paid
         int                      requests = 0;
+        int                      max_requests = -1;   // the most requests this hit takes in a cast (negative: the record's)
         double                   last_request = -1e9;
         std::vector<Pending>     due;          // when a request's application runs
         bool                     applied = false;   // the server applied it by itself (no request came by the deadline)
@@ -627,9 +667,27 @@ private:
         double                       hit_delay = kHitDelay;   // how long after the cost step the cast's hits may apply (its montage's, none without one)
         int                          max_requests = kMaxRequestsPerHit;   // a zone's tick hit is asked for as often as the zone's life holds ticks
         double                       min_gap = kMinRequestGap;            // the least time between two requests for one hit
+        bool                         launched = false; // something of the cast has gone out (a hit, a projectile or a volley, an effect): a Dodge no longer cancels it
         std::vector<HitSlot>         slots;
         std::set<int64_t>            reach;            // every hit that belongs to the ability
         std::map<int64_t, std::pair<int, double>> asked;   // hit guid -> (requests, time of the last) for the hits that are no slot
+    };
+    /// The flight of a ball (BallCast): where it started, which way it goes, how long it lasts and which enemies it has hurt, and when.
+    struct BallFlight {
+        struct Touch {
+            double next = 0;   // the earliest time the enemy is hurt again
+            int    hits = 0;   // how many times it was hurt
+        };
+        int64_t                   projectile = 0;       // the projectile record the ball is: its hits are the record's
+        double                    speed = 0;            // cm per second
+        double                    radius = 0;           // the ball's body, cm
+        double                    lasts = 0;            // how long it flies, seconds: its life, or its range over its speed when that comes first
+        double                    rate = 1.0;           // the play rate of the client's montage that launched it (for the log)
+        double                    launch_at = -1;       // when it left (negative: not yet)
+        double                    x = 0, y = 0, z = 0;  // where it started
+        double                    dx = 1, dy = 0;       // the way it goes: a unit vector along the ground (it flies level)
+        std::map<uint64_t, Touch> touched;              // every enemy its body has touched
+        int                       hits = 0;             // the hits it has sent, on all of them
     };
     struct Cast {
         std::function<bool()>                consume_item;
@@ -648,6 +706,9 @@ private:
         int64_t                               charged_projectile = 0;     // ... and the one of its charged shot
         bool                                  held = false;               // the character's talent makes the cast a held one: it waits for the key's release or the full charge
         bool                                  charged = false;            // the charge was full: the cast fires the charged shot
+        bool                                  released = false;           // a held cast: the key went up, the cast goes on from there (its bar is over)
+        bool                                  paid = false;               // its cost step ran and took the cost (a Dodge or the client's end in its bar gives that back, refund)
+        int                                   resource_added = 0;         // the stacks of the class resource its last payment added (none at the resource's limit): what a give back takes off again
         int                                   shots = 0;                  // the shots it has taken
         int64_t                               shot_projectile = 0;        // the projectile record each shot sends (0: none: it is cast at the air)
         bool                                  montage_branch = false;     // the montage moves to a section when the cast ends (the changes of `item` below)
@@ -660,7 +721,8 @@ private:
             uint64_t target = 0;       // the one enemy it flies at (0: the cast's own targets)
             // A timed cast (kTimedCasts) has two more kinds of step in this list: a launch (launch `index` leaves) and, for a Strike, the landing of arrow `index` at (x, y, z).
             // A Fly is a projectile that leaves at `due` (kNoteCasts: a note; a bounce leaves the enemy just hit, at (x, y, z)) and lands a flight later on `target`; `depth` counts the bounces before it
-            enum class Kind : uint8_t { Land, Launch, Strike, Fly };
+            // A Ball is one step of a ball's flight (kBalls): `index` counts the steps, 0 is the launch; a step looks at what the ball touches and sends a Land at each enemy that is due a hit
+            enum class Kind : uint8_t { Land, Launch, Strike, Fly, Ball };
             Kind     kind = Kind::Land;
             int      index = 0;
             double   x = 0, y = 0, z = 0;
@@ -697,6 +759,8 @@ private:
         double                                launch_at = -1;             // ... when it leaves: the plan (the montage's notify at the client's play rate), then the client's own request
         bool                                  anchored = false;           // ... the client's request for the hit that goes with the launch came
         double                                flight = 0;                 // ... how long it flies, seconds (the target's distance over the projectile's speed)
+        const BallCast*                       ball = nullptr;             // a cast whose projectile is a ball that flies on (kBalls): planned at the montage's jump, in flight from its first step
+        BallFlight                            ball_flight;                // ... and its flight
     };
     struct EffectInst {
         std::map<int64_t, double>    item_stats;
@@ -806,11 +870,30 @@ private:
     bool   holds_skill(int64_t skill) const;
     /// A held cast goes on: its jump comes at `branch_at`, its cost `cost_after` later and its end after that; its record of hit requests follows.
     void   reschedule_branch(Cast& cast, double branch_at, double cost_after);
-    void   abort_cast(size_t index, double t, const char* why);   // a cast that ends here: none of its steps happens, its item keeps its place with the montage cleared
+    void   abort_cast(size_t index, double t, const char* why, bool give_back = false);   // a cast that ends here: none of its steps happens, its item keeps its place with the montage cleared; `give_back`: what it had paid comes back (refund)
     void   end_zones_of(const Cast& cast, double t);              // the zones a cast made go with it: one that did not open is dropped, one that did ends now
+    bool   in_cast_bar(const Cast& cast) const;                   // the cast's bar is running: the client's request for its branch has not come (a held cast's key is still down, its charge not full), or a summon has not run out
+    void   refund(bootstrap::AbilityChange& c, Cast& cast);   // what a cast paid comes back (a Dodge or the client's own end in its bar): its stat costs, its effect stacks, its charge (the cooldown ends when every charge is back) and the class resource it gave
+    void   give_back(bootstrap::AbilityChange& c, const Cast& cast);   // ... one payment of it (a Salvo shot is one: refund gives back the whole cast's, once)
+    size_t end_unlaunched(double t, const char* why);   // a Dodge: every running cast that has not gone out is cancelled (a Melody, a toggle's off press, a consumable's use, a pet command and a leap, charge, teleport or dash are not)
+    size_t end_swings(double t, const char* why);        // a Dodge: the weapon swing under way is cancelled when nothing of it has gone out
+    bool   dodge_cancels(const Cast& cast) const;        // a cast end_unlaunched cancels: not one of those, not a swing, and nothing of it has gone out
+    bool   gone_out(int32_t client_id, const Cast* cast = nullptr) const;   // something of the cast has gone out: a hit asked for or landed, a launch, an effect, a cast bar's end
+    void   mark_launched(int32_t client_id);                                // ... a step of the cast sent something out
     bool   can_pay(const Cast& cast) const;                       // whether the character holds what the cast's cost step takes (stats, effect stacks, a charge of its group): asked at the cost step and by a jump that comes before it
     void   bring_sooner(Cast& cast, double earlier);              // the end of a cast bar came `earlier` (negative) than the moment it was taken to come: the rest of the cast moves with it
     void   land_by_flight(Cast& cast, double t);                  // the montage jumped: the cast bar's projectiles land when they get to the target (kFlights), not when the table said
+    /// The montage jumped and the ability's projectile is a ball (kBalls): the ball leaves when the montage's notify gets there at the client's play rate, never before the cost step. It is a Ball
+    /// step of the cast, due at the launch; a cast that cannot pay clears it with its other steps.
+    void   launch_ball(Cast& cast, double t);
+    /// One step of a ball's flight. The first (index 0) leaves the ball from where the caster stands now, along the way the caster faces; every step puts the ball where its flight has taken it and sends a hit
+    /// (a Land, through the projectile's ordinary hit path) at each enemy it touches that is due one, and the next step follows until the ball's life or range is over.
+    void   ball_step(Cast& cast, const Cast::Missile& step, double t);
+    /// Whether the montage of `def` plays at the caster's MagicalSpeed (else PhysicalSpeed): an ability of a class says so in its table row (`row_magical`); a weapon swing belongs to no class, so the CHARACTER's class says (a Cleric's
+    /// shortbow swing plays at MagicalSpeed, a Fighter's wand swing at PhysicalSpeed).
+    bool   plays_at_magical(const abilities::AbilityDef& def, bool row_magical) const;
+    /// The play rate the ability item carries: the character's speed stat for an ability whose table rows say which stat its montage plays at (the ordinary shots, the notes, the Salvo, the ranged weapon swings), else 1.0.
+    double item_rate(const abilities::AbilityDef& def) const;
     double client_rate(bool magical) const;                       // the speed the client plays a montage at: its MagicalSpeed or PhysicalSpeed stat (1.0 when the stat is not there)
     void   plan_shot(Cast& cast, const ShotCast& shot, double t); // an ordinary cast with one projectile: when it leaves (the montage's notify over the client's play rate)
     void   launch_shot(Cast& cast, double t);                     // ... it leaves now: it lands after its flight over the target's distance (kShotCasts)
@@ -847,6 +930,7 @@ private:
                         int64_t owner = 0);
     void   remove_instance(bootstrap::AbilityChange& c, size_t index);
     void   remove_stacks(bootstrap::AbilityChange& c, int64_t effect_guid, int stacks);
+    void   restore_stacks(bootstrap::AbilityChange& c, const abilities::EffectDef& def, int stacks, double t);   // stacks a cost took go back on (the instance keeps its time; one that has gone comes back whole)
     bootstrap::EffectItem effect_item(const EffectInst& e) const;
     void   run_effect_hits(bootstrap::AbilityChange& c, const EffectInst& e, const char* const* phases, size_t n, double t);
     void   step_loop(Cast& cast, double t);
@@ -888,10 +972,8 @@ private:
     struct PlacedZone;
     void   spawn_placed_zones(const CastRecord& rec, const abilities::HitDef& hit, double t);
     void   run_placed_zone(size_t index, double t);
-    bool   launch_ball(const Cast& cast, double t);
     /// A melody's finisher that helps allies (kAllyFinishers): false for any other hit.
     bool   land_ally_finisher(bootstrap::AbilityChange& c, const abilities::HitDef& hit, const HitSource& src, double t);
-    void   run_ball(size_t index, double t);
     void   land_placed_zone_hits(bootstrap::AbilityChange& c, PlacedZone& z, const char* role, double t);
     void   run_reactions(bootstrap::AbilityChange& c, int kind, int bit, const ReactionContext& rc, double t);
     void   fire_reaction(bootstrap::AbilityChange& c, const abilities::ReactionDef& r, int64_t carrier, const ReactionContext& rc, double t);
@@ -976,15 +1058,6 @@ private:
     };
     std::vector<PlacedZone>   placed_zones_;
     double                    others_endless_seconds_ = -1;   // while a placed zone lands a hit with an endless effect: how long it lasts on the others it reaches (< 0: as the record says)
-    /// A projectile that rolls on over the ground, hitting what is near it as it goes (kBalls: Ball Lightning).
-    struct RollingBall {
-        const abilities::HitDef*     hit = nullptr;
-        const abilities::AbilityDef* ability = nullptr;
-        int64_t      projectile = 0;
-        combat::Vec3 at;
-        double       dir_x = 1, dir_y = 0, speed = 0, radius = 0, period = 0, tick_due = 0, end_at = 0;
-    };
-    std::vector<RollingBall>  balls_;
     std::map<int32_t, combat::Vec3> cast_places_;   // the place a cast's call names, until its hit spawns its zone
     int64_t                   next_zone_id_ = 1;
     int64_t                   zone_owner_ = 0;                      // the zone instance whose hits are being applied (the effects they create belong to it)
@@ -998,7 +1071,12 @@ private:
         int64_t ability = 0;
     };
     std::deque<Instance>      instances_;                           // the abilities the client may end with ServerEndAbility (the last few)
-    void   end_instance(size_t index, double t);
+    void   end_instance(size_t index, double t, const std::string& why = std::string());   // `why`: what ended it besides the client's own end (the log's note)
+    /// A ranged weapon combo's swings: the step the last one played (by ability). The client plays the steps in order and starts over after the last, so the next swing is the step after it or the first;
+    /// swing_montage keeps a modified client to that, and stop_swing is the client ending the swing (a stun): the arrows that had still to leave never do.
+    std::map<int64_t, int> swing_steps_;
+    int    swing_montage(const abilities::AbilityDef& def, int requested, int& step) const;
+    void   stop_swing(int64_t instance);
     stats::SplitMix           guid_rng_;
     std::vector<bootstrap::ShieldElement> shields_sent_;
     size_t                    refused_ = 0, casts_started_ = 0, regen_ticks_ = 0;

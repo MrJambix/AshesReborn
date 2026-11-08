@@ -466,6 +466,11 @@ void PlayerSession::on_ability_trigger(Connection& conn, const repl::ClientRpc& 
     }
     // The auto mode, cast from the bar: it turns on and off.  (Its hit takes the effect off before it asks whether the effect is off, so through the pipeline it could never turn off.)
     if (ability == pets::kAutomationAbility && pipeline_) {
+        if (!pipeline_->known(ability)) {   // the pipeline's own gate, which the toggle goes around: a character that has not learned it cannot turn the mode on
+            spdlog::debug("[pets] {}: the automation toggle is refused: the character has not learned it", name());
+            end_instance(conn, instance, false);
+            return;
+        }
         const double sec = ability_seconds(now);
         const bool was_on = pipeline_->stacks_of(pets::kAutomationEffect) > 0;
         if (was_on) pipeline_->remove_effect(pets::kAutomationEffect, sec);
@@ -478,7 +483,11 @@ void PlayerSession::on_ability_trigger(Connection& conn, const repl::ClientRpc& 
     }
     // A pet's ability is the pet's to play: the owner's character casts nothing and pays its Essence (the Stance Swap comes this way [R: 476, 477])
     if (pets::pet_of_ability(ability) != 0) {
-        pet_use_ability(conn, ability, info.target_actors.empty() ? 0 : info.target_actors.front(), now, "the bar (a trigger)");
+        // what the cast names: the first actor of the world it resolves to.  A call that names something that is no such actor (the caster itself, as the client names it for a heal on itself, or an
+        // actor that is not there) names the owner, as the pipeline reads it: an ability that reaches only enemies is then refused, one that helps its owner is played
+        uint64_t named = info.target_actors.empty() ? 0 : info.target_actors.front();
+        if (named == 0 && info.target_count > 0 && combat_side_) named = combat_side_->actor_id();
+        pet_use_ability(conn, ability, named, now, "the bar (a trigger)");
         end_instance(conn, instance, false);
         return;
     }
@@ -487,8 +496,10 @@ void PlayerSession::on_ability_trigger(Connection& conn, const repl::ClientRpc& 
     // Retail names an item only for a consumable or a mount.  A trigger that claims a Backpack item must prove it; one that names anything else (a worn weapon) gets no item's effect and no
     // consumable's path, and goes on as any trigger: the pipeline refuses an item it did not authorize, and A7's abilities cost what they always cost.
     if (info.item && item_location == static_cast<uint32_t>(repl::ItemLocation::Backpack) && !prepare_consumable(conn, ability, instance, item_slot, item_location, requested_item, info, now)) return;
+    bool accepted_cast = true;   // (the generic runtime has no refusal to give back: a pet's command goes on as before)
     if (pipeline_ && (pipeline_->handles(ability) || info.consume_item)) {
         const Refusal accepted = pipeline_->trigger(ability, instance, ability_seconds(now), info);
+        accepted_cast = accepted == Refusal::None;
         if (accepted == Refusal::None && !info.target_actors.empty()) pet_joins_owners_cast(info.target_actors.front());
         // Drop Crate: the cast plays its montage and the crate leaves the back at the montage's notify, whatever the place (the original drops nothing at a place a crate cannot lie)
         if (ability == content::kGuidDropCrate && accepted == Refusal::None) {
@@ -496,7 +507,13 @@ void PlayerSession::on_ability_trigger(Connection& conn, const repl::ClientRpc& 
             crate_drop_instance_ = instance;
         }
     } else {
-        runtime->trigger(ability, instance, ability_seconds(now), info);
+        const Refusal ran = runtime->trigger(ability, instance, ability_seconds(now), info);
+        // the game's rule: a Dodge the server took cancels every ability that has not gone out yet, gives back what it paid (the cast bars, the Salvo and the Barrage, the weapon swing under way, the held stance (Guard)
+        // and every other ability in its wind up) and keeps a crate that has not left the back; a Dodge it refused ends nothing
+        if (ran == Refusal::None && ability == content::kGuidDodge && pipeline_) {
+            pipeline_->end_by_dodge(ability_seconds(now));
+            crate_drop_due_.reset();   // (Drop Crate has not gone out until the crate leaves the back, 0.7 s after the press)
+        }
     }
     take_ability_events();
     flush_abilities(conn);
@@ -506,7 +523,8 @@ void PlayerSession::on_ability_trigger(Connection& conn, const repl::ClientRpc& 
         const bool fighting = combat_side_ && combat_side_->wants_in_combat;
         note_quest_event([ability, tags = std::move(tags), fighting](quest::Engine& eng) { eng.ability(ability, tags, fighting); });
     }
-    if (const int64_t command = pets::command_of_ability(ability); command != 0 && pet_actor_) {
+    // a pet's command is the ability's: the pet obeys only when the pipeline took the cast (a refused Go To, still on its cooldown, orders nothing)
+    if (const int64_t command = pets::command_of_ability(ability); command != 0 && pet_actor_ && accepted_cast) {
         pet_command(conn, command, info.target_actors.empty() ? 0 : info.target_actors.front(), trigger_place, now);
     }
 }

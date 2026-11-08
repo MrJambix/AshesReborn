@@ -9,3 +9,4 @@
 #include "movement_move_ack_tests.inc"
 #include "movement_based_move_tests.inc"
 #include "movement_view_threads_tests.inc"
+#include "movement_surface_tests.inc"

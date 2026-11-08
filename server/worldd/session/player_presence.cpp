@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "session/player_presence.h"
+#include "protocol/repl/move_packed.h"
 #include "stats/character_stats.h"
 
 #include <algorithm>
@@ -12,6 +13,24 @@ namespace aoc::worldd {
 namespace {
 namespace repl = protocol::repl;
 using repl::Value;
+
+/// The movement mode the other players' clients are shown (from core 736185f): a move's mode is the byte the client sent and the move checker keeps it as sent, so a modified client
+/// could put any number into every nearby client's copy of its pawn.  The modes a character moves in are walking, falling, swimming, flying and the custom modes 16, 17 and 18; the
+/// client's 0 (none) and any other number are shown as walking.
+uint8_t shown_movement_mode(uint8_t mode) {
+    switch (mode) {
+        case repl::kMoveWalking:
+        case repl::kMoveFalling:
+        case repl::kMoveSwimming:
+        case repl::kMoveFlying:
+        case 16:
+        case 17:
+        case 18:
+            return mode;
+        default:
+            return repl::kMoveWalking;
+    }
+}
 
 bool allowed(std::string_view path, std::initializer_list<std::string_view> paths) {
     return std::any_of(paths.begin(), paths.end(), [path](std::string_view p) {
@@ -172,7 +191,7 @@ bool PlayerPresence::update(const bootstrap::PlayerBootstrap& player, const Good
     movement.linear_velocity = repl::quantize_velocity(pawn.obj.opts, vx, vy, vz);
     auto& object = pawn.obj;
     object.state.set(*object.schema, "ReplicatedMovement", Value(movement));
-    object.state.set(*object.schema, "ReplicatedMovementMode", Value::u64(at.movement_mode));
+    object.state.set(*object.schema, "ReplicatedMovementMode", Value::u64(shown_movement_mode(at.movement_mode)));
     object.state.set(*object.schema, "RemoteViewPitch16", Value::u64(at.pitch16));
     const double radians = at.yaw_degrees * 3.141592653589793 / 180.0;
     const double forward = vx * std::cos(radians) + vy * std::sin(radians);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
+// Summoner pets: contributed by MrJambix in #13.
 #include "session/player_combat_side.h"
 #include "session/player_session_util.h"
 
@@ -222,12 +223,14 @@ void PlayerSession::run_pets(Connection& conn, Clock::time_point now) {
         *pet_owner_at_ = nav::Vec3{at.x, at.y, at.z - 88.0};
     }
     if (busy || !pet_follow_) pet_chasing_owner_ = false;   // (whatever took its feet: it sets off again when that is over)
-    if (pet_actor_ && pet_follow_ && !busy) {   // left far behind (a teleport, a mount): Summoner_Pet_LeashTeleport
+    if (pet_actor_ && !busy) {   // left far behind (a teleport, a mount, a Stay or a Go To its owner walked away from): Summoner_Pet_LeashTeleport, in every mode
         const auto* pet = registry_->find(pet_actor_);
         auto* npcs = npc_world_ ? npc_world_->npcs() : nullptr;
         if (pet && npcs && std::hypot(pet->x - pet_owner_at_->x, pet->y - pet_owner_at_->y) > pets::kLeashCm) {
             npcs->warp(pet_actor_, pet_owner_at_->x + 200.0, pet_owner_at_->y, pet_owner_at_->z);
             pet_chasing_owner_ = false;
+            pet_follow_ = true;   // it goes back to its owner's side and follows again, as after Follow
+            pet_follow_at_ = 0;
             spdlog::info("[pets] {}: the pet was left behind: it comes back to its owner", name());
         }
     }
@@ -371,6 +374,7 @@ void PlayerSession::pet_use_ability(Connection& conn, int64_t ability, uint64_t 
         spdlog::log(by ? spdlog::level::info : spdlog::level::debug, "[pets] {}: {} asked by {} is refused: {}", name(), what, asked, why);
     };
     if (dead_ || !pet_actor_ || !def || !pipeline_ || pets::pet_of_ability(ability) != def->effect) return refused("no pet of its kind");
+    if (!pipeline_->known(ability)) return refused("the character has not learned it");   // the pipeline's own gate, which a pet's ability goes around
     const double sec = ability_seconds(now);
     if (const auto ready = pet_cooldowns_.find(ability); ready != pet_cooldowns_.end() && sec < ready->second) return refused(fmt::format("its cooldown has {:.1f} s left", ready->second - sec));
     if (ability == pets::kHunterStanceSwap) {
@@ -390,25 +394,34 @@ void PlayerSession::pet_use_ability(Connection& conn, int64_t ability, uint64_t 
         return;
     }
     if (!fights || !combat_side_) return refused("no fights in this world");
+    const uint64_t owner = combat_side_->actor_id();
+    // whom it is aimed at: the actor the cast names; failing that, the one its owner holds, when the ability reaches it (an ability that helps its owner, cast while an enemy is held, has no target)
     uint64_t aim = target;
-    if (aim == 0 && active_targets_[0].is_valid()) aim = fights->actor_of_object(active_targets_[0].ObjectId);
-    if (!fights->pet_can_act(pet_actor_)) return refused("the pet cannot act");
+    if (aim == 0 && active_targets_[0].is_valid()) {
+        const uint64_t held = fights->actor_of_object(active_targets_[0].ObjectId);
+        if (held != 0 && fights->pet_can_use(pet_actor_, owner, ability, held)) aim = held;
+    }
+    // everything that can refuse the cast is asked before the owner pays: the pet and its target, the Essence, then the pet's own start.  A refused cast costs nothing and starts no cooldown.
+    std::string why;
+    if (!fights->pet_can_use(pet_actor_, owner, ability, aim, &why)) return refused(why);
     const double essence = pipeline_->stat_of(pets::kEssence);
-    double cooldown = 0;
-    if (!pipeline_->pay_pet_ability(ability, sec, cooldown)) {
+    AbilityPipeline::PetPayment pay;
+    if (!pipeline_->can_pay_pet_ability(ability, sec, pay)) {
         refused(fmt::format("the Essence is not there (the owner has {:.1f})", essence));
         take_ability_events();
         return;
     }
-    take_ability_events();
-    flush_abilities(conn);
     double reach = def->effect == pets::kHunterEffect && hunter_ranged_ ? pets::kHunterRangedReach : def->reach_cm;
     if (ability == pets::kGuardianTaunt) reach = pets::kGuardianTauntReach;
     if (ability == pets::kHunterLunge && !hunter_ranged_) reach = 999.0;   // (it leaps from here: Lunge's distance comes with the leap)
-    if (!fights->pet_use(pet_actor_, combat_side_->actor_id(), ability, aim, reach)) {
-        spdlog::warn("[pets] {}: {} asked by {} was paid for and the pet cannot play it", name(), what, asked);
-        return;
+    if (!fights->pet_use(pet_actor_, owner, ability, aim, reach)) {
+        take_ability_events();
+        return refused("the pet cannot play it");
     }
+    pipeline_->commit_pet_payment(ability, pay, sec);
+    take_ability_events();
+    flush_abilities(conn);
+    const double cooldown = pay.cooldown;
     pet_cooldowns_[ability] = sec + cooldown;
     // the cooldown shows on the pet's ability component [modelled: no recording shows a pet's Cooldowns]
     if (cooldown >= 1.0 && registry_) {
@@ -532,13 +545,26 @@ void PlayerSession::pet_command(Connection& conn, int64_t command, uint64_t targ
         pet_follow_ = false;
         if (npcs) npcs->halt(pet_actor_);
     } else if (command == pets::kGoTo) {
-        call_off();
-        pet_follow_ = false;
         // the cast names the place it was aimed at; failing that, it goes to the target its owner holds
         const world::WorldActor* aimed = !place && active && registry_ ? registry_->find(active) : nullptr;
         const std::optional<nav::Vec3> where = place ? place : aimed ? std::optional<nav::Vec3>(nav::Vec3{aimed->x, aimed->y, aimed->z}) : std::nullopt;
-        if (npcs && where) npcs->order_move(pet_actor_, *where, 720.0, 100.0);
-        else spdlog::info("[pets] {}: Go To names no place: the pet stays", name());
+        // a place farther from its owner than the ability's own AreaRange (a number that is no number, too) is no order: the pet goes on as it was, and no path is searched for it
+        const abilities::AbilityDef* record = world_ && world_->ability_catalog() ? world_->ability_catalog()->ability(pets::kGoToAbility) : nullptr;
+        const double range = record && record->row.area_range > 0 ? record->row.area_range : pets::kLeashCm;
+        const GoodPosition owner_at = checker_.good();
+        if (where && !(std::hypot(where->x - owner_at.x, where->y - owner_at.y) <= range)) {
+            spdlog::info("[pets] {}: Go To names a place {:.0f} m from its owner, past the {:.0f} m the ability reaches: refused", name(), std::hypot(where->x - owner_at.x, where->y - owner_at.y) / 100.0, range / 100.0);
+            return;
+        }
+        call_off();
+        if (!where) {
+            pet_follow_ = false;
+            spdlog::info("[pets] {}: Go To names no place: the pet stays", name());
+        } else if (npcs && npcs->order_move(pet_actor_, *where, 720.0, 100.0)) {
+            pet_follow_ = false;
+        } else {
+            spdlog::info("[pets] {}: the pet found no way to the place of Go To: it keeps following", name());
+        }
     } else if (command == pets::kAggressive) {
         set_pet_stance(conn, pets::Stance::Aggressive);
     } else if (command == pets::kDefensive) {

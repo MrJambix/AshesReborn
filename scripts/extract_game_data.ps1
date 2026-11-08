@@ -85,7 +85,7 @@ $statprog  = Join-Path $toolsDir 'statprog.exe'
 $navbuild  = Join-Path $distDir 'Release\aoc_navbuild.exe'
 $logFile   = Join-Path $stampDir 'current.log'
 $lastLog   = Join-Path $stampDir 'last_run.log'
-# The creature kinds that attack with their own animation: one container folder of the game's files per kind (its Blueprints and the animation montages beside them).
+# The creature kinds that attack with their own animation: container folders of the game's files (the Blueprints and the animation montages beside them), one per family or kind.
 # worldd animates exactly the Blueprints this reads; a kind that is not listed keeps its single swing.
 $NpcFolders = @('AOC/Content/DesignAssets/Population/NPC/Beast', 'AOC/Content/DesignAssets/Population/NPC/Humanoid', 'AOC/Content/DesignAssets/Population/NPC/Monster',
                # the bandits (raiders, captains, archers, mages, healers: their Blueprints, trees and animation montages) and the one raider montage that lives beside their Blueprints

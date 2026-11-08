@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
+// GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+// Summoner pets: contributed by MrJambix in #13.
+// ============================================================================
+//  tests/summoner_pet_session_tests.inc: a Summoner's pet in a real session
+//  (included and run by test_worldd_ability_session.cpp)
+// ============================================================================
 
 static const repl::ArrayValue* summoned_pet_array(const PlayerSession& s) {
     for (const auto& component : s.bootstrap().pawn().subobjects) {
@@ -112,7 +118,7 @@ static void test_summoner_pet_session() {
     const auto cast = [&](int64_t ability) {
         r.h.s->teach_ability(ability);
         r.trigger(ability);
-        r.play(0.3, false);
+        r.play(1.0, false);   // (the commands share a cooldown that runs from 0.25 s to 0.75 s after the cast: a command cast inside it is refused, and the pet is not told)
     };
     CHECK(r.h.s->pet_following() && r.h.s->pet_stance() == pets::Stance::Aggressive, "a new pet follows, aggressive");
     // Go To cast with no place: the pet stops following and stays, and a pet's ability is the pet's: a cast that belongs to another pet does nothing

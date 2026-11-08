@@ -8,3 +8,7 @@
 // ============================================================================
 #include "ability_session_log_window_tests.inc"
 #include "ability_session_set_effects_tests.inc"
+#include "ability_session_pets_target_tests.inc"
+#include "ability_session_pets_go_to_tests.inc"
+#include "ability_session_death_holds_tests.inc"
+#include "ability_session_dodge_cancel_tests.inc"

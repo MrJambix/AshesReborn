@@ -8,6 +8,7 @@
 
 #include "bootstrap/ability_replication.h"
 #include "bootstrap/constants.h"
+#include "combat/combat_world_npc.h"
 #include "combat/npc_ability_replicator.h"
 #include "combat/npc_kits.h"
 #include "combat/npc_replicator.h"
@@ -37,12 +38,46 @@ constexpr double kBlueprintSightConeDefaultDeg = 45.0;   // the half angle eithe
 constexpr double kBlueprintHearingDefaultCm = 2000.0;
 constexpr double kBlueprintPlayerLookSeconds = 2.0;      // how often a creature looks for players
 
-constexpr double kHumanoidTurnGain = 1.2;   // how much faster than their Blueprint's rotation rate the goblins and bandits turn
-
 /// Whether a creature chases at its Blueprint's run speed times its own MoveSpeedMult stat (1.05 plus 0.1 for each rank of its elite scalar), as the game's creatures do: the humanoids, goblins
 /// and bandits.  The other families keep the Blueprint's run speed as it is.
 bool runs_at_stat_speed(const std::string& archetype) {
     return archetype.find("/Population/NPC/Humanoid/") != std::string::npos || archetype.find("/Population/NPC/PCRaces/") != std::string::npos;
+}
+
+/// How fast the tree's move-to-target task walks a creature during one of its attacks, as a share of its run speed (the task's SpeedMultiplierExpression): the bandit raiders' Whirlwind at
+/// 0.45 (a rank 3 raider runs 810 cm/s and its recorded whirlwind walk was 364-365) and the Goblin Flayer's SeveringSpin at 1.6.  1.0: an attack the tree walks at the creature's chase speed.
+struct AttackWalkSpeed {
+    const char* ability;
+    double      share;
+};
+constexpr AttackWalkSpeed kAttackWalkSpeeds[] = {
+    {"Bandit_Raider_Whirlwind", 0.45},
+    {"GoblinFlayer_SeveringSpin", 1.6},
+};
+
+double attack_walk_share(const std::string& ability) {
+    for (const AttackWalkSpeed& row : kAttackWalkSpeeds) {
+        if (ability == row.ability) return row.share;
+    }
+    return 1.0;
+}
+
+/// The attacks whose tree walks the creature at a speed the tables here do not give: their creature keeps the stop of a standing attack (it stands for the whole montage) rather than walking at
+/// its plain chase speed.  The Pitchfire Raider's whirlwind: the SpeedMultiplierExpression of its tree's move-to-target task is not in the tables this server reads.
+bool attack_keeps_its_stop(const std::string& ability) { return ability == "PitchfireRaider_PitchfireWhirlwind"; }
+
+/// The attacks the recordings show turning the creature towards its target through the whole montage although their task does not stop the creature and has no Rotate To of its own: the
+/// Minotaur Berserker's and Warrior's AxeStrike (106 recorded swings, its facing following the player through the swing).  Every other such attack keeps the facing it began with while its
+/// montage carries it.
+constexpr const char* kAttacksThatKeepTurning[] = {
+    "Minotaur_Berserker_AxeStrike",
+};
+
+bool attack_keeps_turning(const std::string& ability) {
+    for (const char* name : kAttacksThatKeepTurning) {
+        if (ability == name) return true;
+    }
+    return false;
 }
 
 /// The kit of a creature kind: by the Blueprint's leaf without "_C"; else the kit whose name is the longest prefix of the leaf (or the leaf of it).
@@ -67,114 +102,9 @@ const npc_kits::Kit* kit_of(const std::string& leaf_in) {
 }  // namespace
 // [CoA ~ C:Y:B]
 
-// ---- one NPC's combat state ----------------------------------------------------------------------------------------------------------
-
-/// A hit as what reacts to it reads it.
-struct CombatWorld::HolderEvent {
-    uint64_t                  attacker = 0;
-    const HitOrigin*          origin = nullptr;
-    uint8_t                   flags = 0;
-    bool                      lethal = false;
-    std::map<int64_t, double> mods, effective;
-    std::vector<std::pair<const abilities::EffectDef*, uint64_t>> held;   // what the holder held when it landed, and who left it
-};
-
-class CombatWorld::Npc final : public Fighter {
-public:
-    Npc(CombatWorld& w, uint64_t actor, npc::MotionStats bp_in, std::string leaf_in, int level_in)
-        : world(w), actor_id(actor), bp(std::move(bp_in)), leaf(std::move(leaf_in)), lvl(level_in) {}
-
-    uint64_t id() const override { return actor_id; }
-    bool     is_player() const override { return false; }
-    int      level() const override { return lvl; }
-    Vec3     position() const override {
-        const world::WorldActor* a = world.registry_.find(actor_id);
-        return a ? Vec3{a->x, a->y, a->z} : Vec3{};
-    }
-    double radius_cm() const override { return bp.radius; }
-    bool   alive() const override { return !dead; }
-    const std::vector<int64_t>& alignments() const override { return aligns; }
-    stats::CharacterStats&      stats() override { return *cs; }
-
-    double health() const {
-        const stats::StatValue* v = cs ? cs->find(content::kGuidHealth) : nullptr;
-        return v ? v->value : 0.0;
-    }
-    double max_health() const {
-        const stats::StatValue* v = cs ? cs->find(content::kGuidMaxHealth) : nullptr;
-        return v ? v->value : 0.0;
-    }
-
-    CombatWorld&                           world;
-    uint64_t                               actor_id;
-    npc::MotionStats                       bp;
-    std::string                            leaf;
-    int                                    lvl;
-    std::vector<int64_t>                   aligns;
-    std::unique_ptr<stats::CharacterStats> cs;
-    npc::ai::NpcAi                         ai;
-    bool                                   hostile = false;
-    bool                                   huntable = false;   // a huntable creature is passive: it never attacks (no proximity aggro, no fighting back)
-    bool                                   dead = false;
-    bool                                   flags_in_combat = false;
-    uint64_t                               flags_target = 0;
-    bool                                   returning = false;
-    const npc_kits::Kit*                   kit = nullptr;
-    CombatWorld::Attack                    next;
-    double                                 next_attack_at = 0;
-    std::string                            archetype;
-    const std::vector<CreatureAbility>*    anim = nullptr;   // the Blueprint's use-ability tasks when the creature attacks with its own animation
-    NpcCastState                           cast;             // the attack the client is shown (combat/npc_ability_replicator.h)
-    std::map<std::string, double>          cooldown_until;   // the name of a task's cooldown -> when it is over
-    double                                 hold_until = 0;   // the creature stands still, facing as it does, until then (the montage of an attack it stands for)
-    double                                 stand_off_cm = -1;   // a creature whose attacks launch projectiles closes in on its target to this distance (its tree's arrival distance) between two casts; -1: it does not
-    double                                 shot_reach_cm = -1;  // ... and starts casting once its target is within this reach (the distance its tree lets it cast from)
-    double                                 fight_began = 0;  // when its fight began (the tree asks how long it has gone on)
-    double                                 link_radius_cm = 0;   // its pack: friends this close join when it begins a fight (the Blueprint's AggroProximityLinkRadius)
-    bool                                   joined_pack = false;  // the fight it is about to begin is a pack-mate's: it calls nobody in, so a fight does not run on through a whole camp
-    std::map<std::string, double>          fight_rolls;      // the numbers its tree rolled when this fight began, by the tree's variable (a first special attack comes only after one of them)
-    uint64_t                               killer = 0;
-    std::set<uint64_t>                     attackers;
-    struct Shield {
-        double amount = 0;
-        double until = 0;   // 0: until used up
-    };
-    std::vector<Shield>                    shields;
-    struct HeldEffect {
-        const abilities::EffectDef*   def = nullptr;
-        int                           stacks = 1;
-        double                        start = 0, until = -1;   // until < 0: no end
-        double                        next_tick = 0;           // 0: it does not tick
-        std::vector<stats::EffectMod> mods;
-        uint64_t                      by = 0;                  // the player whose hit left it
-        int64_t                       key = 0;                 // its CurrentEffects item's EffectId
-        int32_t                       array_id = -1;
-        double                        taken = 0;               // the damage it has seen (an effect that a share of the holder's Health breaks)
-    };
-    std::vector<HeldEffect>                effects;
-    uint8_t                                crowd = 0;          // what its crowd controls stop
-    CrowdStops                             crowd_stops = CrowdStops::None;
-    double                                 pace = 1.0;         // what its walking speed is multiplied by
-
-    int effect_stacks(int64_t effect) const override {
-        int stacks = 0;
-        for (const HeldEffect& h : effects) {
-            if (h.def && h.def->row.guid == effect) stacks += h.stacks;
-        }
-        return stacks;
-    }
-
-    /// A loss goes through the shields first (the oldest first); what is left reaches Health.
-    double absorb(double loss, double now) {
-        shields.erase(std::remove_if(shields.begin(), shields.end(), [&](const Shield& s) { return s.amount <= 0 || (s.until > 0 && s.until <= now); }), shields.end());
-        for (Shield& s : shields) {
-            const double take = std::min(s.amount, loss);
-            s.amount -= take;
-            loss -= take;
-        }
-        return loss;
-    }
-};
+namespace {
+constexpr double kPetOwnerLeftCm = 5000.0;   // the owner has run this far from a pet's fight, or from what its ability is aimed at: the pet goes with it
+}  // namespace
 
 CombatWorld::CombatWorld(world::ActorRegistry& registry, npc::NpcWorld* npcs, const nav::AreaNav* nav, const CombatData& data, const abilities::Catalog& catalog,
                          const NpcStatBook& book, const npc::MotionTable& motion, CombatWorldConfig config)
@@ -197,6 +127,11 @@ void CombatWorld::remove_player(PlayerPort* port) {
         player_combat_until_.erase(port->actor_id());
         drop_effects_of(port->actor_id());   // what a player put on the creatures ends with him
     }
+}
+
+void CombatWorld::player_died(uint64_t actor_id) {
+    player_combat_until_.erase(actor_id);
+    drop_effects_of(actor_id);
 }
 
 PlayerPort* CombatWorld::player(uint64_t actor_id) {
@@ -280,6 +215,7 @@ CombatWorld::Npc* CombatWorld::make_combatant(const world::WorldActor& a) {
     n->anim = anim_ ? anim_->abilities_of(a.npc.archetype) : nullptr;
     // a creature whose tree has no attack it can play (a Blueprint with no open of its own, whose generic open lists none of the tree's abilities) keeps the single swing every creature had: the tree
     // would otherwise find nothing to use and the creature would stand and stare.  A tree that merely allows none right now (range, angle, cooldown, a roll) is not this: that creature waits.
+    // (A tree whose every attack waits on the fight clock or on the creature's health keeps its animation, and the creature swings the single swing until one of them opens: see think.)
     if (n->anim && !can_animate(*n)) n->anim = nullptr;
     stand_off_of(*n, n->stand_off_cm, n->shot_reach_cm);
     if (n->anim) {   // its attacks start only where its tree's conditions hold: the reach is not stretched once a fight begins, and it walks up to just inside it (a chase ends at 96 % of the reach)
@@ -506,6 +442,26 @@ std::vector<GatheredTarget> CombatWorld::enemies_around(const Fighter& from, con
     return out;
 }
 
+std::vector<GatheredTarget> CombatWorld::enemies_touching(const Fighter& from, const Vec3& centre, double radius_cm, size_t max) {
+    // the same body test as enemies_around, but nothing on the ground can stand in the way: a ball flies through walls
+    std::vector<GatheredTarget> out;
+    if (max == 0 || radius_cm <= 0) return out;
+    constexpr double kBodyMargin = 600.0;   // (the registry is asked a little wider than the sphere: a body is measured from its centre)
+    std::vector<uint64_t> ids;
+    registry_.query(centre.x, centre.y, radius_cm + kBodyMargin, ids);
+    for (const uint64_t id : ids) {
+        const TargetInfo ti = inspect(id, from);
+        if (!ti.exists || !ti.alive || ti.relation != Relation::Hostile) continue;
+        const double d = distance_xy_cm(centre, ti.position);
+        if (d - ti.radius_cm > radius_cm) continue;
+        if (std::fabs(ti.position.z - centre.z) - ti.radius_cm > radius_cm + 200.0) continue;   // (a body on a ledge far above or below the ball is out)
+        out.push_back({id, d});
+    }
+    std::sort(out.begin(), out.end(), [](const GatheredTarget& a, const GatheredTarget& b) { return a.distance_cm != b.distance_cm ? a.distance_cm < b.distance_cm : a.actor < b.actor; });
+    if (out.size() > max) out.resize(max);
+    return out;
+}
+
 bool CombatWorld::ground_height(double x, double y, double z_hint, double* z) const {
     return nav_ != nullptr && nav_->ground_height(x, y, z_hint, z, 1500.0, 1500.0);
 }
@@ -567,6 +523,7 @@ void CombatWorld::stop_cast(Npc& n) {
 }
 
 void CombatWorld::forget(uint64_t actor_id) {
+    if (is_pet(actor_id)) pet_cleanup(actor_id);   // a pet's port holds its combatant by reference and stands in players_: a game master's despawn must not leave it there
     if (const auto it = npcs_.find(actor_id); it != npcs_.end()) stop_cast(*it->second);
     flights_.erase(std::remove_if(flights_.begin(), flights_.end(), [&](const Flight& f) { return f.npc == actor_id; }), flights_.end());
     npcs_.erase(actor_id);
@@ -688,11 +645,11 @@ double angle_between_degrees(double a, double b) {
 
 }  // namespace
 
-CombatWorld::Attack CombatWorld::choose_attack(Npc& n) {
+CombatWorld::Attack CombatWorld::choose_attack(Npc& n, bool single_swing) {
     Attack a;
     a.windup_ms = static_cast<int>(cfg_.default_windup * 1000);
     a.range_cm = static_cast<int>(cfg_.default_attack_range_cm);
-    if (n.anim) {
+    if (n.anim && !single_swing) {
         // a creature with its own animation uses what its Blueprint's tree says (the tasks with a condition the tables cannot say are left alone)
         const Attack b = choose_animated(n, nullptr);
         if (b.ability) return b;
@@ -788,11 +745,22 @@ CombatWorld::Attack CombatWorld::choose_animated(Npc& n, const Fighter* target, 
         n.fight_rolls.emplace(a.name, v);
         return v;
     };
+    // PR #10 review: for each attack the creature can play, whether the fight clock or its health alone keep it shut now (every other condition counted as holding: no roll is drawn for this)
+    CondContext timers = ctx;
+    timers.timers_only = true;
+    size_t playable = 0, shut_by_timers = 0;
     // the tree is tried in order and the first task whose conditions hold is used
     for (const CreatureAbility& t : *n.anim) {
         if (t.unknown || t.off || !t.fight) continue;
         const abilities::AbilityDef* d = catalog_.ability(t.ability);
         if (!d || (!is_attack(*d, catalog_, data_.ids().health) && !helps_side(*d, catalog_, data_.ids().health)) || !animates(n, *d)) continue;
+        ++playable;
+        for (const CondGroup& g : t.groups) {
+            if (!eval_group(g, timers)) {
+                ++shut_by_timers;
+                break;
+            }
+        }
         bool ready = true;
         for (const std::string& g : t.gates) {
             const auto until = n.cooldown_until.find(g);
@@ -829,6 +797,7 @@ CombatWorld::Attack CombatWorld::choose_animated(Npc& n, const Fighter* target, 
         if (t.max_distance >= 0) a.range_cm = static_cast<int>(t.max_distance);
         return a;
     }
+    if (why) why->waits_on_timers = playable > 0 && shut_by_timers == playable;
     return a;
 }
 
@@ -1052,6 +1021,7 @@ bool CombatWorld::plan_cast(Npc& n, const abilities::AbilityDef& def, CastPlan& 
 
 void CombatWorld::start_attack(Npc& n, uint64_t target, double now, const Attack* picked) {
     PlayerPort* port = player(target);
+    n.attack_walk_share = 1.0;   // (the tree walks it at its chase speed unless the attack's own task says otherwise)
     // An attack with its own animation.  The tree picks it with the target where it stands; its montage starts on the client with the element the replicator writes; the creature turns
     // to the target, and when the tree says so stands still for the whole montage and keeps that facing; every hit lands at its notify, by the hit's targeting record
     // (on the target wherever it stands unless the record measures, and on everyone inside its volumes); the next attack comes when the montage is over.
@@ -1070,7 +1040,7 @@ void CombatWorld::start_attack(Npc& n, uint64_t target, double now, const Attack
     CastPlan plan;
     bool animated = false;
     Vec3 at;
-    if (a.ability && n.anim && port && plan_cast(n, *a.ability, plan)) {
+    if (a.ability && n.anim && port && a.task && plan_cast(n, *a.ability, plan)) {   // (the single swing a creature with a timed tree falls back to has no task: it plays no montage)
         const auto montage = bootstrap::montage_for(plan.montage->path, plan.montage->guid, plan.montage->package_guid);
         if (montage) {
             NpcCast cast;
@@ -1133,11 +1103,16 @@ void CombatWorld::start_attack(Npc& n, uint64_t target, double now, const Attack
         if (a.task) {   // (a timer the tree rolls anew each time takes a fresh number of seconds between its low and its high)
             for (const CooldownStart& c : a.task->starts) n.cooldown_until[c.name] = now + done + (c.high > c.low ? c.low + (c.high - c.low) * rng_.rand_double() : c.low);
         }
-        if (a.task) n.hold_until = now + plan.seconds;   // (no chase runs in the state of an attack: the creature stands, and turns, until the montage is over)
+        // (an attack whose tree walk speed the tables here do not give keeps the stop of a standing attack; so does one that stops the creature)
+        if (a.task && (a.task->stop_movement || attack_keeps_its_stop(a.ability->row.name))) n.hold_until = now + plan.seconds;
         n.next_attack_at = now + plan.seconds;
-        if (a.task && a.task->rotates && npcs_world_) {   // the tree turns it towards its target while the ability plays (the Rotate To task that runs with it)
+        n.attack_walk_share = attack_walk_share(a.ability->row.name);
+        // The creature turns towards its target while the ability plays: the tree's Rotate To task that runs with it, at its speed and for its time; and the one attack the recordings show
+        // turning it through the whole montage without a Rotate To (the Minotaur's axe strike, which keeps facing a player who runs round it while the montage carries it).
+        if (a.task && npcs_world_ && (a.task->rotates || attack_keeps_turning(a.ability->row.name))) {
             const uint64_t who = target;
-            const double until = now + (a.task->rotate_seconds > 0 ? std::min(a.task->rotate_seconds, plan.seconds) : plan.seconds);
+            const double rate = a.task->rotates ? a.task->rotate_speed : 0.0;   // (0: the creature's own rate)
+            const double until = now + (a.task->rotates && a.task->rotate_seconds > 0 ? std::min(a.task->rotate_seconds, plan.seconds) : plan.seconds);
             npcs_world_->track_target(
                 n.actor_id,
                 [this, who](nav::Vec3& out) {
@@ -1146,7 +1121,7 @@ void CombatWorld::start_attack(Npc& n, uint64_t target, double now, const Attack
                     out = to_nav(p->fighter().position());
                     return true;
                 },
-                a.task->rotate_speed, until);
+                rate, until);
         }
     } else {
         const double interval = (n.kit && n.kit->interval_ms > 0 ? n.kit->interval_ms / 1000.0 : cfg_.default_attack_interval);
@@ -2423,6 +2398,7 @@ void CombatWorld::effects_changed(Npc& n, double now) {
     if (stopped_now) {
         stop_cast(n);
         n.hold_until = 0;
+        n.attack_walk_share = 1.0;
         pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const Pending& p) { return p.npc == n.actor_id; }), pending_.end());
     }
     if ((stopped_now || rooted_now) && npcs_world_) npcs_world_->halt(n.actor_id);
@@ -2548,6 +2524,33 @@ bool CombatWorld::pet_use(uint64_t pet, uint64_t owner, int64_t ability, uint64_
     return true;
 }
 
+bool CombatWorld::pet_can_use(uint64_t pet, uint64_t owner, int64_t ability, uint64_t target, std::string* why) {
+    const auto refuse = [&](const char* text) {
+        if (why) *why = text;
+        return false;
+    };
+    const abilities::AbilityDef* def = catalog_.ability(ability);
+    PlayerPort* port = player(owner);
+    if (!def || !port) return refuse("the ability or its owner is not there");
+    if (!pet_can_act(pet)) return refuse("the pet cannot act");
+    constexpr int kFriendly = 1 | 4 | 8 | 16;   // Self, Ally, Party, Raid
+    const int mask = def->row.applicable_targets;
+    if (target == 0) return true;   // none named: it is played where the pet stands or on its owner, as the pipeline casts a player's ability at the air when it has no target
+    if (target == pet || target == owner) {   // the friendly side
+        if (mask != 0 && (mask & kFriendly) == 0) return refuse("it does not help allies");
+        return true;
+    }
+    const world::WorldActor* t = registry_.find(target);
+    if (!t || t->kind != world::ActorKind::Npc) return refuse("the target is not there");
+    const auto fighting = npcs_.find(target);
+    if (fighting != npcs_.end() && fighting->second->dead) return refuse("the target is dead");
+    const npc::MotionStats bp = motion_.get(t->npc.archetype);
+    const bool hostile = data_.relation(port->fighter().alignments(), std::vector<int64_t>(bp.alignments.begin(), bp.alignments.end())) == Relation::Hostile;
+    if (hostile ? (mask & 2) == 0 : mask != 0 && (mask & kFriendly) == 0) return refuse(hostile ? "it does not harm enemies" : "it does not help allies");
+    if (distance_xy_cm(port->fighter().position(), Vec3{t->x, t->y, t->z}) > kPetOwnerLeftCm) return refuse("the target is too far from its owner");
+    return true;
+}
+
 void CombatWorld::pet_start_cast(Npc& pet, PetCast& cast, double now) {
     const abilities::AbilityDef& def = *cast.ability;
     PlayerPort* owner = player(cast.owner);
@@ -2582,11 +2585,10 @@ void CombatWorld::pet_start_cast(Npc& pet, PetCast& cast, double now) {
             played = true;
         }
         const auto add = [&](double delay, int key, const char* source) {
-            for (const content::AbilityHitRow& r : def.hits) {
+            for (const content::AbilityHitRow& r : def.hits) {   // (every hit the key names lands at its notify)
                 if (r.source != source || r.key != key) continue;
                 cast.due.emplace_back(now + delay, r.hit_guid);
                 timed = true;
-                break;
             }
         };
         for (const MontageData::Hit& h : montage->hits) add(h.time / montage->rate_scale, static_cast<int>(h.key), "hit");
@@ -2803,7 +2805,7 @@ void CombatWorld::pet_stop(uint64_t pet) {
     if (npcs_world_) npcs_world_->halt(pet);
 }
 
-void CombatWorld::pet_gone(uint64_t pet) {
+void CombatWorld::pet_cleanup(uint64_t pet) {
     pet_stop(pet);
     pet_stand_downs_.erase(pet);
     pet_casts_.erase(pet);
@@ -2813,6 +2815,10 @@ void CombatWorld::pet_gone(uint64_t pet) {
         remove_player(it->second.get());
         pet_ports_.erase(it);
     }
+}
+
+void CombatWorld::pet_gone(uint64_t pet) {
+    pet_cleanup(pet);
     forget(pet);
 }
 
@@ -2850,9 +2856,8 @@ void CombatWorld::pet_swing(Npc& pet, PetFight& fight, const Npc& target, double
                 if (r.source != source || r.key != key) continue;
                 const abilities::HitDef* hit = catalog_.hit(r.hit_guid);
                 if (!hit || (hit->row.applicable_targets & 2) == 0 || hit->mods.empty()) continue;
-                fight.due.emplace_back(now + delay, r.hit_guid);
+                fight.due.emplace_back(now + delay, r.hit_guid);   // (every hit the key names lands at its notify)
                 timed = true;
-                break;
             }
         };
         for (const MontageData::Hit& h : montage->hits) add(h.time / montage->rate_scale, static_cast<int>(h.key), "hit");
@@ -2912,7 +2917,7 @@ void CombatWorld::tick_pets(double now) {
             continue;
         }
         Npc& target = *found->second;
-        if (distance_xy_cm(owner->fighter().position(), target.position()) > 5000.0) {   // the owner has run off: the pet goes with it
+        if (distance_xy_cm(owner->fighter().position(), target.position()) > kPetOwnerLeftCm) {   // the owner has run off: the pet goes with it
             stop_cast(*pet);
             if (npcs_world_) npcs_world_->halt(id);
             it = pet_fights_.erase(it);
@@ -2952,8 +2957,14 @@ void CombatWorld::tick_pets(double now) {
             origin.ability_tags = meta.ability_tags;
             const Delivery d = apply_hit_to_npc(target_id, owner_id, r, now, id, &origin);
             if (d.applied) {
-                DealtHit dealt{guid, meta.source_type, meta.source_guid, id, target_id, d.flags, r.mods, d.effective};
-                owner->hit_dealt(dealt, now);
+                // what the client draws is Health and Mana: a status stat's move is not told, as in land_for_player
+                DealtHit dealt{guid, meta.source_type, meta.source_guid, id, target_id, d.flags, {}, {}};
+                for (size_t i = 0; i < r.mods.size(); ++i) {
+                    if (data_.ids().is_status_stat(r.mods[i].stat_guid)) continue;
+                    dealt.mods.push_back(r.mods[i]);
+                    dealt.effective.push_back(d.effective[i]);
+                }
+                if (!dealt.mods.empty() || hit->row.has_fx || r.miss()) owner->hit_dealt(dealt, now);
             }
         }
         if (fight.swinging && now >= fight.end_at) {
@@ -3002,7 +3013,7 @@ void CombatWorld::kill(Npc& n, uint64_t killer, double now, bool gm) {
     n.hold_until = 0;
     pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const Pending& p) { return p.npc == n.actor_id; }), pending_.end());
     ++stats_.kills;
-    if (death_hook_) {
+    if (death_hook_ && !is_pet(n.actor_id)) {   // (a pet leaves no corpse and no loot, whoever killed it: its session sees dead() and takes it away)
         const world::WorldActor* a = registry_.find(n.actor_id);
         DeathEvent e;
         e.npc = n.actor_id;
@@ -3151,6 +3162,7 @@ void CombatWorld::begin_reset(Npc& n, double now) {
     }
     stop_cast(n);   // ... and with a fight that is reset
     n.hold_until = 0;
+    n.attack_walk_share = 1.0;
     pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const Pending& p) { return p.npc == n.actor_id; }), pending_.end());
     set_flags(n, false, 0);
     if (npcs_world_) npcs_world_->order_return_home(n.actor_id);
@@ -3280,7 +3292,12 @@ void CombatWorld::think(Npc& n, double now) {
     if (npcs_world_ && !o.began_reset && now >= n.hold_until && !carried) {   // (a creature that stands for a montage is not sent anywhere until it is over)
         const nav::Vec3 here{a->x, a->y, a->z};
         switch (o.move) {
-            case npc::ai::Orders::Move::ChaseTo: pursue(n, o.target, o.speed_cm_s, o.stop_distance_cm); break;
+            case npc::ai::Orders::Move::ChaseTo: {
+                // (an attack that does not stop the creature may let it walk on during its montage, at the speed of the tree's own move-to-target task: a share of its run speed)
+                const double speed = now < n.next_attack_at ? o.speed_cm_s * n.attack_walk_share : o.speed_cm_s;
+                pursue(n, o.target, speed, o.stop_distance_cm);
+                break;
+            }
             case npc::ai::Orders::Move::Stand:
                 if (before != npc::ai::State::Attack) npcs_world_->order_move(n.actor_id, here, 0.0, 0.0);
                 break;
@@ -3301,7 +3318,21 @@ void CombatWorld::think(Npc& n, double now) {
                 picked = choose_animated(n, &port->fighter(), &why);
                 have_pick = picked.ability != nullptr;
             }
-            if (port && !have_pick) {
+            if (port && !have_pick && why.waits_on_timers) {
+                // PR #10 review: a creature whose every attack with its own animation waits on the fight clock or on its health (a fight that has just begun, health not yet low enough) swings the single swing
+                // every creature had until one of them opens, and then plays that attack.  A creature that is merely out of range, off the angle, on a cooldown or short of a roll still waits, as above.
+                picked = choose_attack(n, true);
+                const Vec3 at = port->fighter().position();
+                const double gap = distance_xy_cm(Vec3{a->x, a->y, a->z}, at) - n.radius_cm() - port->fighter().radius_cm();
+                if (!picked.ability) {
+                    allowed = false;
+                } else if (gap > picked.range_cm) {   // (the AI asks for an attack at the reach of the tree's attack: it walks up to the reach of the swing)
+                    allowed = false;
+                    pursue(n, o.target, n.ai.params().chase_speed_cm_s, std::max(0.0, picked.range_cm * n.ai.params().chase_stop_fraction) + n.radius_cm() + port->fighter().radius_cm());
+                } else {
+                    have_pick = true;
+                }
+            } else if (port && !have_pick) {
                 allowed = false;
                 const Vec3 at = port->fighter().position();
                 if (why.off_angle) {

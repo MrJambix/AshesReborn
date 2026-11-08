@@ -60,6 +60,8 @@ public:
     virtual std::vector<GatheredTarget> enemies_around(const Vec3& /*centre*/, double /*radius_cm*/, size_t /*max*/) { return {}; }
     /// ... and the other living players there.
     virtual std::vector<GatheredTarget> allies_around(const Vec3& /*centre*/, double /*radius_cm*/, size_t /*max*/) { return {}; }
+    /// ... the same, with nothing on the ground in the way (see CombatWorld::enemies_touching): a ball that flies through walls.
+    virtual std::vector<GatheredTarget> enemies_touching(const Vec3& /*centre*/, double /*radius_cm*/, size_t /*max*/) { return {}; }
     /// The height of the ground under (x, y), nearest to `z_hint` (see CombatWorld::ground_height); false where the world has none.
     virtual bool ground_height(double /*x*/, double /*y*/, double /*z_hint*/, double* /*z*/) const { return false; }
 };
@@ -120,6 +122,7 @@ public:
     std::vector<GatheredTarget> enemies_in_line(double length_cm, double radius_cm, size_t max) override { return world_.enemies_in_line(self_, length_cm, radius_cm, max); }
     std::vector<GatheredTarget> enemies_around(const Vec3& centre, double radius_cm, size_t max) override { return world_.enemies_around(self_, centre, radius_cm, max); }
     std::vector<GatheredTarget> allies_around(const Vec3& centre, double radius_cm, size_t max) override { return world_.allies_around(self_, centre, radius_cm, max); }
+    std::vector<GatheredTarget> enemies_touching(const Vec3& centre, double radius_cm, size_t max) override { return world_.enemies_touching(self_, centre, radius_cm, max); }
     bool ground_height(double x, double y, double z_hint, double* z) const override { return world_.ground_height(x, y, z_hint, z); }
 
 private:

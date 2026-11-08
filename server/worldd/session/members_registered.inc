@@ -30,3 +30,4 @@
 #include "session/members/market.inc"
 #include "session/members/commissions.inc"
 #include "session/members/mount_command.inc"
+#include "session/members/surface_move.inc"

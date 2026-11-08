@@ -164,6 +164,7 @@ inline constexpr Spawn kAnvilsSpawn = {-1057812.596543, -694683.919803, 5370.263
 struct SessionValues {
     uint32_t     server_id = 0;
     double       world_time = 0;
+    world::WorldClock clock = world::default_world_clock();   // the world's clock at the join (world/world_clock.h)
     int32_t      player_id = 0;
     SessionGuids guids;
 };

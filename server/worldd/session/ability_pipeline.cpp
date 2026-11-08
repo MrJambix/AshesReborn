@@ -50,6 +50,12 @@ constexpr Timing kTimings[] = {
     {"Bard_Story_Joy", 0.312, 1.573, 0.0},          // item +312, cost +1573, its effects with it
     {"Bard_Song_Anthem", 0.303, 1.904, -1},         // item +303, cost +1904
     {"Bard_Song_Serenade", 0.303, 0.303, 0.307},    // item and cost +303, the Spirited buff +610
+    // The ranged weapon swings: the item and the cost step come together, 0.08 to 0.11 s after the key for a Book's, a Longbow's and a Wand's swing and 0.26 s for a Shortbow's (the median over all of a weapon's
+    // steps). The swing's projectile does not wait for them: it leaves at its montage's notify and lands when it gets to the target (kShotCasts, kNoteCasts)
+    {"WeaponCombo_Ranged_Book", 0.084, 0.084, -1},
+    {"WeaponCombo_Ranged_Longbow", 0.088, 0.088, -1},
+    {"WeaponCombo_Ranged_Shortbow", 0.258, 0.258, -1},
+    {"WeaponCombo_Ranged_Wand", 0.107, 0.107, -1},
 };
 
 // Casts that end with a branch of their montage (see BranchedCast). Arcane Volley [R: the one recorded cast]: the ability item came 99 ms after the trigger; the client's
@@ -187,6 +193,42 @@ constexpr Flight kFlights[] = {
     {"Cleric_Judgment", 2.9972165, 2, 0.0390, 0, 1.0e9},
     {"Cleric_Judgment", 2.9962265, 1, 0.0376, 1},
 };
+// The Mage's Ball Lightning: its cast bar ends where its montage reaches 1.000823 s, and the montage launches the ball 0.046711 s of montage after that (the play rate is worked out as for the cast bars above:
+// the bar's end over the seconds the bar took). The ball starts 150 cm ahead of the caster and 150 cm above the middle of the caster's body, hurts an enemy it touches at once and then every 0.5 s for as long as the
+// enemy stays inside it. Its speed, size, range and life come from the projectile's record (350 cm/s, 500 cm, 3,000 cm and 10 s: the range ends it after 8.57 s).
+constexpr BallCast kBalls[] = {
+    {"Mage_BallLightning", 1.000823, 0.046711, 0.5, 150.0, 150.0},
+};
+// A ball is flown in steps of this many seconds (17.5 cm of its way): an enemy it touches is found within one step.
+constexpr double kBallStep = 0.05;
+// The longest a ball may fly whatever its record says (a record with no life and no range would never end).
+constexpr double kBallMaxSeconds = 60.0;
+
+// The ball the ability sends (null: it sends none).
+const BallCast* ball_of(const AbilityDef& def) {
+    for (const BallCast& b : kBalls) {
+        if (def.row.name == b.ability) return &b;
+    }
+    return nullptr;
+}
+// The projectile record of the ability's ball: the first projectile the ability lists (0: none).
+int64_t ball_projectile_of(const AbilityDef& def) {
+    for (const content::AbilityHitRow& h : def.hits) {
+        if (h.source == "projectile") return h.owner_guid;
+    }
+    return 0;
+}
+// Whether the ability's ball carries this hit: the server's own ball lands it, so no request of the client's may.
+bool carried_by_ball(const AbilityDef& def, int64_t hit_guid) {
+    if (!ball_of(def)) return false;
+    for (const content::AbilityHitRow& h : def.hits) {
+        if (h.source == "projectile" && h.hit_guid == hit_guid) return true;
+    }
+    return false;
+}
+// The way a ball flies when it leaves: the way the caster faces, which is the camera's yaw at the caster's last move (as the Scatter Shot's cone and the Air Strike take it). This is the one place that says so.
+double ball_heading_degrees(const combat::Fighter& caster) { return caster.facing_degrees(); }
+
 // How far past the caster's body a projectile starts (its hand), cm.
 constexpr double kMuzzleCm = 40.0;
 // The stats the client takes its montages' play rates from (stat_def: MagicalSpeed, PhysicalSpeed).
@@ -234,6 +276,29 @@ constexpr ShotCast kShotCasts[] = {
     {"Cleric_Mend", 3, 0.11285792, true, "", 0},
     {"Cleric_Mend", 4, 0.11285792, true, "", 0},
     {"Cleric_Mend", 5, 0.11176154, true, "", 0},
+    // The ranged weapon swings (WeaponCombo_Ranged_*): a row for each swing (AnimationIndex) that sends ONE arrow, bolt or page, with the montage's notify that sends it and the key of the projectile that step flies
+    // (only its hits land: the step's own). The projectiles differ from step to step in speed: a Wand's bolts fly 12,000 cm/s, a Book's pages 8,500, a Longbow's arrows 9,000 to 18,000 and a Shortbow's 5,000 to 14,000.
+    // The Wand's beam steps (4, 6 and 7) send nothing and have no row, and a swing that sends several (the Shortbow's volleys, the Book's last step) has a row for each in kNoteCasts. A swing belongs to no class, so the
+    // speed stat its montage plays at is the character's class's (plays_at_magical) and `magical` is not read.
+    {"WeaponCombo_Ranged_Wand", 0, 0.31317788, false, "", 0, 1},
+    {"WeaponCombo_Ranged_Wand", 1, 0.43346334, false, "", 0, 2},
+    {"WeaponCombo_Ranged_Wand", 2, 0.47597307, false, "", 0, 3},
+    {"WeaponCombo_Ranged_Wand", 3, 0.25808287, false, "", 0, 4},
+    {"WeaponCombo_Ranged_Wand", 5, 0.46646222, false, "", 0, 5},
+    {"WeaponCombo_Ranged_Wand", 8, 0.680874, false, "", 0, 6},
+    {"WeaponCombo_Ranged_Longbow", 0, 0.6305833, false, "", 0, 1},
+    {"WeaponCombo_Ranged_Longbow", 1, 0.43484995, false, "", 0, 3},
+    {"WeaponCombo_Ranged_Longbow", 2, 0.90435505, false, "", 0, 7},
+    {"WeaponCombo_Ranged_Longbow", 3, 0.7959088, false, "", 0, 5},
+    {"WeaponCombo_Ranged_Longbow", 4, 1.1019317, false, "", 0, 8},
+    {"WeaponCombo_Ranged_Longbow", 5, 0.8646791, false, "", 0, 6},
+    {"WeaponCombo_Ranged_Book", 0, 0.43202478, false, "", 0, 1},
+    {"WeaponCombo_Ranged_Book", 1, 0.36580384, false, "", 0, 2},
+    {"WeaponCombo_Ranged_Book", 2, 0.6975795, false, "", 0, 5},
+    {"WeaponCombo_Ranged_Book", 3, 0.8328364, false, "", 0, 3},
+    {"WeaponCombo_Ranged_Book", 4, 0.7322242, false, "", 0, 10},
+    {"WeaponCombo_Ranged_Shortbow", 0, 0.035021976, false, "", 0, 1},
+    {"WeaponCombo_Ranged_Shortbow", 2, 0.063697286, false, "", 0, 3},
 };
 
 // Casts whose montage launches several projectiles at the cast's target (see NoteCast, plan_notes). The Bard's Discordance: "a wild burst of 3 discordant notes", each dealing 50% Arcane damage and applying Staggered.
@@ -244,6 +309,31 @@ constexpr NoteCast kNoteCasts[] = {
     {"Bard_Misc_Discordance", 1, 0.23529412, true},
     {"Bard_Misc_Discordance", 4, 0.5882353, true},
     {"Bard_Misc_Discordance", 5, 0.94117653, true},
+    // The ranged weapon swings that send several arrows or pages (animation: the AnimationIndex): the Shortbow's volleys, two arrows in the second step, three in the fourth and in the first finishers, five in the
+    // extended ones, and the Book's last step, two pages half a thousandth of a second apart. The arrows of a step are projectiles of one or two records (the key of each); every arrow flies and lands on its own.
+    {"WeaponCombo_Ranged_Shortbow", 2, 0.033928502, false, 1},
+    {"WeaponCombo_Ranged_Shortbow", 2, 0.23223808, false, 1},
+    {"WeaponCombo_Ranged_Shortbow", 4, 0.21236703, false, 3},
+    {"WeaponCombo_Ranged_Shortbow", 4, 0.3703986, false, 3},
+    {"WeaponCombo_Ranged_Shortbow", 4, 0.48750272, false, 3},
+    {"WeaponCombo_Ranged_Shortbow", 7, 0.23384213, false, 4},
+    {"WeaponCombo_Ranged_Shortbow", 7, 0.4327155, false, 4},
+    {"WeaponCombo_Ranged_Shortbow", 13, 0.6000009, false, 4},
+    {"WeaponCombo_Ranged_Shortbow", 5, 0.23384213, false, 5},
+    {"WeaponCombo_Ranged_Shortbow", 5, 0.4327155, false, 5},
+    {"WeaponCombo_Ranged_Shortbow", 10, 0.6000009, false, 5},
+    {"WeaponCombo_Ranged_Shortbow", 9, 0.26499888, false, 6},
+    {"WeaponCombo_Ranged_Shortbow", 9, 0.36853763, false, 6},
+    {"WeaponCombo_Ranged_Shortbow", 9, 0.46484548, false, 6},
+    {"WeaponCombo_Ranged_Shortbow", 9, 0.5635761, false, 6},
+    {"WeaponCombo_Ranged_Shortbow", 12, 0.66533536, false, 6},
+    {"WeaponCombo_Ranged_Shortbow", 8, 0.26499888, false, 7},
+    {"WeaponCombo_Ranged_Shortbow", 8, 0.36853763, false, 7},
+    {"WeaponCombo_Ranged_Shortbow", 8, 0.46484548, false, 7},
+    {"WeaponCombo_Ranged_Shortbow", 8, 0.5635761, false, 7},
+    {"WeaponCombo_Ranged_Shortbow", 11, 0.66533536, false, 7},
+    {"WeaponCombo_Ranged_Book", 8, 0.7986078, false, 5},
+    {"WeaponCombo_Ranged_Book", 9, 0.79917175, false, 5},
 };
 
 // Hits that fire a bounce (see BounceRule, bounce_from). Their parent hit lands, the child hit (no damage of its own) is confirmed on the next enemy, and the projectile it fires flies from the enemy just hit to that
@@ -297,6 +387,23 @@ constexpr FixedHold kFixedHolds[] = {{"Tank_Reflect", 2.931}};
 constexpr const char* kClientJudged[] = {"Ranger_Dash", "Summoner_PetCommand_Sic"};
 
 using combat::mask_reaches;
+
+// The abilities that count as gone out at the press, so that a Dodge never cancels them: a pet command (the pet obeys at once) and a leap, a charge, a teleport or a dash (the client moves the character at once and the
+// server only allows the speed). The data gives most of the moving abilities a speed (NetworkingMaxSpeed) and kDashes lists others; the Fighter's Leapstrike and Lunging Assault and the Ranger's Dash have neither.
+constexpr const char* kMovesAtPress[] = {"Fighter_Leapstrike", "Fighter_LungingAssault", "Ranger_Dash"};
+bool gone_out_at_the_press(const content::AbilityRow& row) {
+    for (const pets::PetBarCommand& c : pets::kPetBarCommands) {
+        if (c.ability == row.guid) return true;
+    }
+    if (row.networking_max_speed > 0) return true;
+    for (const Dash& d : kDashes) {
+        if (row.name == d.ability) return true;
+    }
+    for (const char* name : kMovesAtPress) {
+        if (row.name == name) return true;
+    }
+    return false;
+}
 
 // The MontageGroup of an ability's item where it is not "DefaultGroup" (retail: Flourish EmoteGroup, the five songs SongGroup).
 std::string_view group_of_name(std::string_view name) {
@@ -426,6 +533,58 @@ bool is_weapon_combo(const content::AbilityRow& row) {
         if (t == "ability.weaponcombo") return true;
     }
     return row.name.rfind("WeaponCombo_", 0) == 0;
+}
+
+// Whether a ranged weapon swing (the montage of this AnimationIndex) sends an arrow, a bolt or a page that flies: it has a row in kShotCasts or kNoteCasts. The Wand's beam steps and the melee combos have none.
+bool swing_flies(const std::string& ability, int animation) {
+    for (const ShotCast& s : kShotCasts) {
+        if (ability == s.ability && s.animation == animation) return true;
+    }
+    for (const NoteCast& n : kNoteCasts) {
+        if (ability == n.ability && n.animation == animation) return true;
+    }
+    return false;
+}
+
+// The hits a Wand beam step takes requests for, and the most requests a swing takes of each. The client asks for the step's own hit again and again while the beam burns (3 times in the first beam step, up to 12
+// in the second, 68 ms apart at the closest) and once for the beam's end and for each beam effect's audio hit; the shares keep a little over that. Every other hit of the ability takes no request: the procs' hits
+// (they apply debuffs and fire further hits on up to 40 enemies each) are asked for by no swing at all, and the other steps' hits are the server's own.
+struct BeamHit {
+    const char* hit;
+    int         requests;
+};
+const BeamHit kBeamHits[] = {
+    {"Weapon_Wand_Hit_5+", 4},
+    {"Weapon_Wand_Hit_6+", 14},
+    {"Weapon_Wand_Beam_ComboEnd_Hit", 2},
+    {"Weapon_Wand_Beam_ComboEnd2_Hit", 2},
+    {"Weapon_Wand_BeamFX_Hit_Arcane_AUDIOONLY", 2},
+    {"Weapon_Wand_BeamFX_Hit_Lightning_AUDIOONLY", 2},
+    {"Weapon_Wand_BeamFX_Hit_Fire_AUDIOONLY", 2},
+    {"Weapon_Wand_BeamFX_Hit_Ice_AUDIOONLY", 2},
+    {"Weapon_Wand_BeamFX_Hit_BeamAmp_AUDIOONLY", 2},
+};
+
+/// How many requests a Wand beam step takes of the hit (0: none).
+int beam_hit_requests(const std::string& hit) {
+    for (const BeamHit& b : kBeamHits) {
+        if (hit == b.hit) return b.requests;
+    }
+    return 0;
+}
+
+/// The step a montage plays: the number its select expression states wins over the one in its file's name (the shortbow's montages carry the wrong number or none).
+StepToken step_of_montage(const abilities::Catalog& catalog, const content::MontageRow& montage) {
+    StepToken step = step_token(leaf_of_path(montage.soft_path));
+    int named_step = 0;
+    bool named_proc = false;
+    if (const content::ExprRow* e = catalog.expr(montage.select_expr)) {
+        if (step_of_expression(e->text, named_step, named_proc)) {
+            step.step = named_step;
+            step.proc = named_proc;
+        }
+    }
+    return step;
 }
 
 // The effects an actor of the world holds, as the world's port knows them, for the expressions of a hit on it.
@@ -1130,6 +1289,17 @@ void AbilityPipeline::remove_stacks(AbilityChange& c, int64_t effect_guid, int s
     }
 }
 
+// Stacks that a cost took go back on the instance they came from, which keeps its time and is not asked for its limit (it held them a moment ago); an instance that is gone comes back with them and its own time.
+void AbilityPipeline::restore_stacks(AbilityChange& c, const EffectDef& def, int stacks, double t) {
+    for (EffectInst& e : effects_) {
+        if (e.def != &def) continue;
+        e.stacks += stacks;
+        c.effects_changed.push_back(effect_item(e));
+        return;
+    }
+    apply_effect(c, def, stacks, std::nullopt, t, true);
+}
+
 void AbilityPipeline::sync_engine_effects() {
     drop_evaluation();
     if (stats_.started()) stats_.set_effects(engine_effects());
@@ -1167,7 +1337,7 @@ void AbilityPipeline::remove_by_hit(AbilityChange& c, const HitDef& hit) {
         }
     };
     for (const int64_t guid : hit.remove_effects) remove_where([&](const EffectDef& e) { return e.row.guid == guid; });
-    // a cleanse names no effect: its filter chooses them [R: Purify, capture 141: an effect item goes with the hit's confirmation]
+    // a cleanse names no effect: its filter chooses them, and an effect item goes with the hit's confirmation [R: Purify, 141]
     if (hit.remove_effects.empty()) remove_where([&](const EffectDef& e) { return hit.removes(e); });
     sync_engine_effects();
     // No Remove or End hits run here, though an effect's record names some: running them moved the retail replay away from its recording (a Ranger's
@@ -1285,7 +1455,10 @@ void AbilityPipeline::apply_hit_on_targets(AbilityChange& c, const HitDef& hit, 
     if (!combat_ || targets.empty()) return;
     std::string why;
     bool ok = true;
-    if (!eval_bool(hit.row.requirement_expr, true, ok, why) || !ok) return;
+    // a reaction's hit that asks about its target (Shatter wants it Frozen) is asked of each target below: asked here, GetTarget() would read the caster
+    const content::ExprRow* requirement = hit.row.requirement_expr != 0 && catalog_ ? catalog_->expr(hit.row.requirement_expr) : nullptr;
+    const bool ask_each = src.type == content::kSourceTypeReaction && requirement && requirement->uses_target && requirement->program >= 0;
+    if (!ask_each && (!eval_bool(hit.row.requirement_expr, true, ok, why) || !ok)) return;
     if (!ensure_evaluation(why)) return;
     const int mask = hit.row.applicable_targets;
     double max_targets = 40;
@@ -1295,11 +1468,11 @@ void AbilityPipeline::apply_hit_on_targets(AbilityChange& c, const HitDef& hit, 
     }
     const bool melee = ability && (ability->row.name.rfind("WeaponCombo_Melee", 0) == 0 ||
                                    std::find(ability->row.tags.begin(), ability->row.tags.end(), "ability.Melee") != ability->row.tags.end());
-    // whether the hit reaches a target: it is there and alive, on a side the hit helps or harms, and within reach
+    // whether the hit reaches a target: it is there and alive, on a side the hit helps or harms, and within reach (a ball's hit has no reach to keep: it hurts what the ball touches, wherever the caster is by now)
     const auto reached = [&](const combat::TargetInfo& ti) {
         if (!ti.exists || ti.alive == (hit.resurrect != 0)) return false;   // (a Resurrect is for the dead and nothing else is)
         if (!mask_reaches(mask, ti)) return false;   // a side this hit does not reach
-        return ti.surface_distance_cm <= combat_->reach_cm(melee) + combat_->data().activation_leeway_cm();
+        return src.reach_free || ti.surface_distance_cm <= combat_->reach_cm(melee) + combat_->data().activation_leeway_cm();
     };
     // the hit's primary target, for the formulas that tell it from the others (the melee combos give every other target a smaller share): the caster's
     // selected enemy when the hit reaches it, else the target nearest the caster
@@ -1330,6 +1503,24 @@ void AbilityPipeline::apply_hit_on_targets(AbilityChange& c, const HitDef& hit, 
         std::string err;
         auto target_eval = tf->stats().evaluation(tf->worn(), err, true);
         if (!target_eval) continue;
+        if (ask_each) {   // the requirement, with this target as GetTarget()
+            bool wanted = false;
+            if (evaluation_->set_actor(stats::kRoleTarget, *target_eval, err)) {
+                const combat::EvalView self_view(*evaluation_), target_view(*target_eval);
+                combat::HitContext ask;
+                ask.instigator = &self_view;
+                ask.target = &target_view;
+                ask.distance_cm = ti.surface_distance_cm + ti.radius_cm + combat_->self().radius_cm();
+                ask.enemy = hostile;
+                ask.neutral = ti.relation == combat::Relation::Neutral;
+                Host ask_host(*this);
+                ask_host.set_context(&ask);
+                double v = 0;
+                wanted = evaluation_->eval(requirement->program, ask_host, v, err) && std::isfinite(v) && v != 0.0;
+                evaluation_->clear_actors();
+            }
+            if (!wanted) continue;
+        }
         Host host(*this);
         combat::HitMeta meta;
         meta.source_type = src.type;
@@ -1388,12 +1579,14 @@ void AbilityPipeline::apply_hit_on_targets(AbilityChange& c, const HitDef& hit, 
         outs.push_back(std::move(out));
         // what the hit leaves on its target: its effects (a stun, a slow, a damage over time, the stat mods of a debuff), and a shield goes to the target
         if (!r.miss()) {
-            if (!hit.remove_effects.empty()) combat_->remove_effects(id, hit, t);
-            // ... worked out for the character as he is and the target as the hit left it: what the hit's own stat mods raised may be what an effect requires (the burn needs the burn this hit added)
+            // ... worked out for the character as he is and the target as the hit left it: what the hit's own stat mods raised may be what an effect requires (the burn needs the burn this hit added).
+            // They are worked out BEFORE the hit's removal list is served, against the target as the hit found it (the Snipe's Hemorrhage counts the bleed that the same hit takes off), and go on
+            // AFTER it, so that a hit never takes off what it has just put on (core fd53569)
             std::string after_err;
             auto after = tf->stats().evaluation(tf->worn(), after_err, true);
             std::vector<combat::LandedEffect> landed;
             combat_->resolver().effects_with(*evaluation_, host, after ? after.get() : target_eval.get(), ti.surface_distance_cm, hostile, ti.relation == combat::Relation::Neutral, hit, meta, landed);
+            if (!hit.remove_effects.empty()) combat_->remove_effects(id, hit, t);
             for (combat::LandedEffect& e : landed) {
                 if (e.seconds < 0 && others_endless_seconds_ >= 0) e.seconds = others_endless_seconds_;   // (a placed zone's endless effect on another: land_placed_zone_hits)
                 if (e.shield > 0) combat_->shield(id, e.shield, std::max(0.0, e.seconds), t);
@@ -1575,31 +1768,51 @@ void AbilityPipeline::apply_hit(AbilityChange& c, const HitDef& hit, double t, b
     apply_hit_here(c, hit, t, skip_resource, src);
 }
 
-bool AbilityPipeline::pay_pet_ability(int64_t ability, double now, double& cooldown) {
+bool AbilityPipeline::can_pay_pet_ability(int64_t ability, double now, PetPayment& out) {
     advance(now);
-    const AbilityDef* def = catalog_->ability(ability);
+    out = {};
+    const AbilityDef* def = catalog_ ? catalog_->ability(ability) : nullptr;
     if (!def) return false;
     std::string why;
-    cooldown = 0;
-    if (def->row.cooldown_expr != 0 && eval(def->row.cooldown_expr, cooldown, why)) cooldown = std::max(0.0, cooldown);
-    AbilityChange c;
-    std::vector<std::pair<int64_t, double>> costs;
+    double cooldown = 0;
+    if (def->row.cooldown_expr != 0 && eval(def->row.cooldown_expr, cooldown, why)) out.cooldown = std::max(0.0, cooldown);
+    std::vector<std::pair<int64_t, double>> each;
+    std::vector<int64_t> counted;   // (a cost hit the ability lists under more than one key is one cost)
     for (const content::AbilityHitRow& h : def->hits) {
         const HitDef* hit = catalog_->hit(h.hit_guid);
-        if (!hit || !hit->row.name.ends_with("_OwnerCost")) continue;
+        if (!hit || !hit->row.name.ends_with("_OwnerCost") || std::find(counted.begin(), counted.end(), h.hit_guid) != counted.end()) continue;
+        counted.push_back(h.hit_guid);
         for (const content::ModRow& m : hit->mods) {
             double amount = 0;
             if (m.value_expr == 0 || !eval(m.value_expr, amount, why) || !std::isfinite(amount)) continue;
-            if (stat_now(m.stat_guid) + amount < 0) return false;   // the Essence is not there
-            costs.emplace_back(m.stat_guid, amount);
+            each.emplace_back(m.stat_guid, amount);
         }
-        break;
     }
-    for (const auto& [stat, amount] : costs) apply_delta(c, stat, amount);
+    out.costs = pets::sum_by_stat(each);
+    for (const auto& [stat, amount] : out.costs) {
+        if (stat_now(stat) + amount < 0) return false;   // the Essence is not there
+    }
+    return true;
+}
+
+void AbilityPipeline::commit_pet_payment(int64_t ability, const PetPayment& pay, double now) {
+    advance(now);
+    const AbilityDef* def = catalog_ ? catalog_->ability(ability) : nullptr;
+    if (!def) return;
+    AbilityChange c;
+    for (const auto& [stat, amount] : pay.costs) apply_delta(c, stat, amount);
     drop_evaluation();
     recompute(c);
     emit({std::move(c), std::nullopt, now, "the Essence of " + def->row.name});
-    start_pet_cooldown(ability, cooldown, now);
+    start_pet_cooldown(ability, pay.cooldown, now);
+}
+
+bool AbilityPipeline::pay_pet_ability(int64_t ability, double now, double& cooldown) {
+    PetPayment pay;
+    cooldown = 0;
+    if (!can_pay_pet_ability(ability, now, pay)) return false;
+    commit_pet_payment(ability, pay, now);
+    cooldown = pay.cooldown;
     return true;
 }
 
@@ -1895,13 +2108,13 @@ void AbilityPipeline::modify_cooldowns(AbilityChange& c, const HitDef& hit, doub
 }
 
 void AbilityPipeline::land_bolt_recall(int32_t client_id, uint64_t target, double t) {
-    combat_->remove_effect(target, pets::kBoltMark, t);
+    if (combat_) combat_->remove_effect(target, pets::kBoltMark, t);
     AbilityChange c;
     HitSource src;
     src.type = content::kSourceTypeAbility;
     src.guid = pets::kBolt;
-    if (const HitDef* remove = catalog_->hit(pets::kBoltRemoveHit)) apply_hit_here(c, *remove, t, true, src);
-    if (const HitDef* cooldown = catalog_->hit(pets::kBoltCooldownHit)) apply_hit_here(c, *cooldown, t, true, src);   // (the data's: taking Lockout_2 off fires it)
+    if (const HitDef* remove = catalog_ ? catalog_->hit(pets::kBoltRemoveHit) : nullptr) apply_hit_here(c, *remove, t, true, src);
+    if (const HitDef* cooldown = catalog_ ? catalog_->hit(pets::kBoltCooldownHit) : nullptr) apply_hit_here(c, *cooldown, t, true, src);   // (the data's: taking Lockout_2 off fires it)
     drop_evaluation();
     recompute(c);
     bolt_recall_ = {target, stacks_of(pets::kHunterEffect) > 0};
@@ -1954,7 +2167,18 @@ double AbilityPipeline::movement_allowance(double now) const {
 void AbilityPipeline::set_dead(bool dead) {
     dead_ = dead;
     if (dead) {
-        casts_.clear();
+        // every cast ends with the caster, except a ball that has left: it flies on and goes on hurting what it touches. Its own steps and the hits they sent stay; nothing else of its cast does
+        for (size_t i = casts_.size(); i-- > 0;) {
+            Cast& c = casts_[i];
+            const bool flying = c.ball != nullptr && c.ball_flight.launch_at >= 0;
+            if (flying) {
+                for (std::optional<double>* due : {&c.item_due, &c.cost_due, &c.hit_due, &c.projectile_due, &c.loop_due, &c.own_due, &c.branch_due, &c.end_due}) due->reset();
+                c.missiles.erase(std::remove_if(c.missiles.begin(), c.missiles.end(),
+                                                [](const Cast::Missile& m) { return m.kind != Cast::Missile::Kind::Ball && m.kind != Cast::Missile::Kind::Land; }),
+                                 c.missiles.end());
+            }
+            if (!flying || c.missiles.empty()) casts_.erase(casts_.begin() + static_cast<std::ptrdiff_t>(i));
+        }
         // a consumable's cast that had not paid its cost is over with the death and takes nothing from the bag (the session lets its item go): the hit the client asked for
         // before the death must not give the buff of an item that stays where it was
         records_.erase(std::remove_if(records_.begin(), records_.end(), [](const CastRecord& r) { return r.consumable && r.cost_at < 0; }), records_.end());
@@ -2024,7 +2248,6 @@ double AbilityPipeline::next_due() const {
         if (z.initial_due >= 0) due = std::min(due, z.initial_due);
         if (z.tick_due >= 0) due = std::min(due, z.tick_due);
     }
-    for (const RollingBall& b : balls_) due = std::min(due, b.tick_due);
     return due;
 }
 
@@ -2062,12 +2285,14 @@ void AbilityPipeline::run_due(double t) {
         }
         if (cast.hit_due && *cast.hit_due <= t) {
             cast.hit_due.reset();
+            mark_launched(cast.client_id);
             step_hits(cast, t, "hit");
             finish_cast_if_done(i);
             return;
         }
         if (cast.projectile_due && *cast.projectile_due <= t) {
             cast.projectile_due.reset();
+            mark_launched(cast.client_id);
             if (cast.flight_pending) {   // the projectile leaves now: its hit lands when it gets there
                 launch_shot(cast, t);
                 finish_cast_if_done(i);
@@ -2081,6 +2306,7 @@ void AbilityPipeline::run_due(double t) {
             // a cast bar whose request did not come by the deadline goes on as if it came then: a cancel is the client's ServerEndAbility (end_request has seen it), and a slow bar, a hitch or a stall
             // must not lose its cast (the owner's bars run 1.3 to 1.4 times as long as the recorded ones; a Smite has paid its mana already)
             cast.branch_due.reset();
+            mark_launched(cast.client_id);
             step_branch(cast, t);
             finish_cast_if_done(i);
             return;
@@ -2091,10 +2317,12 @@ void AbilityPipeline::run_due(double t) {
                 if (cast.missiles[k].due < cast.missiles[first].due) first = k;
             }
             if (cast.missiles[first].due <= t) {
-                if (cast.missiles[first].kind != Cast::Missile::Kind::Land) {   // a timed cast's launch, the landing of a Strike's arrow, or a note or a bounce that leaves
+                mark_launched(cast.client_id);
+                if (cast.missiles[first].kind != Cast::Missile::Kind::Land) {   // a timed cast's launch, the landing of a Strike's arrow, a note or a bounce that leaves, or a step of a ball's flight
                     const Cast::Missile step = cast.missiles[first];
                     cast.missiles.erase(cast.missiles.begin() + static_cast<std::ptrdiff_t>(first));
                     if (step.kind == Cast::Missile::Kind::Fly) launch_note(cast, step, t);
+                    else if (step.kind == Cast::Missile::Kind::Ball) ball_step(cast, step, t);   // (the step has left the list: it puts its next one back itself)
                     else step_timed(cast, step, t);
                     finish_cast_if_done(i);
                     return;
@@ -2173,9 +2401,6 @@ void AbilityPipeline::run_due(double t) {
     for (size_t i = 0; i < placed_zones_.size(); ++i) {
         const PlacedZone& z = placed_zones_[i];
         if (z.end_at <= t || (z.initial_due >= 0 && z.initial_due <= t) || (z.tick_due >= 0 && z.tick_due <= t)) return run_placed_zone(i, t);
-    }
-    for (size_t i = 0; i < balls_.size(); ++i) {
-        if (balls_[i].tick_due <= t) return run_ball(i, t);
     }
     if (next_regen_ <= t) return regenerate(t);
 }
@@ -2308,7 +2533,7 @@ AbilityPipeline::HitVerdict AbilityPipeline::hit_request(int64_t ability, int64_
     // (the targeting record the client names is not checked against the ability's key map: 122 of 1,854 retail requests name another record than the
     // map's, and the hit is what decides what happens)
     if (slot->server_self_use) return HitVerdict::Quiet;
-    if (slot->requests >= max_requests || now - slot->last_request < rec->min_gap) return HitVerdict::TooMany;
+    if (slot->requests >= (slot->max_requests >= 0 ? slot->max_requests : max_requests) || now - slot->last_request < rec->min_gap) return HitVerdict::TooMany;
     ++slot->requests;
     slot->last_request = now;
     const bool found = own > 0 && slot->reaches;
@@ -2329,6 +2554,7 @@ AbilityPipeline::HitVerdict AbilityPipeline::hit_request(int64_t ability, int64_
 
 void AbilityPipeline::run_slot(CastRecord& rec, HitSlot& slot, double t, bool response, bool found, const std::vector<uint64_t>& targets) {
     ItemScope item_scope(*this, rec.item_stats);
+    rec.launched = true;   // (a hit of the cast is out: a Dodge no longer cancels it)
     const FillScope fill(*this, rec.fill);   // (a HELD ability released early: its hit reads the fill its bar reached)
     if (!slot.hit->zones.empty() && !slot.fired) {   // (once a cast, however often the client asks)
         slot.fired = slot.hit->fires.empty();
@@ -2457,76 +2683,6 @@ void AbilityPipeline::land_placed_zone_hits(AbilityChange& c, PlacedZone& z, con
     }
 }
 
-namespace {
-// Ball Lightning's projectile record: Speed 350, SphereCollisionRadius 500, ProjectileHitInterval 0.5, Range 3000 and LifeTime 10, of which the range ends it first, MaxProjectileHits
-// 100000, bFollowGround: "a slow ball that hurts what it passes over". The client draws the ball by itself; nothing it sends says where the ball is, so it rolls straight here [modelled].
-struct BallRule {
-    const char* ability;
-    double      speed, radius, period, seconds;
-};
-constexpr BallRule kBalls[] = {
-    {"Mage_BallLightning", 350.0, 500.0, 0.5, 3000.0 / 350.0},
-};
-}  // namespace
-
-bool AbilityPipeline::launch_ball(const Cast& cast, double t) {
-    if (!combat_) return false;
-    for (const BallRule& rule : kBalls) {
-        if (cast.def->row.name != rule.ability) continue;
-        for (const content::AbilityHitRow& h : cast.def->hits) {
-            if (h.source != "projectile") continue;
-            const HitDef* hit = catalog_->hit(h.hit_guid);
-            if (!hit) continue;
-            RollingBall b;
-            b.hit = hit;
-            b.ability = cast.def;
-            b.projectile = h.owner_guid;
-            b.at = combat_->self().position();
-            double angle = combat_->self().facing_degrees() * 3.14159265358979323846 / 180.0;
-            if (!cast.target_actors.empty()) {   // (aimed at the target it was cast at)
-                const combat::TargetInfo ti = combat_->inspect(cast.target_actors.front());
-                if (ti.exists && (ti.position.x != b.at.x || ti.position.y != b.at.y)) angle = std::atan2(ti.position.y - b.at.y, ti.position.x - b.at.x);
-            }
-            b.dir_x = std::cos(angle);
-            b.dir_y = std::sin(angle);
-            b.speed = rule.speed;
-            b.radius = rule.radius;
-            b.period = rule.period;
-            b.tick_due = t + rule.period;
-            b.end_at = t + rule.seconds;
-            balls_.push_back(b);
-            spdlog::info("[abilities] {}: the ball rolls for {:.1f} s, hitting within {:.0f} m every {:.1f} s", cast.def->row.name, rule.seconds, rule.radius / 100.0, rule.period);
-            return true;
-        }
-    }
-    return false;
-}
-
-void AbilityPipeline::run_ball(size_t index, double t) {
-    RollingBall b = balls_[index];
-    AbilityChange c;
-    b.at.x += b.dir_x * b.speed * b.period;
-    b.at.y += b.dir_y * b.speed * b.period;
-    b.tick_due += b.period;
-    const bool over = dead_ || !combat_ || b.tick_due > b.end_at;
-    if (over) balls_.erase(balls_.begin() + static_cast<std::ptrdiff_t>(index));
-    else balls_[index] = b;
-    if (!dead_ && combat_) {
-        std::vector<uint64_t> targets;
-        for (const combat::GatheredTarget& e : combat_->enemies_around(b.at, b.radius, kMaxGathered)) targets.push_back(e.actor);
-        HitSource src;   // (a projectile's hit: no Source, confirmed by the server)
-        src.type = content::kSourceTypeProjectile;
-        src.guid = b.projectile;
-        src.actor = false;
-        src.confirm = true;
-        src.simulated = true;
-        spdlog::debug("[abilities] {}: the ball is at ({:.0f}, {:.0f}): {} near it", b.ability->row.name, b.at.x, b.at.y, targets.size());
-        if (!targets.empty()) apply_hit_on_targets(c, *b.hit, targets, t, src, b.ability);
-    }
-    drop_evaluation();
-    recompute(c);
-    emit({std::move(c), std::nullopt, t, "the ball of " + b.ability->row.name + " rolls on"});
-}
 
 void AbilityPipeline::run_placed_zone(size_t index, double t) {
     PlacedZone z = placed_zones_[index];
@@ -2568,6 +2724,7 @@ bool AbilityPipeline::cancel(int32_t client_instance_id, double now, double held
         if (at >= *cast.branch_due) continue;
         spdlog::info("[abilities] the key of {} went up {:.3f} s after the trigger: the cast goes on", cast.def->row.name, now_ - cast.trigger_at);
         reschedule_branch(cast, at, cast.branched->cost);
+        cast.released = true;   // (the bar is over: a Dodge does not take the shot back)
     }
     // the key of a HELD ability went up before its bar was full: the bar ended there, at the fill reached, and the cast goes on as from a request (the client sends none for it) [R: the owner's run; modelled: the
     // fill is the held time over the longest bar this client has shown, else the recorded one]
@@ -2616,11 +2773,13 @@ void AbilityPipeline::bring_sooner(Cast& cast, double earlier) {
     }
 }
 
-void AbilityPipeline::abort_cast(size_t index, double t, const char* why) {
+void AbilityPipeline::abort_cast(size_t index, double t, const char* why, bool give_back) {
     Cast& cast = casts_[index];
-    const bool paid = cast.branched && cast.branched->cost_first;   // (a Smite paid before its bar's end: only what follows the bar is dropped)
-    spdlog::info("[abilities] {} {:.3f} s after the trigger: {}: {}", cast.def->row.name, t - cast.trigger_at, why, paid ? "its cost was paid before the bar's end, nothing more happens" : "nothing is paid and nothing fires");
+    const bool paid = cast.paid;   // (a Smite pays before its bar's end: only what follows the bar is dropped)
+    spdlog::info("[abilities] {} {:.3f} s after the trigger: {}: {}", cast.def->row.name, t - cast.trigger_at, why,
+                 paid ? (give_back ? "its cost was paid before the bar's end and is given back, nothing more happens" : "its cost was paid before the bar's end, nothing more happens") : "nothing is paid and nothing fires");
     AbilityChange c;
+    if (give_back) refund(c, cast);
     if ((cast.montage_branch || cast.clears_montage) && !cast.item_due && item_instance_ && *item_instance_ == cast.instance) {   // (its item was sent and is still the pawn's: it keeps its place, the montage cleared)
         cast.item.montage_path.clear();
         cast.item.montage_guid = 0;
@@ -2633,6 +2792,188 @@ void AbilityPipeline::abort_cast(size_t index, double t, const char* why) {
     end_zones_of(cast, t);
     casts_.erase(casts_.begin() + static_cast<std::ptrdiff_t>(index));
     if (!c.empty()) emit({std::move(c), std::nullopt, t, text});
+}
+
+// A cast bar is running while its end is still to come: the client's request for the branch has not come (a held cast's key is still down and its charge not full), or a summon's bar has not run out.
+// A cast with no bar (a weapon swing, a song, a looping or channelled cast, a held stance) has none to end.
+bool AbilityPipeline::in_cast_bar(const Cast& cast) const {
+    if (pets::for_ability(cast.def->row.guid)) return cast.cost_due.has_value();
+    return cast.branched != nullptr && cast.branch_due && !cast.request_heard && !cast.charged && !cast.released;
+}
+
+// What a cast that paid gives back when it is cancelled: the stats its cost took (up to the stat's maximum), the stacks of the effects its cost took, its charge (the cooldown is over once every charge of
+// the group is back) and the stack of the class resource that spending Mana gave (when it gave one). A cast that has not paid has nothing to give back. The reactions that its payment raised stay.
+void AbilityPipeline::refund(AbilityChange& c, Cast& cast) {
+    if (!cast.paid) return;
+    cast.paid = false;
+    give_back(c, cast);
+}
+
+// One payment of a cast comes back: its stat costs (up to the stat's maximum), its effect stacks, one charge of its group and the class resource's stack that spending Mana gave (refund gives the whole
+// cast's once; a Salvo's shot is one payment).
+void AbilityPipeline::give_back(AbilityChange& c, const Cast& cast) {
+    bool mana = false;
+    for (const auto& [stat, amount] : cast.stat_costs) {
+        if (!(amount > 0)) continue;
+        mana = mana || stat == content::kGuidMana;
+        if (stat == content::kGuidStamina) {
+            a7_.add_stamina(c, amount);
+            continue;
+        }
+        const stats::StatValue* v = stats_.find(stat);
+        double cap = kInf;
+        if (stat == content::kGuidMana) cap = stat_now(content::kGuidMaxMana);
+        else if (stat == content::kGuidHealth) cap = stat_now(content::kGuidMaxHealth);
+        else if (v && v->has_max) cap = static_cast<double>(v->max);
+        const double now_value = stat_now(stat);
+        set_held(c, stat, std::max(now_value, std::min(cap, now_value + amount)));
+    }
+    if (resource_ && mana && cast.resource_added > 0) remove_stacks(c, resource_->row.guid, cast.resource_added);   // (only the stack the payment added: at the resource's limit it added none)
+    for (const auto& [effect, n] : cast.effect_costs) {   // the stacks the cost took go back on [modelled: no recording shows a cast bar ended after such a cost]
+        if (const EffectDef* def = catalog_ ? catalog_->effect(effect) : nullptr) restore_stacks(c, *def, n, now_);
+    }
+    if (cast.triggers_cooldown && cast.cooldown > 0) {
+        const auto it = groups_.find(cast.group);
+        if (it != groups_.end()) {
+            Group& g = it->second;
+            g.charges = std::min(g.max_charges, g.charges + cast.charge_cost);
+            if (g.charges >= g.max_charges) {   // every charge is back: the cooldown is over
+                for (const int64_t a : g.items) c.cooldowns_removed.push_back(a);
+                groups_.erase(it);
+            } else {   // another charge is still on its way back: its timer goes on
+                for (const int64_t a : g.items) c.cooldowns_set.push_back(cooldown_item(a, g));
+            }
+        }
+    }
+    recompute(c);
+}
+
+// The game's rule: a Dodge ends the cast bars the character is in (the session calls this when the runtime took a Dodge). The cast ends like one the client cancelled (abort_cast: none of its steps
+// happens, its item keeps its place with the montage cleared), what it had paid is given back, and the client is told with ClientEndAbility for the cast: it sends no end of its own for it.
+size_t AbilityPipeline::end_cast_bars(double now, const char* why) {
+    advance(now);
+    size_t ended = 0;
+    for (size_t i = casts_.size(); i-- > 0;) {
+        if (!in_cast_bar(casts_[i])) continue;
+        const int32_t client_id = casts_[i].client_id;
+        const std::string name = casts_[i].def->row.name;
+        const bool paid = casts_[i].paid;
+        AbilityEvent e;
+        e.at = now_;
+        e.end_ability = client_id;
+        abort_cast(i, now_, why, true);   // (what it had paid comes back with it)
+        instances_.erase(std::remove_if(instances_.begin(), instances_.end(), [client_id](const Instance& in) { return in.client_id == client_id; }), instances_.end());   // (the client's own end would end it twice)
+        e.note = name + " is over: " + why + (paid ? ", what it had paid is given back" : "");
+        events_.push_back(std::move(e));
+        ++ended;
+    }
+    return ended;
+}
+
+// The game's rule: a Dodge cancels an ability that has not gone out yet and gives back what it paid. Once something of it has gone out (a hit the client asked for or that landed, a projectile or a volley launched, an
+// effect started, a cast bar's end) the Dodge does nothing to it: no cancel, no refund, no message to the client, and what is in the air still hits. The session calls this when the runtime took a Dodge. It cancels the
+// cast bars the character is in (above), every other cast that is running (the Salvo, the Barrage, the Air Strike, the Raining Death, the held abilities, and an ordinary ability in its wind up before the cost step and
+// the hit) and the weapon swing under way, each before its first arrow, hit or effect. A Melody goes on through a Dodge, so does a Sprint, and a Rest is ended by the runtime. A consumable (its item is used at the press),
+// a pet command and a leap, a charge, a teleport or a dash are gone out at the press: the Dodge leaves them alone. An ability with no hit of its own is gone out once it is paid.
+size_t AbilityPipeline::end_by_dodge(double now) {
+    size_t ended = end_cast_bars(now, "a Dodge ended the cast bar");   // (this moves the clock to `now`)
+    ended += end_unlaunched(now_, "a Dodge cancelled it before it went out");
+    ended += end_swings(now_, "a Dodge ended the swing");
+    return ended;
+}
+
+// Whether anything of a cast has gone out: a hit the client asked for or the server applied, a projectile or a volley launched, an effect started (the record's `launched`), or the end of a cast bar (the client's
+// request, the key's release, the full charge). `cast` is the cast while it still runs; null when only its record is left (a melee swing).
+bool AbilityPipeline::gone_out(int32_t client_id, const Cast* cast) const {
+    if (cast && (cast->request_heard || cast->charged || cast->released)) return true;
+    for (const CastRecord& r : records_) {
+        if (r.client_id != client_id) continue;
+        if (r.launched || !r.asked.empty()) return true;
+        for (const HitSlot& s : r.slots) {
+            if (s.requests > 0 || s.applied || !s.due.empty()) return true;
+        }
+        return false;
+    }
+    return true;   // (no record: the cast is old or has ended)
+}
+
+void AbilityPipeline::mark_launched(int32_t client_id) {
+    if (CastRecord* r = record_of(client_id)) r->launched = true;
+}
+
+// The casts a Dodge cancels besides the cast bars and the swings: every cast that is running while nothing of it has gone out. A song (a Melody), a toggle that this press ends, a consumable's use (its item is used at the
+// press and its buff applies in full), a pet command and a leap, a charge, a teleport or a dash (all gone out at the press) are no casts to cancel.
+bool AbilityPipeline::dodge_cancels(const Cast& cast) const {
+    if (cast.loop || cast.toggle_off || cast.consume_item || is_weapon_combo(cast.def->row) || gone_out_at_the_press(cast.def->row)) return false;
+    return !gone_out(cast.client_id, &cast);
+}
+
+// Each cast that has not gone out ends like one the client cancelled: none of its steps happens, the hits the client would still ask for are not taken (its record goes), what it paid comes back (a Salvo's first shot is
+// paid a moment before its arrow leaves) and the client is told with ClientEndAbility for the cast. The montage ends as it does at the end of a cast (step_end: the item keeps its place with the montage cleared).
+size_t AbilityPipeline::end_unlaunched(double t, const char* why) {
+    size_t ended = 0;
+    for (size_t i = casts_.size(); i-- > 0;) {
+        if (!dodge_cancels(casts_[i])) continue;
+        Cast& cast = casts_[i];
+        const int32_t client_id = cast.client_id;
+        const std::string name = cast.def->row.name;
+        const bool paid = cast.paid;
+        const double since = t - cast.trigger_at;
+        AbilityEvent e;
+        e.at = t;
+        e.end_ability = client_id;
+        for (int shot = 1; shot < cast.shots; ++shot) give_back(e.change, cast);   // (a Salvo that paid more than one shot before its first arrow left)
+        refund(e.change, cast);   // (nothing when it had not paid yet)
+        step_end(cast, t);
+        drop_record(client_id);
+        end_zones_of(cast, t);
+        casts_.erase(casts_.begin() + static_cast<std::ptrdiff_t>(i));
+        instances_.erase(std::remove_if(instances_.begin(), instances_.end(), [client_id](const Instance& in) { return in.client_id == client_id; }), instances_.end());   // (the client's own end would end it twice)
+        e.note = name + " is over: " + why + (paid ? ", what it had paid is given back" : "");
+        spdlog::info("[abilities] {} {:.3f} s after the trigger: {}", name, since, e.note);
+        events_.push_back(std::move(e));
+        ++ended;
+    }
+    return ended;
+}
+
+// The weapon swing under way is cancelled while nothing of it has gone out (no arrow has left, no hit was asked for or landed): it ends the way the client's own end of a swing ends it (stop_swing), the arrows that
+// have not left never do, the hits the client has not asked for yet are not taken (the swing's record goes, as cancel_swings drops it) and what the swing would still have landed at a plain delay does not land. A swing
+// whose item has not come yet never shows it. Once an arrow has left or a hit was asked for, the Dodge changes nothing. A swing pays nothing. The swing under way is the pawn's ability item, a swing instance the
+// client has not ended.
+size_t AbilityPipeline::end_swings(double t, const char* why) {
+    size_t ended = 0;
+    for (size_t i = casts_.size(); i-- > 0;) {
+        const Cast& p = casts_[i];
+        if (!is_weapon_combo(p.def->row) || !p.item_due) continue;
+        AbilityEvent e;
+        e.at = t;
+        e.end_ability = p.client_id;
+        e.note = "the swing of " + p.def->row.name + " is ended: " + why;
+        events_.push_back(std::move(e));
+        drop_record(p.client_id);
+        casts_.erase(casts_.begin() + static_cast<std::ptrdiff_t>(i));
+        ++ended;
+    }
+    if (!item_instance_) return ended;
+    for (size_t i = 0; i < instances_.size(); ++i) {
+        const Instance inst = instances_[i];
+        if (inst.server_id != *item_instance_ || inst.end_due) continue;
+        const AbilityDef* a = catalog_ ? catalog_->ability(inst.ability) : nullptr;
+        if (!a || !is_weapon_combo(a->row)) continue;
+        if (gone_out(inst.client_id)) return ended;   // (an arrow has left or a hit was asked for: the swing is out)
+        drop_record(inst.client_id);
+        for (Cast& cast : casts_) {
+            if (cast.instance != inst.server_id) continue;
+            cast.hit_due.reset();
+            if (!cast.shot && !cast.flight_pending) cast.projectile_due.reset();   // (a projectile in the air has its shot: it lands)
+        }
+        stop_swing(inst.server_id);
+        end_instance(i, t, a->row.name + " is over: " + why);
+        ++ended;
+        break;
+    }
+    return ended;
 }
 
 bool AbilityPipeline::can_pay(const Cast& cast) const {
@@ -2727,23 +3068,38 @@ bool AbilityPipeline::end_request(int32_t server_instance_id, double now) {
     for (size_t i = 0; i < casts_.size(); ++i) {
         const Cast& cast = casts_[i];
         if (cast.instance == server_instance_id && pets::for_ability(cast.def->row.guid) && cast.cost_due) {
-            abort_cast(i, now_, "the client ended the summon before completion");
+            abort_cast(i, now_, "the client ended the summon before completion", true);
             break;
         }
         if (cast.instance != server_instance_id || !cast.branched || !cast.branched->cancels || cast.held || cast.request_heard || !cast.branch_due) continue;
-        abort_cast(i, now_, "the client ended the cast bar");
+        abort_cast(i, now_, "the client ended the cast bar", true);   // (a cast that had paid before its bar's end gets it back: a bar the client cancels costs nothing)
         break;
     }
     for (Instance& i : instances_) {
         if (i.server_id != server_instance_id || i.end_due) continue;
         release_held(i.client_id, now_);
+        stop_swing(i.server_id);
         i.end_due = now_ + kEndDelay;
         return true;
     }
     return false;
 }
 
-void AbilityPipeline::end_instance(size_t index, double t) {
+// The client ends a ranged weapon swing (a stun ends the montage it plays): the arrows, bolts and pages that had still to leave never do. The ones in the air land.
+void AbilityPipeline::stop_swing(int64_t instance) {
+    for (size_t i = casts_.size(); i-- > 0;) {
+        Cast& cast = casts_[i];
+        if (cast.instance != instance || !is_weapon_combo(cast.def->row)) continue;
+        if (cast.flight_pending) {   // (a single arrow that has not left)
+            cast.flight_pending = false;
+            cast.projectile_due.reset();
+        }
+        cast.missiles.erase(std::remove_if(cast.missiles.begin(), cast.missiles.end(), [](const Cast::Missile& m) { return m.kind == Cast::Missile::Kind::Fly && m.depth == 0; }), cast.missiles.end());
+        finish_cast_if_done(i);
+    }
+}
+
+void AbilityPipeline::end_instance(size_t index, double t, const std::string& why) {
     const Instance inst = instances_[index];
     instances_.erase(instances_.begin() + static_cast<std::ptrdiff_t>(index));
     AbilityEvent e;
@@ -2755,12 +3111,13 @@ void AbilityPipeline::end_instance(size_t index, double t) {
             item.ability_guid = inst.ability;
             item.server_instance_id = inst.server_id;
             item.montage_group = montage_group_of(*a);
+            item.play_rate = static_cast<float>(item_rate(*a));
             item.animation_counter = animation_counter_;
             e.change.abilities_changed.push_back(std::move(item));
         }
     }
     e.end_ability = inst.client_id;
-    e.note = "the client ended the ability instance " + std::to_string(inst.server_id);
+    e.note = why.empty() ? "the client ended the ability instance " + std::to_string(inst.server_id) : why + " (the ability instance " + std::to_string(inst.server_id) + ")";
     events_.push_back(std::move(e));
 }
 // C O A and C Y B
@@ -2891,6 +3248,45 @@ std::optional<AbilityPipeline::Inspection> AbilityPipeline::inspect(int64_t abil
 }
 // [C | O | A - Cyb]
 
+// The montage a ranged weapon swing plays (the AnimationIndex the client names), kept to the order of the combo. The client plays the steps one after the other and starts over after the last; the server keeps
+// the step of the last swing, and a swing is taken as named when it is the first step (starting over) or the step after that one. Any other montage (a step the combo has not got to, one that does not
+// exist) plays the step the combo is at, the plain swing of it, so that a client cannot name the Shortbow's five-arrow step on every swing. Nothing is known of the combo before its first swing: the montage
+// named is taken then. `step` gets the step the swing plays (0: the ability is no ranged weapon combo).
+int AbilityPipeline::swing_montage(const AbilityDef& def, int requested, int& step) const {
+    step = 0;
+    if (!catalog_ || def.montages.empty() || def.row.name.rfind("WeaponCombo_Ranged", 0) != 0) return requested;
+    const content::MontageRow* asked = nullptr;
+    for (const content::MontageRow& m : def.montages) {
+        if (m.anim_index == requested) asked = &m;
+    }
+    const auto last = swing_steps_.find(def.row.guid);
+    if (asked) {
+        const StepToken named = step_of_montage(*catalog_, *asked);
+        if (!named.ok) return requested;   // (a montage the combo's steps do not describe: nothing to keep it to)
+        if (last == swing_steps_.end() || named.step == 1 || named.step == last->second + 1) {
+            step = named.step;
+            return requested;
+        }
+    }
+    // the step the combo is at: the one after the last swing's, else the first
+    int next = last == swing_steps_.end() ? 1 : last->second + 1;
+    const content::MontageRow* take = nullptr;
+    for (int attempt = 0; attempt < 2 && !take; ++attempt) {
+        bool take_proc = true;
+        for (const content::MontageRow& m : def.montages) {
+            const StepToken s = step_of_montage(*catalog_, m);
+            if (!s.ok || s.step != next || (take && !(take_proc && !s.proc))) continue;
+            take = &m;
+            take_proc = s.proc;
+        }
+        if (!take) next = 1;   // (the combo is over, or the step is none: it starts again)
+    }
+    if (!take) return requested;
+    spdlog::info("[abilities] {}: the client named montage {}, but the combo is at step {}: the swing plays montage {}", def.row.name, requested, next, take->anim_index);
+    step = next;
+    return take->anim_index;
+}
+
 Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now, const TriggerInfo& info) {
     advance(now);
     const double t = now_;
@@ -3001,7 +3397,8 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
     cast.item_stats = info.item_stats;
     cast.def = def;
     cast.trigger_at = t;
-    cast.animation_index = info.animation_index;
+    int swing_step = 0;   // (a ranged weapon swing: the step it plays, kept once the swing is accepted)
+    cast.animation_index = swing_montage(*def, info.animation_index, swing_step);
     cast.target = info.target_count > 0 && target_actors.empty();   // (aimed at the caster; a real target is named by the item's Targets)
     // ... but a projectile reaches the caster only when the ability may be aimed at the caster at all: an enemy-only ability whose target the world
     // does not have (another player) is cast at the air, like one with no target, and Mock's Quick Wit heal never lands on the caster [E1 stage 3 fix]
@@ -3166,7 +3563,6 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
     if (!loop) {
         bool direct = false, projectile = false;
         const bool aimed = !cast.target_actors.empty();
-        for (const BallRule& b : kBalls) projectile = projectile || row.name == b.ability;   // (cast at nobody: the ball rolls ahead of the caster)
         for (const content::AbilityHitRow& h : def->hits) {
             const HitDef* hit = catalog_->hit(h.hit_guid);
             if (!hit) continue;
@@ -3217,13 +3613,17 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
             // an ordinary cast with one projectile: it leaves where the montage launches it and lands when it gets to the target (kShotCasts); a heal at the caster himself (or at another player, whom this
             // world does not have) has no flight: it lands as the projectile leaves
             const bool at_caster = !aimed && cast.target && cast.self_reachable;
-            const bool plain = cast.projectile_due && !cast.branched && !cast.looped && !cast.gathered && !cast.timed && !cast.toggle_off && !is_weapon_combo(row);
+            // A ranged weapon swing does the same where its step has a row (kShotCasts, kNoteCasts): its arrow, bolt or page leaves at the montage's notify and lands when it gets to the target. A beam step, a melee
+            // swing and a swing at nobody keep the plain delay.
+            const bool swing = is_weapon_combo(row);
+            const bool plain = cast.projectile_due && !cast.branched && !cast.looped && !cast.gathered && !cast.timed && !cast.toggle_off && (!swing || (aimed && swing_flies(row.name, cast.animation_index)));
             if ((aimed || at_caster) && plain) {
-                // the row of the montage the client named; an index no row names (the client may send any) takes the ability's first row, so that the Firebolt still throws one projectile
+                // the row of the montage the client named; an index no row names (the client may send any) takes the ability's first row, so that the Firebolt still throws one projectile (a swing has the row of its
+                // step or none)
                 const ShotCast* shot = nullptr;
                 for (const ShotCast& sc : kShotCasts) {
                     if (row.name != sc.ability) continue;
-                    if (!shot) shot = &sc;
+                    if (!shot && !swing) shot = &sc;
                     if (sc.animation < 0 || sc.animation == cast.animation_index) {
                         shot = &sc;
                         break;
@@ -3257,13 +3657,25 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
     rec.consumable = static_cast<bool>(info.consume_item);
     rec.hit_delay = hit_delay >= 0 ? hit_delay : has_montage ? kHitDelay : 0.0;
     rec.reach = reach_of(*def);
-    // a beam step (the wand's finisher): the client asks for its tick hit again and again while it burns, so this cast takes more requests, closer together
+    // a beam step (the wand's finisher): the client asks for its tick hit again and again while it burns, so this cast takes its requests closer together.
+    // A ranged weapon swing's other hits are the server's own: its projectile hits land when the projectile gets there, and the retail client asks for none of them (the Wand's beam steps are the only
+    // swings that ask: for the beam's ticks and end and the step's own hit). So a swing that is no beam step takes no request at all, and a beam step takes none for the hits of the other steps,
+    // which a modified client could name to have them land on whatever actors it likes, and only as many for each of its own hits as an honest swing sends (kBeamHits).
+    const bool ranged_swing = row.name.rfind("WeaponCombo_Ranged", 0) == 0;
+    bool beam_swing = false;
+    StepToken swing_token;
+    std::set<int64_t> arrow_hits;   // the hits the swing's projectiles carry
     if (is_weapon_combo(row)) {
         for (const content::MontageRow& m : def->montages) {
-            if (m.anim_index == cast.animation_index && step_token(leaf_of_path(m.soft_path)).beam) {
-                rec.max_requests = kBeamRequestsPerHit;
+            if (m.anim_index != cast.animation_index) continue;
+            swing_token = step_of_montage(*catalog_, m);
+            if (swing_token.beam) {
+                beam_swing = true;
                 rec.min_gap = kBeamRequestGap;
             }
+        }
+        for (const content::AbilityHitRow& h : def->hits) {
+            if (h.source == "projectile") arrow_hits.insert(h.hit_guid);
         }
     }
     std::set<int64_t> seen;
@@ -3272,9 +3684,17 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
         const int64_t tg = targeting_of(*def, static_cast<int>(h.key));
         const HitDef* hit = catalog_->hit(h.hit_guid);
         if (!hit || hit->row.net_type.find("ServerVerify") == std::string::npos) continue;   // a NET_ServerOnly hit is no one's request
+        if (ranged_swing && (!beam_swing || (arrow_hits.count(h.hit_guid) && !same_step(swing_token, step_token(hit->row.name))))) continue;   // (the arrows' hits land by themselves)
+        int beam_requests = -1;   // (a beam step's hit takes the share kBeamHits gives it, and a hit that table lacks takes no request)
+        if (ranged_swing) {
+            beam_requests = beam_hit_requests(hit->row.name);
+            if (beam_requests == 0) continue;
+        }
+        if (carried_by_ball(*def, h.hit_guid)) continue;   // the ability's ball lands this hit by itself, whatever the client asks: a request for it finds no slot and damages nobody
         HitSlot slot;
         slot.hit = hit;
         slot.targeting = tg;
+        slot.max_requests = beam_requests;
         slot.reaches = hits_caster(hit->row);
         slot.aims_others = combat_ != nullptr && (hit->row.applicable_targets & (2 | 4 | 8 | 16)) != 0;
         if ((authorized_item || pets::for_ability(ability)) && hit->row.applicable_targets == 1 && hit->row.fallback_target.find("SelfOnly") != std::string::npos) {
@@ -3285,6 +3705,12 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
         }
         rec.slots.push_back(std::move(slot));
     }
+    // A cast that asks the client for its hit and has no later step of its own would end at its cost step, and a Dodge could cancel it only until then. The recordings give most abilities a montage end, and those stay open to it.
+    // The others stay open for kDodgeHold after the press (or until their hit is asked for), so that a Dodge before the hit can still cancel them. Nothing is sent to the client for it: the end clears no montage here.
+    if (!rec.slots.empty() && has_montage && !loop && !cast.end_due && !cast.hit_due && !cast.projectile_due && !cast.own_due && cast.missiles.empty() && !cast.branched && !cast.looped && !cast.timed && !cast.consume_item &&
+        !cast.toggle_off && !row.hold_animation && !is_weapon_combo(row) && !gone_out_at_the_press(row)) {
+        cast.end_due = std::max(t + kDodgeHold, *cast.cost_due + 0.05);
+    }
     records_.push_back(std::move(rec));
     while (records_.size() > kMaxRecords) records_.pop_front();
     // the zones the cast spawns: their actors open at retail's offset after the trigger where the captures show it, else a moment after the item
@@ -3293,6 +3719,7 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
     spawn_zones(cast, t + (zone_delay >= 0 ? zone_delay : (has_montage ? item_delay : cost_delay) + kZoneOpenDelay), zone_end >= 0 ? t + zone_end : -1.0);
     // an ability's trigger ends the weapon swings under way: retail's server sent no hit of a swing that an ability followed within 0.45 s, and ended one that showed no item
     if (!is_weapon_combo(row)) cancel_swings(t, name);
+    if (swing_step > 0) swing_steps_[def->row.guid] = swing_step;
     casts_.push_back(std::move(cast));
     return Refusal::None;
 }
@@ -3325,6 +3752,7 @@ void AbilityPipeline::step_item(Cast& cast, double t) {
         break;
     }
     item.montage_group = montage_group_of(def);
+    item.play_rate = static_cast<float>(item_rate(def));   // (the character's animation speed where the ability's table rows say which stat its montage plays at: other clients play the montage at it)
     item.animation_counter = ++animation_counter_;
     cast.item = item;
     c.abilities_added.push_back(std::move(item));
@@ -3367,6 +3795,8 @@ void AbilityPipeline::step_branch(Cast& cast, double t) {
     if (cast.gathered && (!cast.cost_due || can_pay(cast))) launch_gathered(cast, t);
     // the projectiles of a cast bar are launched from the request: they land when they get to the target
     land_by_flight(cast, t);
+    // a ball (the Mage's Ball Lightning) leaves when the montage's notify gets there, whoever is or is not the cast's target
+    launch_ball(cast, t);
     // the montage moves to the section the branch names; when another ability's item is the pawn's by now there is nothing to move
     if (!cast.montage_branch || !item_instance_ || *item_instance_ != cast.instance) return;
     if (cast.charged && cast.gathered && cast.gathered->charged_montage[0] != '\0') {   // the charged shot has a montage of its own
@@ -3447,6 +3877,27 @@ double AbilityPipeline::client_rate(bool magical) const {
     return (r > 0.2 && r < 3.0) ? r : 1.0;
 }
 
+bool AbilityPipeline::plays_at_magical(const AbilityDef& def, bool row_magical) const {
+    if (!is_weapon_combo(def.row)) return row_magical;
+    // a weapon swing is any class's: a Bard (2), a Cleric (3), a Summoner (6) or a Mage (8) plays it at MagicalSpeed, a Ranger (1), a Fighter (4), a Rogue (5) or a Tank (7) at PhysicalSpeed
+    const int cls = stats_.class_enum();
+    return cls == 2 || cls == 3 || cls == 6 || cls == 8;
+}
+
+double AbilityPipeline::item_rate(const AbilityDef& def) const {
+    const std::string& name = def.row.name;
+    for (const ShotCast& s : kShotCasts) {
+        if (name == s.ability) return client_rate(plays_at_magical(def, s.magical));
+    }
+    for (const NoteCast& n : kNoteCasts) {
+        if (name == n.ability) return client_rate(plays_at_magical(def, n.magical));
+    }
+    for (const LoopedCast& l : kLoopedCasts) {
+        if (name == l.ability) return client_rate(false);
+    }
+    return 1.0;
+}
+
 AbilityPipeline::Cast* AbilityPipeline::cast_of(int32_t client_id) {
     for (Cast& c : casts_) {
         if (c.client_id == client_id) return &c;
@@ -3459,7 +3910,7 @@ void AbilityPipeline::plan_shot(Cast& cast, const ShotCast& shot, double t) {
     if (cast.target_actors.empty() && !(cast.target && cast.self_reachable)) return;   // (nobody to fly at, and no cast at the caster)
     cast.shot = &shot;
     cast.flight_pending = true;
-    cast.launch_at = t + shot.fire / client_rate(shot.magical);
+    cast.launch_at = t + shot.fire / client_rate(plays_at_magical(*cast.def, shot.magical));
     cast.projectile_due = cast.launch_at;   // (the launch: the landing, below, is what never comes before the cost step)
     // an ability with a projectile for each hand (the Firebolt): the montage launches the one of its key, and only that projectile's hits land
     if (shot.key != 0 && cast.chain_owner == 0) {
@@ -3496,6 +3947,11 @@ void AbilityPipeline::land_shot(Cast& cast, double t) {
 
 void AbilityPipeline::launch_shot(Cast& cast, double t) {
     cast.flight_pending = false;
+    // a swing's arrow leaves with its montage: when another ability's item (the next swing's) has taken the pawn's place by now, nothing leaves, as a volley's arrows never do (launch_note)
+    if (is_weapon_combo(cast.def->row) && cast.instance >= 0 && (!item_instance_ || *item_instance_ != cast.instance)) {
+        spdlog::info("[abilities] {}: another item took the pawn's place before the projectile left: it never leaves", cast.def->row.name);
+        return;
+    }
     const combat::TargetInfo info = cast.target_actors.empty() || !combat_ ? combat::TargetInfo{} : combat_->inspect(cast.target_actors.front());
     const content::ProjectileRow* p = nullptr;
     for (const content::AbilityHitRow& h : cast.def->hits) {
@@ -3511,21 +3967,21 @@ void AbilityPipeline::launch_shot(Cast& cast, double t) {
         cast.flight = 0;
         land_shot(cast, t);
         spdlog::info("[abilities] {}: the projectile leaves {:.3f} s after the trigger (the client plays at {:.3f}); {}: it lands as it leaves", cast.def->row.name, cast.launch_at - cast.trigger_at,
-                     client_rate(cast.shot->magical), cast.target_actors.empty() ? "the cast is at the caster" : "its target is not there");
+                     client_rate(plays_at_magical(*cast.def, cast.shot->magical)), cast.target_actors.empty() ? "the cast is at the caster" : "its target is not there");
         return;
     }
     const double distance = info.surface_distance_cm + kMuzzleCm;
     cast.flight = std::min(distance / p->speed, kMaxShotFlight);   // (a target pulled far away by the time the shot leaves would hold the cast's slot for as long as the flight)
     land_shot(cast, t);
     spdlog::info("[abilities] {}: the projectile leaves {:.3f} s after the trigger (the client plays at {:.3f}{}); the target is {:.1f} m away: it lands {:.3f} s after the launch", cast.def->row.name,
-                 cast.launch_at - cast.trigger_at, client_rate(cast.shot->magical), cast.anchored ? ", the launch is the client's request" : "", distance / 100.0, *cast.projectile_due - cast.launch_at);
+                 cast.launch_at - cast.trigger_at, client_rate(plays_at_magical(*cast.def, cast.shot->magical)), cast.anchored ? ", the launch is the client's request" : "", distance / 100.0, *cast.projectile_due - cast.launch_at);
 }
 
 void AbilityPipeline::anchor_shot(Cast& cast, double now) {
     cast.anchored = true;
     const double was = cast.launch_at;
     // the request is the launch, but one that comes much sooner than the montage's plan is not believed: it moves the launch at most kLaunchAdvance sooner (a forged one would land the shot at the cost step)
-    cast.launch_at = std::max({now - cast.shot->ask_gap / client_rate(cast.shot->magical), cast.trigger_at, was - kLaunchAdvance});
+    cast.launch_at = std::max({now - cast.shot->ask_gap / client_rate(plays_at_magical(*cast.def, cast.shot->magical)), cast.trigger_at, was - kLaunchAdvance});
     if (cast.flight_pending) cast.projectile_due = std::max(now, cast.launch_at);   // not left yet: it leaves now
     else if (cast.projectile_due) land_shot(cast, now);                              // on its way: it lands a flight after the launch the request shows
     spdlog::info("[abilities] {}: the client asked for the hit that goes with the launch {:.3f} s after the trigger: the projectile {} {:.3f} s from the plan", cast.def->row.name, now - cast.trigger_at,
@@ -3535,8 +3991,10 @@ void AbilityPipeline::anchor_shot(Cast& cast, double now) {
 void AbilityPipeline::plan_notes(Cast& cast, double t) {
     if (!combat_ || cast.target_actors.empty() || !cast.cost_due) return;
     std::vector<Cast::Missile> notes;
+    double rate = 1.0;
     for (const NoteCast& n : kNoteCasts) {
         if (cast.def->row.name != n.ability) continue;
+        if (n.animation >= 0 && n.animation != cast.animation_index) continue;   // (the row of another montage of the ability)
         int64_t projectile = 0;
         for (const content::AbilityHitRow& h : cast.def->hits) {
             if (h.source == "projectile" && h.key == n.key) projectile = h.owner_guid;
@@ -3544,7 +4002,8 @@ void AbilityPipeline::plan_notes(Cast& cast, double t) {
         if (projectile == 0) continue;
         Cast::Missile fly;
         fly.kind = Cast::Missile::Kind::Fly;
-        fly.due = t + n.fire / client_rate(n.magical);
+        rate = client_rate(plays_at_magical(*cast.def, n.magical));
+        fly.due = t + n.fire / rate;
         fly.projectile = projectile;
         fly.target = cast.target_actors.front();
         fly.index = static_cast<int>(notes.size()) + 1;
@@ -3554,14 +4013,14 @@ void AbilityPipeline::plan_notes(Cast& cast, double t) {
     for (const Cast::Missile& m : notes) cast.missiles.push_back(m);
     cast.projectile_due.reset();   // (the cast's projectile hits land with the notes, each when its own projectile gets there)
     spdlog::info("[abilities] {}: {} projectiles leave {:.3f} to {:.3f} s after the trigger (the client plays at {:.3f}); each lands when it gets to the target", cast.def->row.name, notes.size(), notes.front().due - t,
-                 notes.back().due - t, client_rate(true));
+                 notes.back().due - t, rate);
 }
 
 void AbilityPipeline::launch_note(Cast& cast, const Cast::Missile& fly, double t) {
     if (!combat_) return;
     // a note leaves with the montage: when another ability's item has taken the pawn's place nothing more leaves (a bounce flies on whatever the pawn plays)
     if (fly.depth == 0 && cast.instance >= 0 && (!item_instance_ || *item_instance_ != cast.instance)) return;
-    const char* what = cast.looped ? "arrow" : (fly.depth == 0 ? "note" : "bounce");   // (a looped cast's shot sends an arrow the same way a burst sends its notes)
+    const char* what = (cast.looped || is_weapon_combo(cast.def->row)) ? "arrow" : (fly.depth == 0 ? "note" : "bounce");   // (a looped cast's shot and a swing's volley send arrows the same way a burst sends its notes)
     const content::ProjectileRow* p = catalog_->projectile(fly.projectile);
     const combat::TargetInfo info = combat_->inspect(fly.target);
     if (!p || !(p->speed > 0) || !info.exists || !info.alive) {   // (the enemy it flew at is gone, or the projectile has no speed: nothing lands)
@@ -3576,7 +4035,7 @@ void AbilityPipeline::launch_note(Cast& cast, const Cast::Missile& fly, double t
     land.target = fly.target;
     land.index = fly.index;
     land.depth = fly.depth;
-    land.due = t + distance / p->speed;
+    land.due = t + (fly.depth == 0 ? std::min(distance / p->speed, kMaxShotFlight) : distance / p->speed);   // (a target pulled far away by the time the arrow leaves would hold the cast for as long as the flight)
     if (cast.cost_due && !cast.looped) land.due = std::max(land.due, *cast.cost_due);   // (never before the cost step; a looped cast's pending cost is the next shot's, and this arrow's own came before it left)
     cast.missiles.push_back(land);
     spdlog::info("[abilities] {}: {} {} leaves {:.3f} s after the trigger; the {} is {:.1f} m away: it lands {:.3f} s after it leaves", cast.def->row.name, what, fly.index, t - cast.trigger_at,
@@ -3732,6 +4191,7 @@ void AbilityPipeline::step_cost(Cast& cast, double t) {
         events_.push_back(std::move(e));
         return;
     }
+    cast.paid = true;   // (what it takes below is what a Dodge in its bar gives back: refund)
     if (CastRecord* rec = record_of(cast.client_id)) {
         for (HitSlot& slot : rec->slots) {
             if (slot.server_self_use && !slot.applied) {
@@ -3747,9 +4207,16 @@ void AbilityPipeline::step_cost(Cast& cast, double t) {
     }
     for (const auto& [effect, n] : cast.effect_costs) remove_stacks(c, effect, n);
     drop_evaluation();
-    if (resource_ && spent_mana) apply_effect(c, *resource_, 1, std::nullopt, t);   // the class's resource: one stack per cast that spends Mana
+    cast.resource_added = 0;
+    if (resource_ && spent_mana) {   // the class's resource: one stack per cast that spends Mana (none is added at the resource's limit: a give back takes off only what this added)
+        const int held = stacks_of(resource_->row.guid);
+        apply_effect(c, *resource_, 1, std::nullopt, t);
+        cast.resource_added = std::max(0, stacks_of(resource_->row.guid) - held);
+    }
     if (!cast.toggle_off) raise_ability_event(c, def, t);   // reactions: the ability was consumed (the Bard's Resonance gain)
     use_charge(c, cast, t);
+    // An ability with no hit, zone or effect of its own has nothing that goes out for the server: its payment is its launch, and a Dodge after the cost step changes nothing.
+    if (def.hits.empty() && def.zones.empty() && cast.own_effects.empty() && !cast.toggle_off) mark_launched(cast.client_id);
     if (cast.toggle_off) {
         end_loop(c, def.row.guid, t);
         held_.erase(std::remove_if(held_.begin(), held_.end(), [&](const Held& h) { return h.ability == def.row.guid; }), held_.end());
@@ -3768,7 +4235,10 @@ void AbilityPipeline::step_cost(Cast& cast, double t) {
             for (const Zone& z : zones_) {
                 if (z.client_id == cast.client_id && z.ability == def.row.guid && z.zone == h.owner_guid && z.state != Zone::State::Ended) zone_owner_ = z.id;
             }
-            if (const HitDef* hit = catalog_->hit(h.hit_guid)) apply_hit(c, *hit, t, true, src);
+            if (const HitDef* hit = catalog_->hit(h.hit_guid)) {
+                mark_launched(cast.client_id);   // (the dance's first overlap is out: a Dodge no longer cancels the cast)
+                apply_hit(c, *hit, t, true, src);
+            }
             zone_owner_ = 0;
         }
     }
@@ -3807,13 +4277,16 @@ void AbilityPipeline::step_own(Cast& cast, double t) {
     // A quick tap may be released before this delayed step ever creates a Held entry.
     if (!cast.fixed_hold && cast.held_release_due && *cast.held_release_due <= t) return;
     AbilityChange c;
+    bool started = false;
     for (const EffectDef* e : cast.own_effects) {
         // an effect the character's talents gate (the Salvo's Expeditious) starts only when its requirement holds
         bool applies = true;
         std::string why;
         if (!eval_bool(e->row.requirement_expr, true, applies, why) || !applies) continue;
         apply_effect(c, *e, 1, std::nullopt, t, false, def.row.guid);
+        started = true;
     }
+    if (started) mark_launched(cast.client_id);   // (an effect of its own is on: a Dodge no longer cancels the cast)
     sync_engine_effects();
     // a held ability (the key stays down: Guard) ends with the client's cancel; one with a recorded time (Reflect) ends with its cast (end_due)
     if (def.row.hold_animation && !cast.fixed_hold) {
@@ -3981,7 +4454,6 @@ void AbilityPipeline::run_zone(size_t index, double t) {
 // [Cyb - C | O | A]
 
 void AbilityPipeline::step_hits(Cast& cast, double t, const char* which, int depth) {
-    if (std::string_view(which) == "projectile" && launch_ball(cast, t)) return;   // (its hits land as it rolls)
     ItemScope item_scope(*this, cast.item_stats);
     const CastRecord* fill_record = record_of(cast.client_id);
     const FillScope fill(*this, fill_record ? fill_record->fill : 1.0);
@@ -3998,18 +4470,8 @@ void AbilityPipeline::step_hits(Cast& cast, double t, const char* which, int dep
             if (m.anim_index == cast.animation_index) montage = &m;
         }
         if (!montage && !def.montages.empty()) montage = &def.montages.front();
-        if (montage) {
-            step = step_token(leaf_of_path(montage->soft_path));
-            // the step the montage's select expression names wins over the file's name (the shortbow's montages carry the wrong number or none)
-            int named_step = 0;
-            bool named_proc = false;
-            if (const content::ExprRow* e = catalog_->expr(montage->select_expr)) {
-                if (step_of_expression(e->text, named_step, named_proc)) {
-                    step.step = named_step;
-                    step.proc = named_proc;
-                }
-            }
-        }
+        // (the step the montage's select expression names wins over the file's name)
+        if (montage) step = step_of_montage(*catalog_, *montage);
         if (step.beam) {   // the wand's beam: its hits are the client's requests
             emit({std::move(c), std::nullopt, t, "the projectile step of " + def.row.name + " (a beam: nothing flies)"});
             return;
@@ -4057,6 +4519,7 @@ void AbilityPipeline::step_hits(Cast& cast, double t, const char* which, int dep
             src.actor = false;
             src.confirm = true;
             src.simulated = true;
+            src.reach_free = cast.ball != nullptr && h.owner_guid == cast.ball_flight.projectile;   // (the ball's own hits: it hurts what it touches, wherever the caster stands)
         }
         bool landed = false;
         if (!cast.target_actors.empty() && (hit->row.applicable_targets & (2 | 4 | 8 | 16)) != 0) apply_hit_on_targets(c, *hit, cast.target_actors, t, src, &def, &landed);
@@ -4281,6 +4744,83 @@ void AbilityPipeline::land_strike(Cast& cast, const Cast::Missile& m, double t) 
                  std::hypot(m.x - combat_->self().position().x, m.y - combat_->self().position().y) / 100.0, hurt, hurt == 1 ? "y" : "ies");
     recompute(c);
     emit({std::move(c), std::nullopt, t, "arrow " + std::to_string(m.index + 1) + " of " + def.row.name + " lands"});
+}
+
+// ---- a ball that flies on (kBalls) -------------------------------------------------------------------------------------------------------------
+
+void AbilityPipeline::launch_ball(Cast& cast, double t) {
+    if (!combat_ || !cast.branched || cast.heard_at < 0 || cast.ball) return;   // (no world to fly in, or a cast bar whose end the client never asked for: no ball)
+    const BallCast* plan = ball_of(*cast.def);
+    if (!plan) return;
+    const int64_t projectile = ball_projectile_of(*cast.def);
+    const content::ProjectileRow* p = catalog_->projectile(projectile);
+    if (!p || !(p->speed > 0)) return;
+    // this player's play rate on the cast: the montage time of the bar's end over the seconds the bar took; the ball leaves when the montage's notify gets there, never before the cost step
+    const double rate = plan->bar / std::clamp(cast.heard_at - cast.trigger_at, 0.3, 8.0);
+    double at = std::max(cast.heard_at + plan->fire / rate, t);
+    if (cast.cost_due) at = std::max(at, *cast.cost_due);
+    cast.ball = plan;
+    BallFlight& b = cast.ball_flight;
+    b.projectile = projectile;
+    b.speed = p->speed;
+    b.radius = p->sphere_radius;
+    b.lasts = std::min({p->life_time > 0 ? p->life_time : kBallMaxSeconds, p->range > 0 ? p->range / p->speed : kBallMaxSeconds, kBallMaxSeconds});
+    b.rate = rate;
+    Cast::Missile first;
+    first.kind = Cast::Missile::Kind::Ball;
+    first.due = at;
+    first.projectile = projectile;
+    cast.missiles.push_back(first);
+}
+
+void AbilityPipeline::ball_step(Cast& cast, const Cast::Missile& step, double t) {
+    if (!combat_ || !cast.ball) return;
+    BallFlight& b = cast.ball_flight;
+    if (step.index == 0) {
+        // the montage that launches the ball is the one the pawn shows: when another ability's item has taken its place the ball never leaves
+        if (cast.instance >= 0 && (!item_instance_ || *item_instance_ != cast.instance)) return;
+        // it leaves from where the caster stands now, along the way the caster faces now, and flies level on that line
+        const combat::Fighter& me = combat_->self();
+        const combat::Vec3 from = me.position();
+        const double heading = ball_heading_degrees(me);
+        b.dx = std::cos(heading * kPiRadians / 180.0);
+        b.dy = std::sin(heading * kPiRadians / 180.0);
+        b.x = from.x + b.dx * cast.ball->ahead;
+        b.y = from.y + b.dy * cast.ball->ahead;
+        b.z = from.z + cast.ball->up;
+        b.launch_at = t;
+        spdlog::info("[abilities] {}: the ball leaves {:.3f} s after the trigger (the client plays at {:.2f}) from ({:.0f}, {:.0f}, {:.0f}) heading {:.1f} degrees", cast.def->row.name, t - cast.trigger_at,
+                     b.rate, b.x, b.y, b.z, heading);
+    }
+    // where the ball is: its way counted from the number of steps, so that a step that runs late does not move it
+    const double along = b.speed * kBallStep * step.index;
+    const combat::Vec3 centre{b.x + b.dx * along, b.y + b.dy * along, b.z};
+    for (const combat::GatheredTarget& e : combat_->enemies_touching(centre, b.radius, kMaxGathered)) {
+        BallFlight::Touch& touch = b.touched[e.actor];
+        if (touch.next > t + 1e-9) continue;   // hurt a moment ago: not again before its period is over
+        touch.next = t + cast.ball->period;
+        ++touch.hits;
+        ++b.hits;
+        // the hit is the projectile's ordinary one (the Land step): its damage, its confirmation and its effects follow the same path as any projectile's
+        Cast::Missile land;
+        land.due = t;
+        land.projectile = b.projectile;
+        land.target = e.actor;
+        cast.missiles.push_back(land);
+        spdlog::info("[abilities] {}: the ball hits actor {} (hit {} on it, {:.2f} s after the launch, {:.1f} m from the caster)", cast.def->row.name, e.actor, touch.hits, t - b.launch_at,
+                     combat_->inspect(e.actor).surface_distance_cm / 100.0);
+    }
+    if ((step.index + 1) * kBallStep <= b.lasts + 1e-9) {   // the ball is still in flight at the next step: it comes back then (this step has left the list)
+        Cast::Missile next = step;
+        next.index = step.index + 1;
+        next.due = b.launch_at + kBallStep * next.index;
+        cast.missiles.push_back(next);
+        return;
+    }
+    const content::ProjectileRow* p = catalog_->projectile(b.projectile);
+    const bool by_range = p && p->range > 0 && p->speed > 0 && (p->life_time <= 0 || p->range / p->speed <= p->life_time);
+    spdlog::info("[abilities] {}: the ball ends after {:.2f} s ({}): {} hits on {} enem{}", cast.def->row.name, b.lasts, by_range ? "its range" : "its life", b.hits, b.touched.size(),
+                 b.touched.size() == 1 ? "y" : "ies");
 }
 
 void AbilityPipeline::cancel_timed(int32_t client_instance_id, double now) {

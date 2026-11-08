@@ -112,7 +112,15 @@ struct CondContext {
     /// Whether someone on the creature's hate list stands farther than lo and nearer than hi cm (centre to centre; lo < 0: no lower bound) (null: not known, and the condition holds).
     std::function<bool(double, double)> hated_between;
     int elite = 0;                      // the creature's elite rank
+    /// Asked only about the fight clock and the creature's health (hp, fc, fcr): every other condition counts as holding.  Tells whether those timers alone keep a task shut.
+    bool timers_only = false;
 };
+
+/// Whether a condition is about the fight clock or the creature's health, which the course of a fight changes (not about where the target stands, a cooldown, a roll or whether the creature sees).
+inline bool is_timer_atom(CondAtom::Kind kind) {
+    using K = CondAtom::Kind;
+    return kind == K::HealthUnder || kind == K::HealthNotUnder || kind == K::FightTime || kind == K::FightRoll;
+}
 
 /// Whether `x` compares as `op` with `y`.
 inline bool compare_values(int op, double x, double y) {
@@ -130,6 +138,7 @@ inline bool compare_values(int op, double x, double y) {
 /// Whether one condition holds.
 inline bool eval_atom(const CondAtom& a, const CondContext& c) {
     using K = CondAtom::Kind;
+    if (c.timers_only && !is_timer_atom(a.kind)) return true;
     switch (a.kind) {
         case K::True: return true;
         case K::False: return false;

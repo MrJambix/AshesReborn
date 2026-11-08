@@ -22,3 +22,4 @@
 #include "combat_dice_tests.inc"
 #include "combat_cleric_zone_place_tests.inc"
 #include "combat_heal_no_fight_tests.inc"
+#include "combat_removal_refund_tests.inc"

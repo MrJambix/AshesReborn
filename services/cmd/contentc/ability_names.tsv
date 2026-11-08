@@ -607,6 +607,7 @@ Summoner_Pet_Guardian_Attack	npc
 Summoner_Pet_Hunter_Attack_Melee	npc
 Summoner_Pet_Hunter_Attack_Ranged	npc
 Summoner_Pet_Mystic_Attack	npc
+# from PR #10 by MrJambix: the attacks of every creature family (the Beast, Humanoid and Monster families and the cultists), so that their mobs play their own attack animations
 AmethystBoughbite_BackKick	npc
 AmethystBoughbite_FrontKick	npc
 AmethystBoughbite_Headbutt	npc

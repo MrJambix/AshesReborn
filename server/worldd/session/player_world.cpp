@@ -451,8 +451,8 @@ bool PlayerWorld::load_area(const spawns::AreaConfig& area, std::string& error) 
                                                  generic_ ? generic_->plain_props_made() : 0);
     if (looks_) {
         const auto& lc = looks_->counts();
-        spdlog::info("[looks] the area's people: {} dressed ({} customizations from the recorded pool, {} plain), {} named by the data, {} by their Blueprint, {} with no name, {} left as recorded", lc.dressed, lc.from_pool,
-                     lc.plain_customization, lc.named, lc.blueprint_named, lc.unnamed, lc.no_record);
+        spdlog::info("[looks] the area's people: {} dressed ({} customizations from the recorded pool, {} from a record's own preset, {} of them given a different race or gender than they would have had, {} plain), {} named by the data, {} by their Blueprint, {} with no name, {} left as recorded", lc.dressed,
+                     lc.from_pool, lc.from_preset, lc.preset_body, lc.plain_customization, lc.named, lc.blueprint_named, lc.unnamed, lc.no_record);
     }
     for (const std::string& n : area_report_->notes) spdlog::warn("[area] {}", n);
     log_spawn_filter();
@@ -1988,8 +1988,8 @@ void PlayerWorld::note_player(uint64_t player_id, double x, double y) {
     loading_.erase(player_id);   // (the view runs: the NPC world's note covers the window from now on)
     if (npcs_) npcs_->note_player(player_id, x, y, world_clock_);
     if (!nav_ || !nav_->has_region() || !std::isfinite(x) || !std::isfinite(y)) return;
-    // the region's edge (G1 stage 1): beyond it there is no navmesh and nothing spawns, but the player is not held: no wall, and the move checks do not look at the ground
-    // (speed, rise and fall only), so the player stays playable.  One log line per exit.
+    // the region's edge (G1 stage 1): beyond it there is no navmesh and nothing spawns, but the player is not held: no wall, and every ground query
+    // answers none there, so the move checker's ground check is skipped and the player stays playable.  One log line per exit.
     const bool outside = !nav_->in_region(x, y);
     bool& was = outside_[player_id];
     if (outside && !was) {
@@ -2021,6 +2021,7 @@ bootstrap::SessionValues PlayerWorld::new_session(double world_time) {
     bootstrap::SessionValues s;
     s.server_id = server_id_;
     s.world_time = world_time;
+    s.clock = day_clock_;
     s.player_id = next_player_id_++;
     s.guids = bootstrap::mint_session_guids(guids_, game_state_);
     return s;

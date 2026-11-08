@@ -63,8 +63,9 @@ public:
 
     /// What the walk's speed is multiplied by (a slowed creature's), for as long as it is set.
     void set_pace(double pace) { pace_ = pace; }
-    /// Moves `dt` seconds along the path.  Returns the status after the step.
-    Status advance(double dt);
+    /// Moves `dt` seconds along the path.  Returns the status after the step.  The NPC turns towards the way it goes at its rotation rate, unless `turn` is false: something else turns it in
+    /// these steps (a Rotate To track), and that alone then sets its facing.
+    Status advance(double dt, bool turn = true);
 
     Status status() const { return status_; }
     bool   moving() const { return status_ == Status::Moving; }

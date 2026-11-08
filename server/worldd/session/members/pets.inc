@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+// Summoner pets: contributed by MrJambix in #13.
 // ============================================================================
 //  session/members/pets.inc: the members of PlayerSession for the Summoner's pets (session/player_pets.cpp, session/summoner_pets.h)
 //  (included at the end of the class by session/members_registered.inc)

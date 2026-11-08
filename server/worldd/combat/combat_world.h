@@ -52,6 +52,9 @@ namespace aoc::worldd::combat {
 /// Grem).  A creature friendly to players (a huntable) never attacks first; either one still fights back what hurts it.
 inline bool notices_players(bool hostile_to_players, const world::NpcInfo& npc) { return hostile_to_players && !npc.aggro_off; }
 
+/// How much faster than their Blueprint's rotation rate the goblins and bandits turn (the tests check a creature's facing against it).
+inline constexpr double kHumanoidTurnGain = 1.2;
+
 /// What an NPC attack did to a player: the hit as the confirmation and the player's Health need it.
 struct IncomingHit {
     uint64_t                 instigator = 0;      // the NPC's actor id (its ObjectId)
@@ -255,6 +258,8 @@ public:
     // ---- players
     void add_player(PlayerPort* port);
     void remove_player(PlayerPort* port);
+    /// The player is dead (his Health ran out): everything he put on the creatures ends at once, instead of at the next hit of an effect (core fd53569).
+    void player_died(uint64_t actor_id);
     /// The port of the player whose pawn is `actor_id` (null: none joined).
     PlayerPort* find_player(uint64_t actor_id) { return player(actor_id); }
     /// The player whose pawn this actor is (null for anything else: a pet stands in the players' list too).
@@ -289,6 +294,9 @@ public:
     /// The living enemies of `from` whose bodies touch the sphere of `radius_cm` around `centre` (the area where a projectile landed: the Ranger's Air Strike): a body counts when any part of it is
     /// inside and nothing on the ground stands between the centre and it (the navmesh's line, where both ends are on it).  Nearest to the centre first, at most `max`; the distance is from the centre.
     std::vector<GatheredTarget> enemies_around(const Fighter& from, const Vec3& centre, double radius_cm, size_t max);
+    /// The same as enemies_around, with nothing on the ground in the way: a body counts when any part of it is inside the sphere, whatever stands between (a ball that flies through walls: the Mage's
+    /// Ball Lightning).  Nearest to the centre first, at most `max`; the distance is from the centre.
+    std::vector<GatheredTarget> enemies_touching(const Fighter& from, const Vec3& centre, double radius_cm, size_t max);
     /// The height of the ground under (x, y): the walkable floor nearest to `z_hint`, or the landscape; false where the world knows none (no ground data).
     bool ground_height(double x, double y, double z_hint, double* z) const;
     /// The ObjectId of the NPC target's collision cylinder: what the ability items name as Targets and the confirmations export as the actor's
@@ -348,6 +356,11 @@ public:
     /// The pet plays one of its abilities (its owner has paid for it): it goes within `reach_cm` of a hostile target when the ability is aimed at one, plays the montage and lands the ability's hits
     /// at its notifies, on the creatures, on itself and on its owner as each hit's mask says.  False when it cannot (a pet that is stopped by a crowd control, an ability it cannot play).
     bool pet_use(uint64_t pet, uint64_t owner, int64_t ability, uint64_t target, double reach_cm);
+    /// Whether the pet may play `ability` at `target` (0: none named), asked before its owner pays and before pet_use: the rule of AbilityPipeline::trigger for a cast at a named target.  It
+    /// changes nothing and makes no combatant (the target is read from the registry, as pet_attack reads it).  The target is an actor of the registry and alive, and of a side the ability
+    /// reaches (a creature the owner may harm needs the Enemy bit, any other needs Self, Ally, Party or Raid; the owner and the pet are of the friendly side), and within the distance a pet's
+    /// fight is held to from its owner.  With no target named nothing is asked: the ability is played where the pet stands, as the pipeline casts a player's at the air.  `why`: what refused it.
+    bool pet_can_use(uint64_t pet, uint64_t owner, int64_t ability, uint64_t target, std::string* why = nullptr);
     bool pet_casting(uint64_t pet) const { return pet_casts_.count(pet) != 0; }
     /// What the pet is fighting (0: nothing), and whom a creature is after (0: nobody).
     uint64_t pet_target(uint64_t pet) const {
@@ -463,8 +476,10 @@ private:
     };
     /// Why the tree allowed none of a creature's attacks from where it stands: its target is farther than the attacks reach, or the right distance but not within the angle of its facing.
     /// `reach_cm` is the shortest reach of the ready attacks that stopped for the distance (an attack that needs the target a minimum distance away, a gap closer, does not count): the creature walks up to it.
+    /// `waits_on_timers`: the tree allowed none, and every attack the creature can play is shut by the fight clock or the creature's health alone (the fight is too young, its health is not yet where
+    /// the attack wants it), whatever the range, the angle, the cooldowns and the rolls say.
     struct TreeWhy {
-        bool   too_far = false, off_angle = false;
+        bool   too_far = false, off_angle = false, waits_on_timers = false;
         double reach_cm = -1;
     };
     /// How an attack with its own animation plays: the montage, how long it runs and the hits it lands (seconds after it starts, hit record).
@@ -482,7 +497,8 @@ private:
     class Npc;
     Npc*  combatant(uint64_t actor_id);
     Npc*  make_combatant(const world::WorldActor& a);
-    Attack choose_attack(Npc& n);
+    /// `single_swing`: the attack every creature had before the trees (its kit's, else the generic slash), whatever animation the creature has.
+    Attack choose_attack(Npc& n, bool single_swing = false);
     Attack choose_animated(Npc& n, const Fighter* target, TreeWhy* why = nullptr);
     /// Whether a hit of `area` lands on `body` now (the creature as it stands and faces): see combat/bite_area.h.  `is_target`: the body is the one the record's target part finds.
     bool  hit_reaches(const Npc& n, const Fighter& body, const BiteArea& area, bool is_target) const;
@@ -544,6 +560,8 @@ private:
         std::vector<std::pair<double, int64_t>> due;   // (when, hit record)
     };
     bool  pet_join(uint64_t pet, uint64_t owner);
+    /// Takes the pet's fight, cast, owner and port off the world's tables (not its combatant): its port holds the combatant by reference, so it goes before the combatant does.
+    void  pet_cleanup(uint64_t pet);
     void  tick_pet_casts(double now);
     void  pet_start_cast(Npc& pet, PetCast& cast, double now);
     /// A hit of a pet's ability lands, on whom its mask says, then the hits it fires.
