@@ -319,7 +319,8 @@ public:
 
     // ---- what a player's hits leave on a creature (a stun, a root, a slow, a debuff's stat mods, a damage over time).  It shows on the creature's CurrentEffects and CrowdControlState; it ends with its
     // time, with the creature's death or reset, and when damage breaks it (combat/crowd_control_table.h).
-    void apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& effect, uint64_t by, double now);
+    /// `via_pet`: the pet of `by` whose hit left it (0: his own): what a pet leaves ends when the pet is gone (drop_effects_of_pet), unless its owner's own hit put it on or refreshed it.
+    void apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& effect, uint64_t by, double now, uint64_t via_pet = 0);
     /// A creature's hit that helps its side (no Enemy in its mask: a rally, a fire shield): its effects on the creature and the friends around it.
     void land_on_friends(uint64_t npc, const abilities::HitDef& hit, double now);
     /// What a creature's hit leaves on the ground, at `at`.
@@ -602,6 +603,8 @@ private:
     void  step_effects(double now);
     /// Everything the player applied goes (he left the area or died).
     void  drop_effects_of(uint64_t instigator);
+    /// Everything the pet's hits left on the creatures ends (it was dismissed, it died, or it was taken out of the world).  Its owner's own effects stay.
+    void  drop_effects_of_pet(uint64_t pet);
     void  pet_swing(Npc& pet, PetFight& fight, const Npc& target, double now);
     void  begin_reset(Npc& n, double now);
     void  set_flags(Npc& n, bool in_combat, uint64_t target_actor);

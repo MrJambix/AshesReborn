@@ -59,6 +59,7 @@ inline constexpr int64_t kGuardianTaunt = 6064633780078903470ll;
 inline constexpr int64_t kHunterStanceSwap = 6064633577431434680ll;
 inline constexpr int64_t kHunterLunge = 6064633577430189494ll;
 inline constexpr int64_t kHunterIncapacitate = 6064633577429468597ll;
+inline constexpr int64_t kHunterIncapMelee = 6064634064199483408ll;    // the melee Incapacitate's sleep on its target
 inline constexpr int64_t kHunterIncapRanged = 6064634206203946297ll;
 inline constexpr int64_t kHunterRangedAttack = 6064634052822827010ll;
 inline constexpr int64_t kHunterStanceMelee = 6064634058610246081ll;

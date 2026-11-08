@@ -1664,6 +1664,7 @@ Delivery CombatWorld::apply_hit_to_npc(uint64_t npc_actor, uint64_t attacker, co
             d.lethal = true;
             d.flags |= stats::kHitLethal;
             pet_stop(npc_actor);
+            drop_effects_of_pet(npc_actor);   // what it left on the creatures ends with it
         }
         return d;
     }
@@ -1736,6 +1737,7 @@ public:
         if (pet_.health() <= 0.0) {   // (no corpse and no reward: its session sees dead() and takes it away)
             pet_.dead = true;
             world_.pet_stop(pet_.actor_id);
+            world_.drop_effects_of_pet(pet_.actor_id);   // what it left on the creatures ends with it
         }
     }
     void set_in_combat(bool, double) override {}
@@ -1834,7 +1836,7 @@ bootstrap::EffectItem effect_item_of(int64_t key, const abilities::EffectDef& de
 
 }  // namespace
 
-void CombatWorld::apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& e, uint64_t by, double now) {
+void CombatWorld::apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& e, uint64_t by, double now, uint64_t via_pet) {
     Npc* n = combatant(npc_actor);
     if (!n || n->dead || !e.def) return;
     const content::EffectRow& row = e.def->row;
@@ -1874,6 +1876,7 @@ void CombatWorld::apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& e,
         }
         held->start = now;
         held->by = by;
+        held->pet = held->pet != 0 && via_pet != 0 ? via_pet : 0;   // (the owner's own hit makes it his: it stays when the pet goes)
         held->taken = 0;
         const bootstrap::EffectItem item = effect_item_of(held->key, *e.def, now, until, held->stacks);
         const int32_t array_id = held->array_id;
@@ -1892,6 +1895,7 @@ void CombatWorld::apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& e,
         h.next_tick = row.tick_timer > 0 ? std::max(row.ignore_initial_tick ? now + row.tick_timer : now, 1e-9) : 0;
         h.mods = e.mods;
         h.by = by;
+        h.pet = via_pet;
         h.key = next_effect_key_++;
         const bootstrap::EffectItem item = effect_item_of(h.key, *e.def, now, until, h.stacks);
         registry_.modify(npc_actor, world::Change::State, [&](world::WorldActor& a) {
@@ -2112,7 +2116,7 @@ void CombatWorld::land_for_player(uint64_t by, uint64_t target, const abilities:
         resolver_.effects_of(port->fighter(), n, hit, meta, landed);
         for (const LandedEffect& e : landed) {
             if (e.shield > 0) add_shield(target, e.shield, std::max(0.0, e.seconds), now);
-            apply_effect_to_npc(target, e, by, now);
+            apply_effect_to_npc(target, e, by, now, src.pet);   // (what a pet's hit leaves ends with the pet)
         }
     }
     if (src.children) {
@@ -2807,6 +2811,7 @@ void CombatWorld::pet_stop(uint64_t pet) {
 
 void CombatWorld::pet_cleanup(uint64_t pet) {
     pet_stop(pet);
+    drop_effects_of_pet(pet);   // dismissed, gone with its owner or taken out of the world: what it left on the creatures ends
     pet_stand_downs_.erase(pet);
     pet_casts_.erase(pet);
     pet_owners_.erase(pet);
@@ -2999,6 +3004,7 @@ void CombatWorld::tick_pets(double now) {
 void CombatWorld::kill(Npc& n, uint64_t killer, double now, bool gm) {
     if (n.dead) return;
     n.dead = true;
+    if (is_pet(n.actor_id)) drop_effects_of_pet(n.actor_id);   // a dead pet's holds on the creatures end
     n.killer = killer;
     n.ai.kill();
     n.cs->set_in_combat(false);
@@ -3080,6 +3086,33 @@ void CombatWorld::drop_effects_of(uint64_t instigator) {
         }
         effects_changed(n, now_);
         spdlog::info("[effects] the effects of player {} on {} ({}) end: he is gone", instigator, n.leaf, n.actor_id);
+    }
+}
+
+void CombatWorld::drop_effects_of_pet(uint64_t pet) {
+    if (pet == 0) return;
+    const std::vector<uint64_t> ids(effected_.begin(), effected_.end());
+    for (const uint64_t id : ids) {
+        const auto it = npcs_.find(id);
+        if (it == npcs_.end() || id == pet) continue;
+        Npc& n = *it->second;
+        bool removed = false;
+        for (size_t i = 0; i < n.effects.size();) {
+            if (n.effects[i].pet == pet) {
+                remove_effect_at(n, i);
+                removed = true;
+            } else {
+                ++i;
+            }
+        }
+        if (!removed) continue;
+        if (n.effects.empty()) {   // nothing is left to burn what the stats hold
+            for (const int64_t stat : {data_.ids().status_burning, data_.ids().status_burning_dur}) {
+                if (stat != 0) n.cs->set_current(stat, 0.0f);
+            }
+        }
+        effects_changed(n, now_);
+        spdlog::info("[effects] the effects of pet {} on {} ({}) end: it is gone", pet, n.leaf, n.actor_id);
     }
 }
 

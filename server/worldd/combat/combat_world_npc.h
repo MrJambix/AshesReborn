@@ -94,6 +94,7 @@ public:
         double                        next_tick = 0;           // 0: it does not tick
         std::vector<stats::EffectMod> mods;
         uint64_t                      by = 0;                  // the player whose hit left it
+        uint64_t                      pet = 0;                 // ... through this pet of his (0: his own hit): it ends when the pet is gone
         int64_t                       key = 0;                 // its CurrentEffects item's EffectId
         int32_t                       array_id = -1;
         double                        taken = 0;               // the damage it has seen (an effect that a share of the holder's Health breaks)
