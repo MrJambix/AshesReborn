@@ -25,7 +25,10 @@
 #include "combat/fighter.h"
 #include "combat/hit_resolver.h"
 #include "combat/npc_ability_data.h"
+#include "combat/npc_replicator.h"
 #include "combat/npc_stats.h"
+#include "combat/knockback.h"
+#include "combat/origin_frame.h"
 #include "nav/area_nav.h"
 #include "npc/ai/npc_ai.h"
 #include "npc/motion_table.h"
@@ -601,6 +604,33 @@ private:
     void  clear_effects(Npc& n, double now);
     void  break_fragile(Npc& n, double loss, const HitOrigin* origin, double now);
     void  step_effects(double now);
+    /// The push that plays on a creature (Npc::push_now): the live crowd-control record with the displaced bit and a push row, its application's key, who pushed, when it began and ends.
+    struct PushNow {
+        const content::CrowdControlRow* push = nullptr;
+        int64_t                         key = 0;
+        uint64_t                        instigator = 0;
+        double                          start = 0, end = 0;
+        bool operator==(const PushNow&) const = default;
+    };
+    // ---- what throws, pushes and pulls a creature (combat/combat_knockback.inc, from core's 2071f00, on our held effects)
+    /// What a hit does to the place of the creature it landed on, before the creature looks again: the velocity change it gives (Get Off The Stage throws it) and the teleport it names (the Grapple pulls it
+    /// in front of the one who pulled).  A boss, a creature whose Blueprint carries the Boss tag, is neither thrown nor pulled.  A creature thrown into the air loses the attack it had begun.
+    void  move_by_hit(Npc& n, uint64_t attacker, const Resolved& resolved, const HitOrigin& origin, double now);
+    /// The push the creature's held effects say plays now (PushNow): the live crowd-control record with the displaced bit and a push row, of the highest priority, of two equal the later one.
+    PushNow push_of(const Npc& n) const;
+    /// The push that plays, when it is not the one that played: a new application begins the push (worked out from where its origin is now, or from where it was when the effect went on if the record
+    /// caches it), and none ends it.  The push works for as long as the effect lives.
+    void  track_push(Npc& n, const PushNow& was, const PushNow& now_cc);
+    /// Keeps the place a creature was thrown or pushed from (the first one only), and names in the log where it came to rest and how far that is, once the NPC world has let go of it.
+    void  note_moved(const Npc& n);
+    void  log_rests();
+    /// Whether the creature's Blueprint carries the Boss tag; a boss is not thrown, pushed or pulled.  `spare_boss` says in the log, once for each kind, that `by` (a hit or an effect) left it alone.
+    bool  is_boss(const Npc& n) const;
+    void  spare_boss(const Npc& n, const std::string& by, const char* verb);
+    /// The actors an origin transform names, for a hit or an effect of `by` on `n`.
+    OriginActors origin_actors(const Npc& n, PlayerPort* by);
+    /// The attack the creature had begun is dropped (thrown into the air): its cast, its hold and its hits that had not landed.
+    void  drop_attack(Npc& n);
     /// Everything the player applied goes (he left the area or died).
     void  drop_effects_of(uint64_t instigator);
     /// Everything the pet's hits left on the creatures ends (it was dismissed, it died, or it was taken out of the world).  Its owner's own effects stay.
@@ -652,6 +682,10 @@ private:
     std::unordered_map<std::string, bool> hostile_by_archetype_;
     HuntablePredicate      huntable_;
     std::set<uint64_t>     stats_filled_;     // the NPCs that are no combatants and whose stats were filled (or whose open has none)
+    std::map<uint64_t, Vec3> moved_from_;                                // the creatures that are thrown or pushed -> where they were first moved from
+    std::set<std::pair<uint64_t, std::string>> boss_spared_;             // the bosses the log said a throw, a push or a pull left alone (creature, verb)
+    size_t                 rests_logged_ = 0;                        // the rests the log named so far (the first kLoggedRests)
+    static constexpr size_t kLoggedRests = 200;
     double                 next_stats_ = 0;
     double                 next_think_ = 0;
     double                 now_ = 0;

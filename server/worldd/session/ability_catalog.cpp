@@ -88,6 +88,10 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
         if (!db->effect_hits(g, hits, error)) return std::nullopt;
         for (const content::EffectHitRow& h : hits) d.hits.emplace_back(h.phase, h.hit_guid);
         if (db->has_reactions()) reaction_ids_of(d.row.extra, d.reactions);
+        if (d.row.crowd_control_guid != 0) {   // its crowd-control record, with the push it plays (contentc version 42; knockbacks)
+            std::string unread;
+            d.cc = db->crowd_control(d.row.crowd_control_guid, unread);
+        }
         c.effect_names_[d.row.name] = g;
         c.effects_.emplace(g, std::move(d));
     }
@@ -122,6 +126,8 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
             if (rs != extra.end() && rs->is_number_integer()) d.resurrect = rs->get<int64_t>();
             const auto rd = extra.find("RemoveAsDispel");
             if (rd != extra.end() && rd->is_boolean()) d.remove_as_dispel = rd->get<bool>();
+            const auto rt = extra.find("EffectRemovalTag");   // contentc version 42: a filter that asks for one tag names it
+            if (rt != extra.end() && rt->is_string()) d.removal_tag = rt->get<std::string>();
             const auto zs = extra.find("LingeringZonesIds");
             if (zs != extra.end() && zs->is_array()) {
                 for (const auto& v : *zs) {
@@ -158,6 +164,14 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
             reaction_ids_of(d.row.extra, d.reactions);
             ids_of(d.row.extra, "ModifyCooldownsIds", d.modify_cooldowns);
             if (!db->hit_recursive(g, d.recursive, error)) return std::nullopt;
+        }
+        if (db->has_knockback()) {   // contentc version 42: the velocity change this hit gives its target, and the teleport it names
+            std::string unread;
+            d.impulse = db->hit_impulse(g, unread);
+            const auto tp = extra.find("TeleportId");
+            if (tp != extra.end() && tp->is_number_integer() && tp->get<int64_t>() != 0) {
+                if (auto t = db->teleport(tp->get<int64_t>(), unread)) d.teleport = std::move(*t);
+            }
         }
         c.hit_names_[d.row.name] = g;
         c.hits_.emplace(g, std::move(d));

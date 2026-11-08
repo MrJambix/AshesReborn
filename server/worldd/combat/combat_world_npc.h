@@ -111,6 +111,13 @@ public:
         }
         return stacks;
     }
+    /// Knockbacks (combat/combat_knockback.inc): the push that plays on it, as push_of() last found it (the record, its application's key, who pushed, when it began and ends), and the place and
+    /// facing it works from, worked out when its effect went on.
+    PushNow push_now;
+    struct PushOrigin {
+        bool        set = false;
+        OriginFrame frame;
+    } push_origin;
 
     /// A loss goes through the shields first (the oldest first); what is left reaches Health.
     double absorb(double loss, double now) {

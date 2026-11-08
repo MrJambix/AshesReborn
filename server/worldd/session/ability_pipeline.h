@@ -926,6 +926,18 @@ private:
     void   fire_carried_reactions(bootstrap::AbilityChange& c, const HitEvent& ev, double t);
     int    carried_depth_ = 0;
     void   apply_hit_here(bootstrap::AbilityChange& c, const abilities::HitDef& hit, double t, bool skip_resource, const HitSource& src);   // the same, whoever its mask names
+    /// A hit a hit fires some time after it lands (a RecursiveHit child with a HitDelay that aims at the target itself): the Cone of Cold's second hit, a second after its push, freezes what is still
+    /// Chilled.  It lands on the creatures the parent reached, when its time comes.  The caster's death drops them.
+    struct DelayedChild {
+        double                       due = 0;
+        const abilities::HitDef*     hit = nullptr;
+        const abilities::AbilityDef* ability = nullptr;
+        HitSource                    src;
+        std::vector<uint64_t>        targets;
+    };
+    std::vector<DelayedChild> delayed_;
+    static constexpr size_t kMaxDelayed = 64;
+    void   land_delayed(const DelayedChild& child, double t);
     /// `raw`: the stacks are the instance's own count whatever the record's stacking says (a grant, not an application of the ability).
     void   apply_effect(bootstrap::AbilityChange& c, const abilities::EffectDef& def, int stacks, std::optional<double> duration, double t, bool raw = false,
                         int64_t owner = 0);

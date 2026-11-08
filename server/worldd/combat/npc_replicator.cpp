@@ -6,8 +6,12 @@
 // ============================================================================
 #include "combat/npc_replicator.h"
 
+#include "protocol/repl/codecs.h"
+
 #include <algorithm>
 #include <bit>
+#include <cmath>
+#include <string>
 
 namespace aoc::worldd::combat {
 

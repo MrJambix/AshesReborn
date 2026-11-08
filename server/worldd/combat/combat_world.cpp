@@ -9,6 +9,7 @@
 #include "bootstrap/ability_replication.h"
 #include "bootstrap/constants.h"
 #include "combat/combat_world_npc.h"
+#include "combat/knockback.h"
 #include "combat/npc_ability_replicator.h"
 #include "combat/npc_kits.h"
 #include "combat/npc_replicator.h"
@@ -20,8 +21,12 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
+#include <memory>
 #include <string_view>
 
 namespace aoc::worldd::combat {
@@ -1020,6 +1025,7 @@ bool CombatWorld::plan_cast(Npc& n, const abilities::AbilityDef& def, CastPlan& 
 }
 
 void CombatWorld::start_attack(Npc& n, uint64_t target, double now, const Attack* picked) {
+    if (npcs_world_ && npcs_world_->displaced(n.actor_id)) return;   // (a creature that is thrown or pushed starts nothing until it comes to rest: it tries again at its next look)
     PlayerPort* port = player(target);
     n.attack_walk_share = 1.0;   // (the tree walks it at its chase speed unless the attack's own task says otherwise)
     // An attack with its own animation.  The tree picks it with the target where it stands; its montage starts on the client with the element the replicator writes; the creature turns
@@ -1685,6 +1691,7 @@ Delivery CombatWorld::apply_hit_to_npc(uint64_t npc_actor, uint64_t attacker, co
     }
     spdlog::log(origin && origin->source_type == content::kSourceTypeEffect ? spdlog::level::debug : spdlog::level::info, "[combat] player {} hit {} ({}, level {}): {}Health {:.1f} -> {:.1f}, threat {:.1f}", attacker, n->leaf, npc_actor, n->lvl, r.miss() ? "a miss, " : "", health_before, n->health(),
                  std::max(threat, 1.0));
+    if (!lethal && origin) move_by_hit(*n, attacker, r, *origin, now);   // (a hit that throws the creature or pulls it does so before the creature looks again)
     if (!lethal && provokes) {
         n->ai.notice(threat_to != 0 ? threat_to : attacker, std::max(threat, 1.0), now);
         if (threat_to != 0) n->ai.notice(attacker, 0.01, now);
@@ -1839,6 +1846,11 @@ bootstrap::EffectItem effect_item_of(int64_t key, const abilities::EffectDef& de
 void CombatWorld::apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& e, uint64_t by, double now, uint64_t via_pet) {
     Npc* n = combatant(npc_actor);
     if (!n || n->dead || !e.def) return;
+    // knockbacks (core's rule): the effect of a push is not put on a boss at all, so none of its crowd control holds it
+    if (e.def->cc && (e.def->cc->applied_status & 32) != 0 && e.def->cc->has_push_row && is_boss(*n)) {
+        spare_boss(*n, e.def->row.name, "push");
+        return;
+    }
     const content::EffectRow& row = e.def->row;
     const bool in_place = row.stack_type.find("StackInPlace") != std::string::npos;
     const bool separate = row.stack_type.find("StackSeperate") != std::string::npos;
@@ -2398,7 +2410,10 @@ void CombatWorld::effects_changed(Npc& n, double now) {
     n.crowd = status;
     n.crowd_stops = stops;
     n.pace = std::clamp((1.0 - snare) * (1.0 + speed_mods), 0.05, 4.0);
-    if (npcs_world_) npcs_world_->set_pace(n.actor_id, n.pace);
+    if (npcs_world_) {
+        npcs_world_->set_pace(n.actor_id, n.pace);
+        npcs_world_->set_held(n.actor_id, (status & kCrowdStopsMoving) != 0);   // (also when it comes down from a throw or a push still rooted)
+    }
     if (stopped_now) {
         stop_cast(n);
         n.hold_until = 0;
@@ -2406,11 +2421,45 @@ void CombatWorld::effects_changed(Npc& n, double now) {
         pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const Pending& p) { return p.npc == n.actor_id; }), pending_.end());
     }
     if ((stopped_now || rooted_now) && npcs_world_) npcs_world_->halt(n.actor_id);
+    // knockbacks (combat/combat_knockback.inc): the push its effects say plays; a boss is not pushed
+    PushNow push = push_of(n);
+    if (push.push && is_boss(n)) {
+        spare_boss(n, push.push->name, "push");
+        push = {};
+    }
+    if (!(push == n.push_now)) {
+        const PushNow was = n.push_now;
+        n.push_now = push;
+        track_push(n, was, push);
+    }
     // what the client plays and the bar its nameplate shows [modelled: no recording shows a creature's CrowdControlState; the fields are the schema's]
     registry_.modify(n.actor_id, world::Change::State, [&](world::WorldActor& a) {
         repl::Subobject* s = stats_of(a);
         if (!s) return;
         const auto set = [&](const char* path, repl::Value v) { s->obj.state.set(*s->obj.schema, path, std::move(v)); };
+        // the push the clients play on it (core's write_cc_state): a field is written when it says something, or to put it back to its default once it did
+        const auto put = [&](const std::string& path, repl::Value v, bool at_default) {
+            if (!s->obj.schema->command(path)) return;
+            if (at_default && !s->obj.state.get(*s->obj.schema, path)) return;
+            s->obj.state.set(*s->obj.schema, path, std::move(v));
+        };
+        {
+            const PlayerPort* by = push.push ? player(push.instigator) : nullptr;
+            const std::array<uint32_t, 4> who = by ? by->character_guid() : std::array<uint32_t, 4>{0, 0, 0, 0};
+            put("CrowdControlState.CrowdControlRecordToDisplace", repl::Value::i64(push.push ? push.push->guid : 0), !push.push);
+            static const char* const kWord[4] = {"A", "B", "C", "D"};
+            for (size_t i = 0; i < 4; ++i) {
+                put(std::string("CrowdControlState.PushInstigatorGuid.") + kWord[i], repl::Value::i64(static_cast<int32_t>(who[i])), who[i] == 0);
+                put(std::string("CrowdControlState.PushSourceGuid.") + kWord[i], repl::Value::i64(static_cast<int32_t>(who[i])), who[i] == 0);
+            }
+            put("CrowdControlState.SyncStartPushTime", repl::Value::f64(push.push ? bootstrap::effect_clock(push.start) : 0.0), !push.push);
+            const bool origin = push.push && n.push_origin.set;
+            constexpr double kPi = 3.14159265358979323846;
+            const double half = origin ? n.push_origin.frame.yaw_degrees * kPi / 360.0 : 0.0;
+            put("CrowdControlState.InitialOriginTransform.Transform.Rotation", repl::Value(repl::quat_to_wire(0.0, 0.0, std::sin(half), std::cos(half))), !origin);
+            put("CrowdControlState.InitialOriginTransform.Transform.Translation",
+                repl::Value(repl::Vec3d{origin ? n.push_origin.frame.pos.x : 0.0, origin ? n.push_origin.frame.pos.y : 0.0, origin ? n.push_origin.frame.pos.z : 0.0}), !origin);
+        }
         set("CrowdControlState.StatusFlags", repl::Value::u64(status));
         set("CrowdControlState.CurrentAnimationRequest", repl::Value::u64(shown ? shown->animation : kCrowdAnimationNone));
         set("CrowdControlState.CrowdControlRecordToAnimate", repl::Value::i64(shown ? shown->guid : 0));
@@ -3321,7 +3370,7 @@ void CombatWorld::think(Npc& n, double now) {
     else if (n.ai.state() == npc::ai::State::Idle || n.ai.state() == npc::ai::State::Reset) set_flags(n, false, 0);
     // A montage that carries the creature (a lunge) is played to the end of its carry: the client moves its copy along the whole montage, so a walk order that took the creature's feet back
     // half way would leave the server's creature behind it.  The AI's walking and turning wait until the carry is over; a reset (the way home) and a death end it.
-    const bool carried = npcs_world_ && npcs_world_->root_motion_active(n.actor_id);
+    const bool carried = npcs_world_ && (npcs_world_->root_motion_active(n.actor_id) || npcs_world_->displaced(n.actor_id));   // (a creature that is thrown or pushed waits as well, until it comes to rest)
     if (npcs_world_ && !o.began_reset && now >= n.hold_until && !carried) {   // (a creature that stands for a montage is not sent anywhere until it is over)
         const nav::Vec3 here{a->x, a->y, a->z};
         switch (o.move) {
@@ -3395,6 +3444,7 @@ void CombatWorld::think(Npc& n, double now) {
 void CombatWorld::tick(double now) {
     now_ = now;
     if (!cfg_.enabled) return;
+    log_rests();
     resolve_pending(now);
     advance_flights(now);
     step_zones(now);
@@ -3473,5 +3523,7 @@ void CombatWorld::tick(double now) {
     }
     tick_pets(now);
 }
+
+#include "combat/combat_knockback.inc"   // what throws, pushes and pulls a creature (move_by_hit, track_push, push_wire, origin_actors)
 
 }  // namespace aoc::worldd::combat
