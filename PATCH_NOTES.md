@@ -1,5 +1,12 @@
 # Patch notes
 
+## Next update: melody switching and pets
+
+### Fixed
+- Bard: switching melodies now stops the old melody as soon as you press the new one, instead of about two seconds later.
+- Bard: when the game ends a melody on its own, the server now ends it too. Before, the melody kept playing on the server, and your next press to start it again turned it off instead.
+- Summoner: the effects your pet's attacks leave on a creature now end when the pet is dismissed, dies or despawns. Effects from your own attacks stay.
+
 ## 2026-11-04: Bard melodies
 
 ### Fixed

@@ -3075,6 +3075,30 @@ bool AbilityPipeline::end_request(int32_t server_instance_id, double now) {
         abort_cast(i, now_, "the client ended the cast bar", true);   // (a cast that had paid before its bar's end gets it back: a bar the client cancels costs nothing)
         break;
     }
+    // A song the client ends itself (retail's client sends no ServerEndAbility while a song plays [R: capture 44, the songs' casts]; one that drops an ability it takes for unsynced does,
+    // "ClearStaleQueuedData(): Ending unsynced ability"): the song stops here too, as a new song stops it (its last buff runs out). Else the server plays a song the client shows as over,
+    // and the player's next press, meant to start it, ends it.
+    for (size_t i = 0; i < casts_.size(); ++i) {
+        Cast& cast = casts_[i];
+        if (cast.instance != server_instance_id || !cast.loop || !cast.loop_due) continue;
+        cast.loop_due.reset();   // (its effects had not started)
+        spdlog::info("[abilities] {}: the client ended the song before its effects started", cast.def->row.name);
+        finish_cast_if_done(i);
+        break;
+    }
+    for (auto it = loop_instances_.begin(); it != loop_instances_.end(); ++it) {
+        if (it->second != server_instance_id) continue;
+        const int64_t ability = it->first;
+        loop_instances_.erase(it);
+        AbilityChange c;
+        end_loop(c, ability, now_, true);
+        if (!c.empty()) {
+            recompute(c);
+            const AbilityDef* a = catalog_->ability(ability);
+            emit({std::move(c), std::nullopt, now_, "the client ended the song " + (a ? a->row.name : std::string("?"))});
+        }
+        break;
+    }
     for (Instance& i : instances_) {
         if (i.server_id != server_instance_id || i.end_due) continue;
         release_held(i.client_id, now_);
@@ -4221,6 +4245,8 @@ void AbilityPipeline::step_cost(Cast& cast, double t) {
         end_loop(c, def.row.guid, t);
         held_.erase(std::remove_if(held_.begin(), held_.end(), [&](const Held& h) { return h.ability == def.row.guid; }), held_.end());
     }
+    // a new song stops the one that plays with its press (its item and cost), not when its own effects start [R: capture 44, the old _Self goes with the new item]
+    if (cast.loop && !cast.toggle_off) end_replaced_songs(c, def, t);
     if (!cast.loop) {
         // the first overlap of the zones the ability spawns: the caster stands in them
         for (const content::AbilityHitRow& h : def.hits) {
@@ -4333,19 +4359,27 @@ void AbilityPipeline::end_loop(AbilityChange& c, int64_t ability, double t, bool
     sync_engine_effects();
 }
 
-void AbilityPipeline::step_loop(Cast& cast, double t) {
-    ItemScope item_scope(*this, cast.item_stats);
-    const AbilityDef& def = *cast.def;
-    AbilityChange c;
+void AbilityPipeline::end_replaced_songs(AbilityChange& c, const AbilityDef& def, double t) {
     // a song replaces the one that plays (the songs share a tag): its loop ends, and the buff it last gave runs out by itself (with Counterpoint, up to 24 s: "weave back and forth
     // between multiple melodies at once")
+    if (is_none_tag(def.row.shared_cooldown_tag)) return;
     std::set<int64_t> others;
     for (const EffectInst& e : effects_) {
         if (e.owner == 0 || e.owner == def.row.guid) continue;
         const AbilityDef* a = catalog_->ability(e.owner);
-        if (a && !is_none_tag(def.row.shared_cooldown_tag) && a->row.shared_cooldown_tag == def.row.shared_cooldown_tag) others.insert(e.owner);
+        if (a && a->row.shared_cooldown_tag == def.row.shared_cooldown_tag) others.insert(e.owner);
     }
     for (const int64_t o : others) end_loop(c, o, t, true);
+}
+
+void AbilityPipeline::step_loop(Cast& cast, double t) {
+    ItemScope item_scope(*this, cast.item_stats);
+    const AbilityDef& def = *cast.def;
+    AbilityChange c;
+    // the press stopped the song that played (step_cost); one that started since (two presses within kLoopDelay) stops now
+    end_replaced_songs(c, def, t);
+    loop_instances_[def.row.guid] = cast.instance;   // (the instance a client's ServerEndAbility names to stop it)
+    if (loop_instances_.size() > 16) loop_instances_.erase(loop_instances_.begin());
     // its effects (the loop's own, the buff ...) start now and the loop effect re-adds the others every tick
     for (const auto& [key, guid] : def.effects) {
         if (const EffectDef* e = catalog_->effect(guid)) apply_effect(c, *e, 1, std::nullopt, t, false, def.row.guid);

@@ -385,14 +385,44 @@ void test_songs_and_the_air() {
     r.trigger("Bard_Music_Cheerful", 10.0, false, 2, &seen);
     r.run_to(12.5);
     CHECK(r.pawn.effect(self_effect) != nullptr, "(Cheerful plays again)");
+    const int64_t pensive_self = r.effect("Bard_Music_Pensive_Self");
     r.trigger("Bard_Music_Pensive", 13.0, false, 2, &seen);
-    seen = r.run_to(15.31);
-    CHECK(r.pawn.effect(self_effect) == nullptr && r.pawn.effect(r.effect("Bard_Music_Pensive_Self")) != nullptr, "a second song replaces the first: they share the Bard_Music tag");
+    seen = r.run_to(13.29);
+    CHECK(r.pawn.effect(self_effect) != nullptr, "(before the new press's item, the first song still plays)");
+    seen = r.run_to(13.31);
+    // the press stops the song that plays with its item, at 0.3 s, not when its own effects start 2.3 s on [R: capture 44, the old _Self goes with the new item]
+    CHECK(r.pawn.effect(self_effect) == nullptr && r.pawn.effect(pensive_self) == nullptr, "a second song stops the first with its press (0.3 s): they share the Bard_Music tag");
     // ... and the first song's last buff runs out by itself, as retail's did (capture 44: Pensive_Buff stayed 440 ms into Cathartic's), instead of going with its loop
     const std::optional<double> buff_end = r.pipe->effect_end(buff);
-    CHECK(r.pawn.effect(buff) != nullptr && buff_end && *buff_end > 15.3 && *buff_end <= 15.3 + 2.5 + 1e-6, "the replaced song's buff stays on to its own end (2.5 s at most)");
-    r.run_to(18.0);
-    CHECK(r.pawn.effect(buff) == nullptr, "...and then goes");
+    CHECK(r.pawn.effect(buff) != nullptr && buff_end && *buff_end > 13.3 && *buff_end <= 13.3 + 2.5 + 1e-6, "the replaced song's buff stays on to its own end (2.5 s at most)");
+    seen = r.run_to(15.31);
+    CHECK(r.pawn.effect(pensive_self) != nullptr && r.pawn.effect(self_effect) == nullptr, "the second song's effects start 2.3 s after its press");
+    CHECK(r.pawn.effect(buff) == nullptr, "...and the first song's buff has run out");
+    // two presses within 2.3 s: the first song's effects, which start after the second press, are stopped when the second's start
+    CHECK(r.trigger("Bard_Music_Cheerful", 20.0, false, 2, &seen) == Refusal::None && r.trigger("Bard_Music_Pensive", 21.0, false, 3, &seen) == Refusal::None,
+          "(two songs pressed a second apart are both accepted)");
+    r.run_to(23.0);
+    CHECK(r.pawn.effect(self_effect) != nullptr, "(the first press's effects start at 2.3 s, after the second press)");
+    r.run_to(23.31);
+    CHECK(r.pawn.effect(self_effect) == nullptr && r.pawn.effect(pensive_self) != nullptr, "...and go when the second song's start");
+    // the client ends the song itself (ServerEndAbility: retail's sends none while a song plays; one that drops an ability it takes for unsynced does): the song stops on the server too
+    const int64_t pensive = r.ability("Bard_Music_Pensive"), pensive_buff = r.effect("Bard_Music_Pensive_Buff");
+    int64_t pensive_instance = -1;
+    for (const Seen& s : r.log)
+        for (const auto& a : s.change.abilities_added)
+            if (a.ability_guid == pensive) pensive_instance = a.server_instance_id;
+    CHECK(pensive_instance > 0 && r.pipe->end_request(static_cast<int32_t>(pensive_instance), 24.0), "the client's ServerEndAbility for the playing song is taken");
+    r.take();
+    CHECK(r.pawn.effect(pensive_self) == nullptr, "...and the song stops: its own effect goes at once");
+    r.run_to(26.9);
+    CHECK(r.pawn.effect(pensive_self) == nullptr && r.pawn.effect(pensive_buff) == nullptr, "...nothing adds it again, and its last buff runs out");
+    // ... so the next press starts it (it is not taken as a second press that ends it)
+    CHECK(r.trigger("Bard_Music_Pensive", 27.0, false, 2, &seen) == Refusal::None, "pressing the song again after the client ended it is accepted");
+    r.run_to(29.4);
+    CHECK(r.pawn.effect(pensive_self) != nullptr, "...and starts the song");
+    CHECK(r.trigger("Bard_Music_Pensive", 29.5, false, 3, &seen) == Refusal::None, "(a second press ends it)");
+    r.run_to(29.9);
+    CHECK(r.pawn.effect(pensive_self) == nullptr && r.pawn.effect(pensive_buff) == nullptr, "(the song is off)");
     // cast at the air: Maddening's hits reach enemies only; it spends its cost, starts its cooldown and plays its montage
     const double t1 = 30.0;
     CHECK(r.trigger("Bard_Dance_Maddening", t1, false, 0, &seen) == Refusal::None, "Maddening, cast at the air, is accepted");

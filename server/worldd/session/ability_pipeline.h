@@ -469,8 +469,7 @@ public:
     /// Where a hit that asks for the held weapon's tags (HitDef::use_item_tags) gets them; none set: such a hit carries none.
     void set_weapon_tags(WeaponTagsFn fn) { weapon_tags_ = std::move(fn); }
     /// Where a hit finds the caster's selected enemy, to tell its primary target from the others; none set: the target nearest the caster is the primary one.
-    void set_active_target(ActiveTargetFn fn) { active_target_ = std::move(fn); }
-    /// Where a consumable's cast takes its item when its cost step runs (after the other costs); none set: such a cast takes nothing (the pipeline alone, a test with no bag).
+    void set_active_target(ActiveTargetFn fn) { active_target_ = std::move(fn); }    /// Where a consumable's cast takes its item when its cost step runs (after the other costs); none set: such a cast takes nothing (the pipeline alone, a test with no bag).
     /// An NPC's hit on the caster, resolved by the world: its stat mods move the character's Health through the shields, the confirmation names the NPC as the
     /// instigator and carries the flags (Lethal when the hit took the last Health). The change and the confirmation are an event.
     void receive_hit(const combat::IncomingHit& hit, double now);
@@ -934,6 +933,8 @@ private:
     bootstrap::EffectItem effect_item(const EffectInst& e) const;
     void   run_effect_hits(bootstrap::AbilityChange& c, const EffectInst& e, const char* const* phases, size_t n, double t);
     void   step_loop(Cast& cast, double t);
+    /// Ends the loops of the other songs that share the ability's tag (end_loop's `loop_only`: their last buffs run out by themselves).
+    void   end_replaced_songs(bootstrap::AbilityChange& c, const abilities::AbilityDef& def, double t);
     /// The zones of a cast's ability, spawned at its cost step; the caster's overlap hits are applied by the caller with `zone_owner_` set.
     void   spawn_zones(const Cast& cast, double open_at, double end_at);
     void   run_zone(size_t index, double t);
@@ -1071,6 +1072,7 @@ private:
         int64_t ability = 0;
     };
     std::deque<Instance>      instances_;                           // the abilities the client may end with ServerEndAbility (the last few)
+    std::map<int64_t, int64_t> loop_instances_;                     // a song that plays (its ability) -> the instance whose press started it
     void   end_instance(size_t index, double t, const std::string& why = std::string());   // `why`: what ended it besides the client's own end (the log's note)
     /// A ranged weapon combo's swings: the step the last one played (by ability). The client plays the steps in order and starts over after the last, so the next swing is the step after it or the first;
     /// swing_montage keeps a modified client to that, and stop_swing is the client ending the swing (a stun): the arrows that had still to leave never do.
