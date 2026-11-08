@@ -195,6 +195,13 @@ static void test_dialogue_citizenship() {
         CHECK(r.outcome == dl::Outcome::Changed && r.citizenship == 2, "the renounce node's first line runs RemoveNodeCitizenship");
     }
     CHECK(book->vendor_defs(kRoot).count(kShop) == 1, "the conversation may open the shop of the tax receipts (the dialog's purchase button)");
+    // stage 2 (contentc version 46): the Sheriff's line 4 of node 14 runs AddNodeMayorCandidate, in the registration ("prevote") for a citizen who does not stand yet
+    const auto* stand = book->node(6064634349883573185ll);
+    bool candidate_line = false;
+    if (stand && stand->choices.size() > 4) {
+        for (const auto& a : stand->choices[4].actions) candidate_line = candidate_line || (a.action == "ActionResponse" && a.response == "AddNodeMayorCandidate");
+    }
+    CHECK(candidate_line, "the Sheriff's \"stand for mayor\" line runs AddNodeMayorCandidate");
 }
 
 static void test_dialogue_town_crier() {

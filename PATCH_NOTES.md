@@ -1,8 +1,11 @@
 # Patch notes
 
-## Next update: node citizenship, melodies, pets and loot
+## Next update: node citizenship and mayors, melodies, pets and loot
 
 ### New
+- Mayors: every Village and Town node now holds mayoral elections. A day after the node first takes citizens, a five-day registration opens. Any citizen can stand for mayor at the Sheriff. Five days of voting follow, from the voting window of the node window. Your vote counts for your whole account, and you can rank the candidates. The winner becomes the node's mayor until the next election, about three weeks later.
+- The mayor can set a message for the node and see the list of its citizens. A mayor who gives up their citizenship gives up the office too.
+- Type `.election` in chat to see the election of the node you are standing in: its stage, the time left, the candidates and the mayor.
 - Node citizenship: talk to the Sheriff of a node that is a Village or a Town to become a citizen of that node. You need to be level 10, and joining costs 20 Tax Vouchers. The window that opens has a button to buy them, for 4 Dull Glint each. Your whole account is a citizen of the one node, and your other characters share it.
 - Citizenship dues are 1 Tax Voucher every two weeks, due on Thursdays. Dues paid more than five days late cost 5 Tax Vouchers more, and put your citizenship at risk: if they stay unpaid for another week, your account loses its citizenship.
 - You can renounce your citizenship at the Sheriff, and join a node again straight away.

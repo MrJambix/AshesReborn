@@ -14,6 +14,7 @@
 #include "items/currency.h"
 #include "protocol/repl/citizenship_codec.h"
 #include "world/citizenship.h"
+#include "world/elections.h"
 #include "world/zoi_surface.h"
 
 namespace {
@@ -259,6 +260,90 @@ void test_citizenship_flow() {
     CHECK(r.lapse_ms(1, 1000) == 1000 + 5LL * 86400000 + 7LL * 86400000 && r.lapse_ms(1, 0) == 0, "the lapse: the due date, 5 overdue days, 7 at risk; none without a due date");
 }
 
+/// Stage 2: a citizen stands, votes, is elected mayor (OwnerInfo.MayorNode, ClientFinishMayorVote), sets the mayor's message, lists the citizens, and loses the office with the
+/// citizenship; the window's data carries the state, the candidates and the player's ballot.
+void test_mayor_flow() {
+    std::printf("node citizenship, stage 2: the mayor's election through a session\n");
+    CitizenHarness h;
+    h.play();
+    h.run(milliseconds(1500));
+    spdlog::set_level(std::getenv("AOC_TEST_CITIZEN_LOG") ? spdlog::level::info : spdlog::level::off);
+    h.fx.world->set_elections(world::ElectionRules{}, "");
+    world::Elections* el = h.fx.world->elections();
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    h.s->set_citizenship_for_test(svc::Citizenship{kTestCitizenNode, kCyb, now_ms, now_ms + 14LL * 86400000, 0});
+    h.s->run_citizenship_for_test(h.conn);
+    const world::NodeElection* e = el ? el->node(kTestCitizenNode) : nullptr;
+    CHECK(e && e->state == world::ElectionState::AwaitingFirst && e->citizens.count(h.record.account_id) == 1, "the citizen's node starts its first wait, the account among its citizens");
+    el->skip(kTestCitizenNode, now_ms);
+    // standing
+    size_t from = h.got.size();
+    h.pc_call("ServerAddNodeMayorCandidate", [](const schema::RpcSchema&, repl::RpcParams&) {});
+    h.run(milliseconds(300));
+    auto calls = pc_calls_since(h, from);
+    const repl::CitizenshipWindowData* w = window_of(last_call(calls, "ClientPopulateCitizenshipData"));
+    const auto own = items::guid_of(kCyb);
+    CHECK(h.s->mayor_candidacies() == 1 && el->is_candidate(kTestCitizenNode, h.record.account_id), "the citizen stands in the registration period");
+    CHECK(w && w->state == 1 && w->names.size() == 1 && own && w->names[0].first == *own && w->names[0].second == "cyb", "the window lists the candidate, its guid and name, in RegistrationPeriod");
+    CHECK(w && !w->notifications.empty() && w->notifications[0].type == 7 && w->notifications[0].election_state == 1, "... with the election's notification");
+    // voting
+    el->skip(kTestCitizenNode, now_ms);
+    from = h.got.size();
+    h.t += milliseconds(500);
+    h.pc_call("ServerRankedChoiceVoteForMayor", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::ArrayValue list;
+        repl::ElementState g;
+        g.values[1] = repl::Value::i64(static_cast<int32_t>(own->a));
+        g.values[2] = repl::Value::i64(static_cast<int32_t>(own->b));
+        g.values[3] = repl::Value::i64(static_cast<int32_t>(own->c));
+        g.values[4] = repl::Value::i64(static_cast<int32_t>(own->d));
+        list.elements.push_back(std::move(g));
+        repl::set_rpc_param(r, p, "RankedCandidateGuids", repl::Value(std::move(list)));
+    });
+    h.run(milliseconds(300));
+    calls = pc_calls_since(h, from);
+    w = window_of(last_call(calls, "ClientPopulateCitizenshipData"));
+    CHECK(h.s->mayor_votes() == 1 && el->node(kTestCitizenNode)->votes.count(h.record.account_id) == 1, "the citizen's ranked vote is taken in the election");
+    CHECK(w && w->state == 2 && w->named_guids.size() == 1 && w->named_guids[0].key == *own && w->named_guids[0].guids.size() == 1 && w->named_guids[0].guids[0] == *own,
+          "the window carries the player's ballot under the player's guid (the voting window marks it chosen)");
+    // the results
+    el->skip(kTestCitizenNode, now_ms);
+    el->skip(kTestCitizenNode, now_ms);
+    from = h.got.size();
+    h.s->run_citizenship_for_test(h.conn);
+    h.run(milliseconds(300));
+    calls = pc_calls_since(h, from);
+    const repl::RpcCall* finish = last_call(calls, "ClientFinishMayorVote");
+    const repl::Value* winner = finish ? repl::rpcf::value_of(*finish->rpc, finish->params, "WinnerName") : nullptr;
+    CHECK(winner && winner->get_if<std::string>() && *winner->get_if<std::string>() == "cyb" && h.s->mayor_results_seen() == 1, "the results reach the citizen: ClientFinishMayorVote names the winner");
+    CHECK(h.s->mayor_node() == kTestCitizenNode, "the winner's OwnerInfo.MayorNode is the node");
+    // the mayor's tools
+    from = h.got.size();
+    h.t += milliseconds(500);
+    h.pc_call("ServerSetMayorMessage", [](const schema::RpcSchema& r, repl::RpcParams& p) { repl::set_rpc_param(r, p, "Message", repl::Value::str("Welcome to Testhold")); });
+    h.pc_call("ServerShowMayorCitizens", [](const schema::RpcSchema& r, repl::RpcParams& p) { repl::set_rpc_param(r, p, "NodeGuid", repl::Value::i64(kTestCitizenNode)); });
+    h.run(milliseconds(300));
+    calls = pc_calls_since(h, from);
+    CHECK(el->node(kTestCitizenNode)->mayor_message == "Welcome to Testhold" && count_calls(calls, "ClientMayorMessageCallout") == 1, "the mayor sets the node's message");
+    const repl::RpcCall* citizens = last_call(calls, "ClientShowMayorCitizens");
+    const repl::Value* list = citizens ? repl::rpcf::value_of(*citizens->rpc, citizens->params, "Citizens") : nullptr;
+    CHECK(list && list->get_if<repl::ArrayValue>() && list->get_if<repl::ArrayValue>()->elements.size() == 1, "the mayor's list of citizens: one");
+    const std::string said = h.s->election_command_for_test(h.conn, "");
+    CHECK(said.find("PostElection") != std::string::npos && said.find("Mayor: cyb") != std::string::npos, ".election says the state and the mayor");
+    CHECK(h.s->election_command_for_test(h.conn, "next").find("game master") != std::string::npos, ".election next is a game master's");
+    // the office goes with the citizenship
+    from = h.got.size();
+    h.t += milliseconds(500);
+    h.pc_call("ServerRemoveNodeCitizen", [](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::set_rpc_param(r, p, "NodeGuid", repl::Value::i64(kTestCitizenNode));
+        repl::set_rpc_param(r, p, "PlayerName", repl::Value::str("cyb"));
+    });
+    h.run(milliseconds(300));
+    h.s->run_citizenship_for_test(h.conn);
+    CHECK(el->node(kTestCitizenNode)->mayor.account == 0 && h.s->mayor_node() == 0, "renouncing the citizenship gives up the office");
+}
+
 }  // namespace
 
 AOC_REGISTER_TEST(test_citizenship_flow);
+AOC_REGISTER_TEST(test_mayor_flow);

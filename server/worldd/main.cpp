@@ -349,6 +349,10 @@ int main(int argc, char** argv) {
     bool no_ground_crates = false;
     app.add_flag("--no-ground-crates", no_ground_crates, "Drop Crate puts the crate in the item bag instead of laying it on the ground for others to pick up")->envname("AOC_NO_GROUND_CRATES");
     std::string ground_crates_file;
+    std::string elections_file_option;
+    app.add_option("--elections-file", elections_file_option,
+                   "where the nodes' mayoral elections are kept between runs (default: elections.json beside AOC_WORLD_STARTED_FILE; neither: a restart loses them)")
+        ->envname("AOC_ELECTIONS_FILE");
     app.add_option("--ground-crates-file", ground_crates_file,
                    "where the crates on the ground are kept between runs (default: ground_crates.json beside AOC_WORLD_STARTED_FILE, the supervisor's run folder; neither: a restart loses them)")
         ->envname("AOC_GROUND_CRATES_FILE");
@@ -677,6 +681,16 @@ int main(int argc, char** argv) {
                 spdlog::info("[nodes] citizenship: nodes at level {} take citizens; joining costs {} Tax Receipts, dues {} every {} weeks", levels, rules->join_cost, rules->dues_cost,
                              rules->dues_weeks);
                 players.set_citizenship_rules(std::move(*rules));
+                std::string election_error;
+                auto election_rules = world::ElectionRules::load(content_db_path, election_error);
+                if (!election_rules) spdlog::warn("[nodes] the election rules are the defaults ({})", election_error);
+                std::string elections_file = elections_file_option;
+                if (elections_file.empty()) {
+                    if (const char* started = std::getenv("AOC_WORLD_STARTED_FILE"); started && *started) {
+                        elections_file = (std::filesystem::path(started).parent_path() / "elections.json").string();
+                    }
+                }
+                players.set_elections(election_rules.value_or(world::ElectionRules{}), elections_file);
             } else {
                 spdlog::warn("[nodes] no citizenship ({}): the Node Administrators' citizenship lines open nothing", citizenship_error);
             }

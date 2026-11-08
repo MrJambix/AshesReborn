@@ -1590,6 +1590,13 @@ bool PlayerBootstrap::set_citizen_node(int64_t node) {
     return owner->obj.state.set(*owner->obj.schema, "CharactersNodeData", Value(std::move(list)));
 }
 
+bool PlayerBootstrap::set_mayor_node(int64_t node) {
+    if (!ok_ || mode_ != GameStateMode::Tier3) return false;
+    repl::Subobject* owner = component(setup_.guids.owner_info);
+    if (!owner) return false;
+    return owner->obj.state.set(*owner->obj.schema, "MayorNode", Value::i64(node));
+}
+
 bool PlayerBootstrap::set_active_stations(const std::vector<std::array<int32_t, 4>>& stations) {
     if (!ok_) return false;
     repl::Subobject* owner = component(setup_.guids.owner_info);

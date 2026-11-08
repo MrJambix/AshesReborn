@@ -29,6 +29,11 @@
 #include "items/inventory.h"
 #include "protocol/repl/citizenship_codec.h"
 #include "world/citizenship.h"
+#include "world/elections.h"
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 
 namespace aoc { namespace worldd {
 
@@ -125,6 +130,11 @@ void PlayerSession::set_citizenship(Connection& conn, const svc::Citizenship& c,
     citizenship_ = c;
     citizenship_changed_ = true;
     if (world_) world_->set_account_citizenship(account_id_, c);
+    if (world::Elections* el = world_ ? world_->elections() : nullptr) {   // stage 2: the node's citizens (who may stand and vote; the mayor loses the office with it)
+        if (c.node_guid != 0) el->set_citizen(c.node_guid, citizen_person());
+        else el->remove_citizen(account_id_);
+        world_->save_elections();
+    }
     if (pb_.set_citizen_node(c.node_guid) && room_for(1)) queue("OwnerInfo", [](bootstrap::PlayerBootstrap& pb) { return pb.currencies_update(); }, conn);
     hand_over_progress(why);
 }
@@ -298,6 +308,7 @@ void PlayerSession::run_citizenship(Connection& conn) {
         spdlog::info("[nodes] {}: the account's citizenship changed in another of its sessions: node {}", name(), citizenship_.node_guid);
         if (pb_.set_citizen_node(citizenship_.node_guid) && room_for(1)) queue("OwnerInfo", [](bootstrap::PlayerBootstrap& pb) { return pb.currencies_update(); }, conn);
     }
+    run_elections(conn, now_ms);
     // unpaid dues: at risk once overdue, lapsed after the node's time at risk
     const world::CitizenshipRules* rules = world_ ? world_->citizenship_rules() : nullptr;
     if (!rules || citizenship_.node_guid == 0) return;
@@ -340,6 +351,41 @@ repl::CitizenshipWindowData PlayerSession::citizenship_window(int64_t now_ms) co
     d.dues_due_time = due / 1000;
     d.late_fees_due_time = rules && due > 0 ? rules->overdue_ms(due) / 1000 : 0;
     d.dues_state = due > 0 && now_ms >= due ? 1 : 0;                          // AwaitingOverdueDate once due, else AwaitingDueDate
+    // stage 2: the node's election.  The second map is the candidates (UVotingWindow::Populate 0x1468d01e0 makes an item of each, its guid and name), the first the ballots by
+    // the voter's character guid (the window looks the player's up by PrimaryCharacter, then AlternateCharacters, and marks the first of its guids chosen); the byte is the state.
+    const world::Elections* el = world_ ? world_->elections() : nullptr;
+    if (const world::NodeElection* e = el ? el->node(citizenship_.node_guid) : nullptr) {
+        d.state = static_cast<uint8_t>(e->state);
+        if (e->state == world::ElectionState::Registration || e->state == world::ElectionState::Active || e->state == world::ElectionState::AwaitingResults) {
+            for (const world::ElectionPerson& c : e->candidates) {
+                if (const auto g = items::guid_of(c.character_id); g && d.names.size() < repl::kMaxCitizenshipEntries) d.names.emplace_back(*g, c.name);
+            }
+        }
+        if (const auto v = e->votes.find(account_id_); v != e->votes.end()) {
+            repl::CitizenshipNamedGuids ballot;
+            ballot.key = s.primary.guid;
+            ballot.name = s.primary.name;
+            for (const std::string& id : v->second) {
+                if (const auto g = items::guid_of(id)) ballot.guids.push_back(*g);
+            }
+            d.named_guids.push_back(std::move(ballot));
+        }
+        repl::NodeNotification n;   // the election's state, the notification the window shows for it
+        n.type = 7;                 // ENodeSystemNotificationType::MayorElectionStateChanged
+        n.created = n.timestamp = e->phase_started_ms / 1000;
+        n.election_type = el->rules().election_type;
+        n.election_state = static_cast<uint8_t>(e->state);
+        d.notifications.push_back(std::move(n));
+        if (e->mayor.account != 0) {
+            repl::NodeNotification m;
+            m.type = 6;             // MayorElected
+            m.created = m.timestamp = e->mayor.at_ms / 1000;
+            m.mayor = e->mayor.name;
+            m.election_type = el->rules().election_type;
+            m.election_state = static_cast<uint8_t>(world::ElectionState::Post);
+            d.notifications.push_back(std::move(m));
+        }
+    }
     return d;
 }
 
@@ -355,6 +401,279 @@ void PlayerSession::on_citizenship_window_request() {
     ++citizenship_requests_;   // answered by the RPC table's entry below, which has the connection
 }
 
+// ============================================================================================================================
+//  stage 2: the mayors
+// ============================================================================================================================
+
+void PlayerWorld::set_elections(world::ElectionRules rules, std::string file) {
+    elections_.emplace(rules);
+    elections_file_ = std::move(file);
+    if (elections_file_.empty()) {
+        spdlog::warn("[nodes] no --elections-file: the nodes' elections are lost at a restart");
+        return;
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(elections_file_, ec)) {
+        spdlog::info("[nodes] the elections are kept in {} (none yet)", elections_file_);
+        return;
+    }
+    std::ifstream in(elections_file_, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::string error;
+    if (!elections_->from_json(text, error)) {
+        spdlog::error("[nodes] the elections file {} does not read ({}): the elections start afresh, and the file is kept as it is until they change", elections_file_, error);
+        return;
+    }
+    elections_saved_ = elections_->version();
+    spdlog::info("[nodes] the elections of {} node(s) read from {}", elections_->all().size(), elections_file_);
+}
+
+void PlayerWorld::save_elections() const {
+    if (!elections_ || elections_file_.empty() || elections_->version() == elections_saved_) return;
+    const std::filesystem::path path(elections_file_), tmp(elections_file_ + ".tmp");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << elections_->to_json();
+        if (!out) {
+            spdlog::error("[nodes] the elections file {} cannot be written", tmp.string());
+            return;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        spdlog::error("[nodes] the elections file {} cannot be replaced: {}", path.string(), ec.message());
+        return;
+    }
+    elections_saved_ = elections_->version();
+}
+
+std::vector<world::Elections::Change> PlayerWorld::tick_elections(int64_t now_ms, bool force) const {
+    if (!elections_ || !city_nodes_ || !citizenship_rules_) return {};
+    if (!force && now_ms - elections_ticked_ms_ < 5000) return {};
+    elections_ticked_ms_ = now_ms;
+    std::vector<int64_t> nodes;
+    for (const world::CityNodeInfo& n : city_nodes_->nodes()) nodes.push_back(n.guid);
+    const world::CitizenshipRules* rules = &*citizenship_rules_;
+    const world::CityNodes* registry = city_nodes_;
+    auto changes = elections_->advance(now_ms, [rules, registry](int64_t node) { return rules->takes_citizens(registry->level_of(node)); }, nodes);
+    for (const world::Elections::Change& c : changes) {
+        const world::CityNodeInfo* n = city_nodes_->by_guid(c.node);
+        spdlog::info("[nodes] the election of {} enters {}{}", n ? n->display_name : std::to_string(c.node), world::election_state_name(c.state),
+                     c.results ? (c.winner.empty() ? ": no candidate, no mayor" : ": " + c.winner + " is the mayor") : "");
+    }
+    save_elections();
+    return changes;
+}
+
+world::ElectionPerson PlayerSession::election_person() const { return world::ElectionPerson{account_id_, character_id_, name(), 0}; }
+
+world::ElectionPerson PlayerSession::citizen_person() const {
+    world::ElectionPerson p = election_person();
+    if (!citizenship_.primary_character_id.empty() && citizenship_.primary_character_id != character_id_) {
+        p.character_id = citizenship_.primary_character_id;
+        const std::string want = upper(citizenship_.primary_character_id);
+        for (const bootstrap::AccountCharacterNode& c : pb_.setup().account_characters) {
+            if (c.guid_hex == want) p.name = c.name;
+        }
+    }
+    return p;
+}
+
+void PlayerSession::run_elections(Connection& conn, int64_t now_ms) {
+    world::Elections* el = world_ ? world_->elections() : nullptr;
+    if (!el) return;
+    if (citizenship_.node_guid != 0) {   // (a citizen from before the elections, or one that joined on another worldd: the store learns of it)
+        const world::NodeElection* e = el->node(citizenship_.node_guid);
+        if (!e || e->citizens.count(account_id_) == 0) {
+            el->set_citizen(citizenship_.node_guid, citizen_person());
+            world_->save_elections();
+        }
+    }
+    world_->tick_elections(now_ms);
+    if (el->version() == election_seen_version_) return;
+    election_seen_version_ = el->version();
+    const int64_t mayor = el->mayor_node(account_id_);
+    if (mayor != mayor_node_) {
+        mayor_node_ = mayor;
+        spdlog::info("[nodes] {}: {}", name(), mayor != 0 ? "the account is the mayor of node " + std::to_string(mayor) : std::string("the account is no node's mayor"));
+        if (pb_.set_mayor_node(mayor) && room_for(1)) queue("OwnerInfo", [](bootstrap::PlayerBootstrap& pb) { return pb.currencies_update(); }, conn);
+    }
+    const world::NodeElection* e = citizenship_.node_guid != 0 ? el->node(citizenship_.node_guid) : nullptr;
+    const int state = e ? static_cast<int>(e->state) : -1;
+    // the results: the node's election came to its term while this session watched (not at its first look: a login after the results is not told them again)
+    if (e && state == static_cast<int>(world::ElectionState::Post) && election_seen_state_ >= 0 && election_seen_state_ != static_cast<int>(world::ElectionState::Post)) {
+        ++mayor_results_seen_;
+        const std::string winner = e->mayor.name;
+        send_citizenship_call(conn, "ClientFinishMayorVote", [winner](const schema::RpcSchema& s, repl::RpcParams& p) { return repl::set_rpc_param(s, p, "WinnerName", repl::Value::str(winner)); });
+    }
+    election_seen_state_ = state;
+}
+
+void PlayerSession::stand_for_mayor(Connection& conn, const char* by) {
+    world::Elections* el = world_ ? world_->elections() : nullptr;
+    std::string why;
+    if (!el) why = "this world holds no elections";
+    else if (citizenship_.node_guid == 0) why = "the account is a citizen of no node";
+    else if (el->register_candidate(citizenship_.node_guid, election_person(), wall_ms(), why)) {
+        ++mayor_candidacies_;
+        world_->save_elections();
+        spdlog::info("[nodes] {}: stands for mayor of node {} ({})", name(), citizenship_.node_guid, by);
+        send_citizenship_window(conn);
+        return;
+    }
+    ++citizenship_refused_;
+    spdlog::log(level_for(citizenship_log_), "[nodes] {}: does not stand for mayor ({}): {}", name(), by, why);
+}
+
+void PlayerSession::on_mayor_candidate(Connection& conn, const repl::ClientRpc&, Clock::time_point now) {
+    if (!within_budget(citizenship_budget_, "ServerAddNodeMayorCandidate", now)) return;
+    stand_for_mayor(conn, "ServerAddNodeMayorCandidate");
+}
+
+void PlayerSession::on_mayor_ranked_vote(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
+    if (!within_budget(citizenship_budget_, "ServerRankedChoiceVoteForMayor", now)) return;
+    world::Elections* el = world_ ? world_->elections() : nullptr;
+    std::vector<std::string> ranked;
+    if (rpc.call.decoded) {
+        if (const repl::Value* v = repl::rpcf::value_of(*rpc.call.rpc, rpc.call.params, "RankedCandidateGuids")) {
+            if (const auto* arr = v->get_if<repl::ArrayValue>()) {
+                for (const repl::ElementState& e : arr->elements) {
+                    repl::GuidValue g;
+                    uint32_t* words[4] = {&g.a, &g.b, &g.c, &g.d};
+                    for (uint16_t i = 0; i < 4; ++i) {
+                        const auto it = e.values.find(static_cast<uint16_t>(i + 1));
+                        const int64_t* n = it == e.values.end() ? nullptr : it->second.get_if<int64_t>();
+                        if (n) *words[i] = static_cast<uint32_t>(*n);
+                    }
+                    ranked.push_back(items::guid_hex(g));
+                }
+            }
+        }
+    }
+    std::string why;
+    if (!el) why = "this world holds no elections";
+    else if (citizenship_.node_guid == 0) why = "the account is a citizen of no node";
+    else if (el->vote(citizenship_.node_guid, election_person(), ranked, wall_ms(), why)) {
+        ++mayor_votes_;
+        world_->save_elections();
+        spdlog::info("[nodes] {}: votes in the election of node {} ({} candidate(s) ranked)", name(), citizenship_.node_guid, ranked.size());
+        send_citizenship_window(conn);
+        return;
+    }
+    ++citizenship_refused_;
+    spdlog::log(level_for(citizenship_log_), "[nodes] {}: the vote is refused: {}", name(), why);
+}
+
+void PlayerSession::on_mayor_named_vote(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
+    if (!within_budget(citizenship_budget_, "ServerRegisterMayorVote", now)) return;
+    world::Elections* el = world_ ? world_->elections() : nullptr;
+    const auto node = int_param(rpc, "NodeGuid");
+    const auto chosen = str_param(rpc, "SelectedName");
+    std::string why;
+    const world::NodeElection* e = el && node ? el->node(*node) : nullptr;
+    std::vector<std::string> ranked;
+    if (e && chosen) {
+        for (const world::ElectionPerson& c : e->candidates) {
+            if (same_name(c.name, *chosen)) ranked.push_back(c.character_id);
+        }
+    }
+    if (!el) why = "this world holds no elections";
+    else if (!node || !chosen) why = "its parameters do not read";
+    else if (*node != citizenship_.node_guid) why = "the account is not a citizen of node " + std::to_string(*node);
+    else if (el->vote(*node, election_person(), ranked, wall_ms(), why)) {
+        ++mayor_votes_;
+        world_->save_elections();
+        spdlog::info("[nodes] {}: votes for {} in the election of node {}", name(), *chosen, *node);
+        send_citizenship_window(conn);
+        return;
+    }
+    ++citizenship_refused_;
+    spdlog::log(level_for(citizenship_log_), "[nodes] {}: the vote is refused: {}", name(), why);
+}
+
+void PlayerSession::on_mayor_message(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
+    if (!within_budget(citizenship_budget_, "ServerSetMayorMessage", now)) return;
+    world::Elections* el = world_ ? world_->elections() : nullptr;
+    const auto message = str_param(rpc, "Message");
+    std::string why;
+    const int64_t node = el ? el->mayor_node(account_id_) : 0;
+    if (!el || !message) why = "no elections, or the message does not read";
+    else if (el->set_message(node, account_id_, *message, why)) {
+        world_->save_elections();
+        const std::string mayor = name(), text = *message;
+        send_citizenship_call(conn, "ClientMayorMessageCallout", [mayor, text](const schema::RpcSchema& s, repl::RpcParams& p) {
+            return repl::set_rpc_param(s, p, "MayorName", repl::Value::str(mayor)) && repl::set_rpc_param(s, p, "Message", repl::Value::str(text));
+        });
+        return;
+    }
+    ++citizenship_refused_;
+    spdlog::log(level_for(citizenship_log_), "[nodes] {}: the mayor's message is refused: {}", name(), why);
+}
+
+void PlayerSession::on_mayor_citizens(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
+    if (!within_budget(citizenship_budget_, "ServerShowMayorCitizens", now)) return;
+    world::Elections* el = world_ ? world_->elections() : nullptr;
+    const int64_t node = el ? el->mayor_node(account_id_) : 0;
+    const world::NodeElection* e = node ? el->node(node) : nullptr;
+    if (!e) {
+        spdlog::log(level_for(citizenship_log_), "[nodes] {}: ServerShowMayorCitizens is not answered: the account is no node's mayor", name());
+        return;
+    }
+    (void)rpc;
+    const world::CityNodeInfo* info = world_->city_nodes() ? world_->city_nodes()->by_guid(node) : nullptr;
+    const std::string description = info ? info->display_name : std::string();
+    std::vector<std::string> names;
+    for (const auto& [account, p] : e->citizens) {
+        if (names.size() < 1000) names.push_back(p.name);
+    }
+    send_citizenship_call(conn, "ClientShowMayorCitizens", [description, names](const schema::RpcSchema& s, repl::RpcParams& p) {
+        repl::ArrayValue list;
+        for (const std::string& n : names) {
+            repl::ElementState el;
+            el.values[1] = repl::Value::str(n);
+            list.elements.push_back(std::move(el));
+        }
+        return repl::set_rpc_param(s, p, "NodeDescription", repl::Value::str(description)) && repl::set_rpc_param(s, p, "Citizens", repl::Value(std::move(list)));
+    });
+}
+
+std::string PlayerSession::on_election_command(Connection& conn, const std::string& args) {
+    world::Elections* el = world_ ? world_->elections() : nullptr;
+    if (!el) return "This world holds no elections.";
+    const GoodPosition at = checker_.good();
+    const auto [here, level] = citizenship_node_at(at.x, at.y);
+    const int64_t node = here != 0 ? here : citizenship_.node_guid;
+    const world::CityNodeInfo* info = world_->city_nodes() ? world_->city_nodes()->by_guid(node) : nullptr;
+    const std::string node_name = info ? info->display_name : std::to_string(node);
+    std::string verb = args;
+    verb.erase(0, verb.find_first_not_of(' '));
+    verb.erase(verb.find_last_not_of(' ') + 1);
+    if (same_name(verb, "next")) {
+        if (!gm_enabled()) return "Only a game master with GM mode on can move an election on.";
+        world_->tick_elections(wall_ms(), /*force=*/true);
+        const auto c = el->skip(node, wall_ms());
+        world_->save_elections();
+        if (!c) return node_name + " holds no election yet (a node takes citizens from Village).";
+        spdlog::info("[gm] {}: .election next: the election of {} enters {}", name(), node_name, world::election_state_name(c->state));
+        run_elections(conn, wall_ms());
+        return "The election of " + node_name + " is now in " + world::election_state_name(c->state) + (c->results ? (c->winner.empty() ? ": no mayor." : ": " + c->winner + " is the mayor.") : ".");
+    }
+    world_->tick_elections(wall_ms(), /*force=*/true);
+    const world::NodeElection* e = el->node(node);
+    if (!e) return node_name + " holds no election yet (a node takes citizens from Village).";
+    const int64_t left = std::max<int64_t>(0, e->phase_ends_ms - wall_ms()) / 1000;
+    std::string out = "The election of " + node_name + ": " + world::election_state_name(e->state) + ", " + std::to_string(left / 3600) + " h " + std::to_string(left % 3600 / 60) +
+                      " min left.";
+    out += "\nMayor: " + (e->mayor.account != 0 ? e->mayor.name : std::string("none")) + ". Citizens: " + std::to_string(e->citizens.size()) + ".";
+    if (!e->candidates.empty()) {
+        out += "\nCandidates:";
+        for (const world::ElectionPerson& c : e->candidates) out += " " + c.name;
+    }
+    if (gm_enabled()) out += "\n(.election next moves it to its next phase.)";
+    return out;
+}
+
 /// The client calls of node citizenship (session/rpc_table.h).
 void PlayerSession::register_citizenship_rpcs(RpcTable& t) {
     t.add(RpcScope::PlayerController, "ServerSetEssentialCitizenshipWindowData", [](PlayerSession& s, const RpcContext& c) {
@@ -364,6 +683,11 @@ void PlayerSession::register_citizenship_rpcs(RpcTable& t) {
     t.add(RpcScope::PlayerController, "ServerSendCitizenshipApplication", [](PlayerSession& s, const RpcContext& c) { s.on_citizenship_application(c.conn, c.rpc, c.now); });
     t.add(RpcScope::PlayerController, "ServerRemoveNodeCitizen", [](PlayerSession& s, const RpcContext& c) { s.on_citizenship_renounce(c.conn, c.rpc, c.now); });
     t.add(RpcScope::PlayerController, "ServerFulfillCitizenshipDues", [](PlayerSession& s, const RpcContext& c) { s.on_citizenship_dues(c.conn, c.rpc, c.now); });
+    t.add(RpcScope::PlayerController, "ServerAddNodeMayorCandidate", [](PlayerSession& s, const RpcContext& c) { s.on_mayor_candidate(c.conn, c.rpc, c.now); });
+    t.add(RpcScope::PlayerController, "ServerRankedChoiceVoteForMayor", [](PlayerSession& s, const RpcContext& c) { s.on_mayor_ranked_vote(c.conn, c.rpc, c.now); });
+    t.add(RpcScope::PlayerController, "ServerRegisterMayorVote", [](PlayerSession& s, const RpcContext& c) { s.on_mayor_named_vote(c.conn, c.rpc, c.now); });
+    t.add(RpcScope::PlayerController, "ServerSetMayorMessage", [](PlayerSession& s, const RpcContext& c) { s.on_mayor_message(c.conn, c.rpc, c.now); });
+    t.add(RpcScope::PlayerController, "ServerShowMayorCitizens", [](PlayerSession& s, const RpcContext& c) { s.on_mayor_citizens(c.conn, c.rpc, c.now); });
 }
 
 }}  // namespace aoc::worldd

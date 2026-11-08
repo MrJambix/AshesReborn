@@ -69,6 +69,7 @@ test_worldd_content_db               PASS exit=0
 test_worldd_control_channel          PASS exit=0
 test_worldd_cookie                   PASS exit=0
 test_worldd_effects                  PASS exit=0
+test_worldd_elections                PASS exit=0
 test_worldd_embersprings             PASS exit=0
 test_worldd_endpoint                 PASS exit=0
 test_worldd_foliage                  PASS exit=0

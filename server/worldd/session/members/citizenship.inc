@@ -36,6 +36,22 @@ private:
     bool pay_tax_receipts(Connection& conn, int32_t cost, std::string& why);
     /// Every few seconds: the account's citizenship as another session of it changed it (adopted, not saved again), and a citizenship whose dues stayed unpaid too long lapses.
     void run_citizenship(Connection& conn);
+    // ---- stage 2: mayors
+    /// This character as the elections know a citizen, a candidate or a voter (the account, the character, its name).
+    world::ElectionPerson election_person() const;
+    /// The account's primary character as the elections' citizen.
+    world::ElectionPerson citizen_person() const;
+    /// The Sheriff's "stand for mayor" line (dialogue AddNodeMayorCandidate) and ServerAddNodeMayorCandidate: the character stands in its citizenship's node.
+    void stand_for_mayor(Connection& conn, const char* by);
+    void on_mayor_candidate(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_mayor_ranked_vote(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_mayor_named_vote(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_mayor_message(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_mayor_citizens(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    /// The elections' news for this session: OwnerInfo.MayorNode, the results of its node's election (ClientFinishMayorVote).
+    void run_elections(Connection& conn, int64_t now_ms);
+    /// `.election`: the election of the node the player stands in; `.election next` (a game master with GM mode on) moves it to its next phase now.
+    std::string on_election_command(Connection& conn, const std::string& args);
     /// The node at the NPC's place: its guid and level (0 and -1 for none).
     std::pair<int64_t, int> citizenship_node_at(double x, double y) const;
     svc::Citizenship                citizenship_;
@@ -44,6 +60,10 @@ private:
     RequestBudget                   citizenship_budget_{kVendorBurst, kVendorInterval};
     size_t                          citizenship_log_ = 0;
     int64_t                         citizenship_checked_ms_ = 0;   // run_citizenship's last look
+    uint64_t                        election_seen_version_ = 0;    // the elections' version run_elections last looked at
+    int                             election_seen_state_ = -1;     // the state of the citizenship node's election then (-1: none)
+    int64_t                         mayor_node_ = 0;               // OwnerInfo.MayorNode as last set
+    uint32_t                        mayor_candidacies_ = 0, mayor_votes_ = 0, mayor_results_seen_ = 0;
     uint32_t citizenship_lapses_ = 0, citizenship_adopted_ = 0;
     uint32_t citizenship_joins_ = 0, citizenship_renounces_ = 0, citizenship_dues_paid_ = 0, citizenship_refused_ = 0, citizenship_windows_ = 0, citizenship_dialogs_ = 0;
 public:
@@ -56,6 +76,11 @@ public:
     uint32_t citizenship_dialogs() const { return citizenship_dialogs_; }
     uint32_t citizenship_lapses() const { return citizenship_lapses_; }
     uint32_t citizenship_adopted() const { return citizenship_adopted_; }
+    uint32_t mayor_candidacies() const { return mayor_candidacies_; }
+    uint32_t mayor_votes() const { return mayor_votes_; }
+    uint32_t mayor_results_seen() const { return mayor_results_seen_; }
+    int64_t  mayor_node() const { return mayor_node_; }
+    std::string election_command_for_test(Connection& conn, const std::string& args) { return on_election_command(conn, args); }
     /// A test: run_citizenship now (not waiting for its few seconds).
     void run_citizenship_for_test(Connection& conn) { citizenship_checked_ms_ = 0; run_citizenship(conn); }
     /// The node of the standing offer (0: none).

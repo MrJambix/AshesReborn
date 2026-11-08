@@ -58,6 +58,17 @@ void PlayerSession::on_chat(Connection& conn, const repl::ClientRpc& rpc, Clock:
         run_chat(conn);
         return;
     }
+    if (chat::same_name(gm_prefix, ".election")) {   // node citizenship, stage 2: the election of the node the player stands in (a game master moves it on)
+        std::string rest;
+        std::getline(gm_input, rest);
+        const std::string reply = on_election_command(conn, rest);
+        std::istringstream lines(reply);
+        for (std::string line; std::getline(lines, line) && chat_peer_->inbox.size() < chat::kMaxInbox;) {
+            if (!line.empty()) chat_peer_->inbox.push_back({line, "", 4});
+        }
+        run_chat(conn);
+        return;
+    }
     if (chat::same_name(gm_prefix, ".gm")) {
         auto* gm = world_ ? dynamic_cast<GmTravel*>(world_->gm_port()) : nullptr;
         const std::string reply = gm ? gm->command(*this, conn, *quote).message : "GM tools are unavailable.";

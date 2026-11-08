@@ -309,6 +309,8 @@ add_library(worldd_core STATIC
     vendor/node_tax_table.h
     world/citizenship.cpp
     world/citizenship.h
+    world/elections.cpp
+    world/elections.h
     world/city_nodes.cpp
     world/city_nodes.h
     world/node_control.h
@@ -463,6 +465,8 @@ target_compile_definitions(test_worldd_gather_session PRIVATE
 # Resource storage (Gathering stage 3): the grid against the captured slots, the routing, the top-up, the full container, the moves and the login's repair on a fixture, and the flags of every
 # item of the real content.db of the working tree
 worldd_add_test(test_worldd_warehouse)
+# the mayoral elections (node citizenship, stage 2): the cycle, the count, the file, the rules of the real content.db
+worldd_add_test(test_worldd_elections)
 worldd_add_test(test_worldd_group)
 worldd_add_test(test_worldd_guild)
 worldd_add_test(test_worldd_market)
