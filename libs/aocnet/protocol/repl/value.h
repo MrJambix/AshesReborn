@@ -838,6 +838,22 @@ struct CitizenshipWindowData {
     bool operator==(const CitizenshipWindowData&) const = default;
 };
 
+/// How a Value holds the citizenship window's data: on the heap, as EventBox holds an event (the struct is some 300 bytes; boxed, a Value stays at the size of an ItemInstance).
+/// Code never names it: Value(CitizenshipWindowData) and Value::get_if<CitizenshipWindowData>() do.
+class CitizenshipBox {
+public:
+    CitizenshipBox(CitizenshipWindowData d) : p_(std::make_unique<CitizenshipWindowData>(std::move(d))) {}
+    CitizenshipBox(const CitizenshipBox& o) : p_(o.p_ ? std::make_unique<CitizenshipWindowData>(*o.p_) : nullptr) {}
+    CitizenshipBox(CitizenshipBox&&) noexcept = default;
+    CitizenshipBox& operator=(const CitizenshipBox& o) { p_ = o.p_ ? std::make_unique<CitizenshipWindowData>(*o.p_) : nullptr; return *this; }
+    CitizenshipBox& operator=(CitizenshipBox&&) noexcept = default;
+    const CitizenshipWindowData* get() const { return p_.get(); }
+    CitizenshipWindowData*       get() { return p_.get(); }
+    bool operator==(const CitizenshipBox& o) const { return p_ && o.p_ ? *p_ == *o.p_ : !p_ && !o.p_; }
+private:
+    std::unique_ptr<CitizenshipWindowData> p_;
+};
+
 /// FHashedVariable (quests, slice 1): the variables of one quest instance, each a 64-bit key (CityHash64 of its name) and an int32 value, in the map's order; NetSerialize (quest_codec.h).
 struct HashedVariable {
     std::vector<std::pair<uint64_t, int32_t>> variables;
@@ -885,7 +901,7 @@ public:
         GameplayTag, GameplayTagContainer, StatInt32Inst,
         Quat, GuidToBoolWrapper, AlignmentContainer, AppearanceId, CharacterCustomization, ItemInstance, InlineObject,
         EventBox, HitConfirmations, PlayerMovementInput, VendorPurchaseCart, VendorTransactionCart, NodeTaxDetails, LocalizedMessage, ChannelingData, CraftItemState,
-        RewardInstance, HashedVariable, WarehouseSummaryEntry, CraftTagSelection, GuildDataWire, CurrencyContainer, CommissionBoardList, CitizenshipWindowData>;
+        RewardInstance, HashedVariable, WarehouseSummaryEntry, CraftTagSelection, GuildDataWire, CurrencyContainer, CommissionBoardList, CitizenshipBox>;
 
     Value() = default;
 // built by C | Y | B with C | O | A
@@ -910,6 +926,9 @@ public:
         if constexpr (std::is_same_v<T, ItemStorageEvent>) {
             const EventBox* b = std::get_if<EventBox>(&v_);
             return b ? b->get() : nullptr;
+        } else if constexpr (std::is_same_v<T, CitizenshipWindowData>) {
+            const CitizenshipBox* b = std::get_if<CitizenshipBox>(&v_);
+            return b ? b->get() : nullptr;
         } else {
             return std::get_if<T>(&v_);
         }
@@ -917,6 +936,9 @@ public:
     template <class T> T* get_if() {
         if constexpr (std::is_same_v<T, ItemStorageEvent>) {
             EventBox* b = std::get_if<EventBox>(&v_);
+            return b ? b->get() : nullptr;
+        } else if constexpr (std::is_same_v<T, CitizenshipWindowData>) {
+            CitizenshipBox* b = std::get_if<CitizenshipBox>(&v_);
             return b ? b->get() : nullptr;
         } else {
             return std::get_if<T>(&v_);

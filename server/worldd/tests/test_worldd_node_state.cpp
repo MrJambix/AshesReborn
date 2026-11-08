@@ -830,7 +830,7 @@ static void test_requests() {
         for (const std::string& n : cd_names) std::printf(" %s", n.c_str());
         std::printf("; cooldown answers sent %zu, requests %zu)\n", h.s->siege_cooldowns_sent(), h.s->node_requests());
     }
-    CHECK(sorted == std::vector<std::string>{"ClientPopulateCitizenshipData", "ClientReceiveAllCurrentNodeSiegeCooldowns"},
+    CHECK((sorted == std::vector<std::string>{"ClientPopulateCitizenshipData", "ClientReceiveAllCurrentNodeSiegeCooldowns"}),
           "ServerRequestAllNodeSiegeCooldowns is answered (the empty array), and the citizenship window (node citizenship)");
     size_t cooldown_bits = 0, window_bits = 0;
     for (const repl::RpcCall& c : cd) {
@@ -838,7 +838,8 @@ static void test_requests() {
         if (std::string(c.rpc->name) == "ClientPopulateCitizenshipData") window_bits = c.param_bits;
     }
     CHECK(cooldown_bits == 1, "the cooldown answer is one bit, as retail's");
-    CHECK(window_bits == 1 + 1024, "the window of a character with no citizenship: its send bit and the empty struct (1,024 bits)");
+    if (window_bits != 1 + 920) std::printf("    (the citizenship window's parameters: %zu bits)\n", window_bits);
+    CHECK(window_bits == 1 + 920, "the window of a character with no citizenship: its send bit and the empty archive (920 bits: five counts and states, the primary's guid and empty name, the dues words and times)");
     CHECK(h.s->citizenship_requests() == 1 && h.s->siege_cooldowns_sent() == 1, "(the citizenship request is counted once)");
 }
 

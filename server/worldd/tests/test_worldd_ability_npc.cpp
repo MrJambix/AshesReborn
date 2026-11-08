@@ -1008,14 +1008,15 @@ int main(int argc, char** argv) {
                 cw.apply_hit_to_npc(d, 77, loss(10.0), now, 0, &strike);
                 std::printf("  [info] Shocked: a hit of 10 took %.1f, %zu further hits\n", before - cw.health_of(d), player.dealt.size());
                 CHECK(player.dealt.size() == 1 && before - cw.health_of(d) > 10.5, "Status_Shocked answers a hit with its own");
-                // a knockback throws it away from its instigator
+                // a knockback record with no force in the data (the prototype's push row names no magnitude) moves nothing since core's pushes play the data (knockbacks:
+                // combat_knockback_tests.inc); before, our crowd table's modelled shove threw it
                 const uint64_t e = w.spawn(wolf_path, 500, 0, 25, 1.0);
                 cw.fighter_of(e);
                 const auto* at = w.registry.find(e);
                 const double ex = at->x;
                 cw.apply_effect_to_npc(e, landed("Prototype_KnockBack_Medium", 1.0), 77, now);
                 run(0.6);
-                CHECK(w.registry.find(e)->x > ex + 100.0, "a knockback moves it away");
+                CHECK(std::abs(w.registry.find(e)->x - ex) < 1.0, "a knockback with no force in the data does not move it");
                 // the owner's hand on its pet: Reconstruct's ticks heal it, Extract's loss starts no fight and cannot make a corpse
                 const pets::Definition& guardian = pets::kDefinitions[0];
                 const uint64_t pet = w.spawn(guardian.archetype, 200, 0, 25, 1.0);

@@ -164,19 +164,27 @@ void test_join() {
     wh.put(kChunk, 0, item(ItemContainer::Backpack, 0, kPotion, 4, 8));
     wh.put(kChunk, 1, item(ItemContainer::Backpack, 1, kPotion, 5, 10));
     const auto open = window();
-    auto res = warehouse::transfer(bags, wh, catalog, open, move(in_bag(ItemContainer::Backpack, 0), in_wh(kChunk, 0), 5, guid_n(1)));
-    CHECK(res.ok && wh.at(kChunk, 0)->quantity == 10 && bags.at(ItemContainer::Backpack, 0)->quantity == 3, "5 onto 8: 2 fit, 3 stay");
-    CHECK(res.steps.size() == 3 && res.steps[0].count == 2 && res.steps[2].item.quantity == 10, "the source's Remove of 2, the target's Remove and Add");
+    // (core's rule: the client clamps a drop to the target's room, so a count above it is refused)
+    CHECK(!warehouse::transfer(bags, wh, catalog, open, move(in_bag(ItemContainer::Backpack, 0), in_wh(kChunk, 0), 5, guid_n(1))).ok && wh.at(kChunk, 0)->quantity == 8,
+          "5 onto 8 (room for 2) is refused, changing nothing");
+    auto join = move(in_bag(ItemContainer::Backpack, 0), in_wh(kChunk, 0), 2, guid_n(1));
+    join.to_guid = guid_n(4);   // (core's rule: a move onto a stack names the stack it lands on, as the client does)
+    auto res = warehouse::transfer(bags, wh, catalog, open, join);
+    CHECK(res.ok && wh.at(kChunk, 0)->quantity == 10 && bags.at(ItemContainer::Backpack, 0)->quantity == 3, "2 onto 8: they join, 3 stay");
+    CHECK(res.steps.size() == 2 && res.steps[0].type == repl::StorageEventType::Remove && res.steps[0].count == 2 && res.steps[1].type == repl::StorageEventType::Add,
+          "the source's Remove of 2, then the target's Add (core's two steps)");
     CHECK(!warehouse::transfer(bags, wh, catalog, open, move(in_bag(ItemContainer::Backpack, 1), in_wh(kChunk, 1), 4, guid_n(2))).ok, "a full stack takes nothing");
     CHECK(!warehouse::transfer(bags, wh, catalog, open, move(in_bag(ItemContainer::Backpack, 2), in_wh(kChunk, 1), 1, guid_n(3))).ok, "another item is no join");
 
     wh.erase(kChunk, 1);
     wh.put(kChunk, 1, item(ItemContainer::Backpack, 1, kPotion, 5, 2));
-    res = warehouse::transfer(bags, wh, catalog, open, move(in_wh(kChunk, 1), in_bag(ItemContainer::Backpack, 1), 2, guid_n(5)));
+    auto back = move(in_wh(kChunk, 1), in_bag(ItemContainer::Backpack, 1), 2, guid_n(5));
+    back.to_guid = guid_n(2);
+    res = warehouse::transfer(bags, wh, catalog, open, back);
     CHECK(res.ok && !wh.at(kChunk, 1) && bags.at(ItemContainer::Backpack, 1)->quantity == 6 && bags.at(ItemContainer::Backpack, 1)->instance_guid == guid_n(2), "a chunk's whole stack joins the bag's, which keeps its instance");
     auto fill = move(in_wh(kChunk, 0), in_wh(kChunk, 9), 1, guid_n(4));
     fill.type = repl::StorageEventType::Fill;
-    CHECK(!warehouse::transfer(bags, wh, catalog, open, fill).ok, "a Fill needs a stack to join");
+    CHECK(warehouse::transfer(bags, wh, catalog, open, fill).ok && wh.at(kChunk, 9) && wh.at(kChunk, 9)->quantity == 1, "a Fill onto a free slot is a Move of that part (core's rule)");
 }
 
 void test_containers() {

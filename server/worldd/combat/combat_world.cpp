@@ -1921,7 +1921,7 @@ void CombatWorld::apply_effect_to_npc(uint64_t npc_actor, const LandedEffect& e,
         effects_changed(*n, now);
         // a knockback throws it away from the one who hit it
         const CrowdControlRow* crowd = crowd_control(row.crowd_control_guid);
-        if (crowd && crowd->push_cm > 0 && npcs_world_) {
+        if (crowd && crowd->push_cm > 0 && npcs_world_ && !(e.def->cc && e.def->cc->has_push_row)) {   // (a record the data pushes is played by track_push, with the data's force)
             const world::WorldActor* at = registry_.find(npc_actor);
             PlayerPort* from = player(by);
             if (at && from) {
@@ -2412,7 +2412,13 @@ void CombatWorld::effects_changed(Npc& n, double now) {
     n.pace = std::clamp((1.0 - snare) * (1.0 + speed_mods), 0.05, 4.0);
     if (npcs_world_) {
         npcs_world_->set_pace(n.actor_id, n.pace);
-        npcs_world_->set_held(n.actor_id, (status & kCrowdStopsMoving) != 0);   // (also when it comes down from a throw or a push still rooted)
+        // (also when it comes down from a throw or a push still rooted; but not under one of our crowd table's knockbacks, which move it by a short walk: apply_effect_to_npc)
+        bool shoved = false;
+        for (const Npc::HeldEffect& h : n.effects) {
+            const CrowdControlRow* row = h.def ? crowd_control(h.def->row.crowd_control_guid) : nullptr;
+            shoved = shoved || (row && row->push_cm > 0 && !(h.def->cc && h.def->cc->has_push_row));   // (a record the data pushes is core's push: npc/displacement.h)
+        }
+        npcs_world_->set_held(n.actor_id, (status & kCrowdStopsMoving) != 0 && !shoved);
     }
     if (stopped_now) {
         stop_cast(n);

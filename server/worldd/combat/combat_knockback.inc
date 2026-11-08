@@ -196,6 +196,7 @@ void CombatWorld::track_push(Npc& n, const PushNow& was, const PushNow& cc) {
     else return;   // (a push by time: the data has it for tests only)
     PlayerPort* by = player(cc.instigator);
     if (!by) return;   // (nobody to push from: its effect ends with him)
+    if (rec.push_magnitude_expr == 0) return;   // ours: a push with no force moves nothing (a prototype record); it does not hold the creature still either (our crowd table's shove moves it)
     const Vec3 rel{rec.push_origin_rel_x, rec.push_origin_rel_y, rec.push_origin_rel_z};
     const OriginFrame frame = origin_frame(rec.push_origin_location, rec.push_origin_orientation, rel, origin_actors(n, by));
     if (!frame.ok) {

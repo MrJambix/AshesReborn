@@ -565,13 +565,11 @@ bool PlayerSession::warehouse_event(Connection& conn, const repl::ItemStorageEve
         }
         events.push_back(std::move(ev));
     }
-    if (res.steps.size() == 2) {
-        for (bootstrap::ItemEvent& ev : events) {
-            if (ev.container) continue;
-            std::vector<bootstrap::ItemEvent> one{ev};
-            add_item_toasts(one, /*removals=*/true);
-            ev.callout = one[0].callout;
-        }
+    for (bootstrap::ItemEvent& ev : events) {
+        if (ev.container) continue;
+        std::vector<bootstrap::ItemEvent> one{ev};
+        add_item_toasts(one, /*removals=*/true);
+        ev.callout = one[0].callout;
     }
     wh_bank_->changed();
     inventory_dirty_ = true;
@@ -580,6 +578,7 @@ bool PlayerSession::warehouse_event(Connection& conn, const repl::ItemStorageEve
     ++wh_moves_;
     queue("ClientReceiveStorageEvent", [events](bootstrap::PlayerBootstrap& pb) { return pb.item_events(events); }, conn, /*must_build=*/true);
     if (worn.equipment_changed) apply_outcome(conn, worn, "a crate moved with the warehouse");
+    follow_linked_stack(conn, events);
     spdlog::log(level_for(wh_logged_), "[session] {}: a stack moves {} the warehouse ({} event(s))", name(), from_wh && to_wh ? "inside" : from_wh ? "out of" : "into", events.size());
     return true;
 }
