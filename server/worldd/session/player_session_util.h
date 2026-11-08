@@ -28,7 +28,6 @@
 #include "session/gm_travel.h"
 #include "session/player_presence.h"
 #include "session/summoner_pets.h"
-#include "items/reward_boxes.h"
 #include "protocol/repl/rpc_fields.h"
 #include "items/acquired.h"
 #include "vendor/node_tax.h"

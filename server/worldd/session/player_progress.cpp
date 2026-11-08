@@ -242,7 +242,6 @@ void PlayerSession::on_item_activated(Connection& conn, const repl::ItemUse& use
         if (!cast) return refuse("this item's activation names no ability");
         return;
     }
-    if (activation && activation->activation == "OpenRewardSelection") return open_reward_box(conn, use, item, now);
     if (activation && activation->activation == "LearnRecipes") return learn_recipes(conn, use, item, *activation, now);
     // The Guild Creation Scroll.  Its record consumes it on use, which would lose it to a window closed unused and a founding refused: it stays in
     // the bag, and a guild costs nothing, as GuildCost says.

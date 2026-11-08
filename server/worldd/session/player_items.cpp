@@ -126,7 +126,7 @@ std::string PlayerSession::fresh_guid() {
     }
 }
 
-void PlayerSession::apply_outcome(Connection& conn, const items::Outcome& outcome, const char* what) {
+void PlayerSession::apply_outcome(Connection& conn, const items::Outcome& outcome, const char* what, bool with_toasts) {
     inventory_dirty_ = true;
     inventory_changed_ = true;
     ++items_applied_;
@@ -142,6 +142,7 @@ void PlayerSession::apply_outcome(Connection& conn, const items::Outcome& outcom
     }
     if (outcome.equipment_changed) apply_gear_stats();   // before the replies are queued: they are built later, and carry the stats' deltas
     std::vector<bootstrap::ItemEvent> events = item_events_for(outcome);
+    if (with_toasts) add_item_toasts(events, /*removals=*/true);
     // the storage events go first (the PlayerController's chain), then the pawn's visible gear: the order and the packet of the retail answer
     queue("ClientReceiveStorageEvent", [events](bootstrap::PlayerBootstrap& pb) { return pb.item_events(events); }, conn, /*must_build=*/true);
     if (outcome.equipment_changed) {
@@ -408,6 +409,8 @@ void PlayerSession::on_item_used(Connection& conn, const repl::ClientRpc& rpc, C
             const auto info = catalog_->info(item->item_record_id);
             if (!info || !info->wearable()) {
                 const svc::InventoryItem copy = *item;   // the inventory changes under the use
+                // chests: a random coffer rolls its table, a selector opens its reward window; neither is a generic item action
+                if (open_chest(conn, *use, copy, now)) return;
                 return on_item_activated(conn, *use, copy, now);
             }
         }
@@ -472,95 +475,6 @@ void PlayerSession::on_tier_up(Connection& conn, const repl::ItemUse& use, svc::
     const std::string to_name = !product_record->display_name.empty() ? product_record->display_name : product_record->name;
     spdlog::log(level_for(use_logged_), "[session] {}: a Glint tier change: {} x{} in {} slot {} became {} x1 in {} slot {}, {} storage event(s)", name(), from_name, stack.quantity, bag, use.slot,
                 to_name, items::container_name(arrival.container), arrival.slot, outcome.events.size());
-}
-
-void PlayerSession::open_reward_box(Connection& conn, const repl::ItemUse& use, const svc::InventoryItem& item, Clock::time_point now) {
-    const char* what = "ServerItemUsed (a reward box)";
-    const auto refuse = [&](const std::string& why) {
-        ++uses_refused_;
-        refuse_item_request(conn, what, why, now);
-    };
-    const int64_t table_guid = items::reward_box_table(item.item_record_id);
-    if (table_guid == 0) return refuse("item record " + std::to_string(item.item_record_id) + " opens a reward window, but names no reward table");
-    const content::ContentDb* db = world_ ? world_->content() : nullptr;
-    if (!db) return refuse("worldd has no content.db to read the box's rewards from");
-    std::string error;
-    const auto tables = db->loot_tables({table_guid}, error);
-    if (!tables) return refuse("content.db failed: " + error);
-    const auto found = tables->find(table_guid);
-    if (found == tables->end()) return refuse("the reward table " + std::to_string(table_guid) + " is not in content.db");
-    const content::LootTable* table = &found->second;
-    const abilities::Catalog* ability_catalog = world_->ability_catalog();
-    RewardChoice choice;
-    choice.box_guid = item.instance_guid;
-    choice.slot = use.slot;
-    repl::RewardInstance reward;
-    const int64_t created = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() * 1000;
-    for (const content::LootContainer& container : table->containers) {
-        for (const content::LootReward& line : container.rewards) {
-            for (const content::LootItem& r : line.items) {
-                const auto record = db->item(r.item, error);
-                if (!record) return refuse(error.empty() ? table->name + " lists item record " + std::to_string(r.item) + ", which content.db does not have" : "content.db failed: " + error);
-                // the data's quantities here are plain numbers: 1, 3, 5, 10 and 20
-                const content::ExprRow* quantity = ability_catalog ? ability_catalog->expr(r.qty) : nullptr;
-                svc::InventoryItem it;
-                it.container = svc::ItemContainer::Backpack;
-                it.item_record_id = r.item;
-                it.instance_guid = fresh_guid();
-                it.quantity = std::max(1, quantity ? std::atoi(quantity->text.c_str()) : 1);
-                it.quality = record->default_quality;
-                it.durability = record->max_durability_at(it.quality);
-                it.created_at_ms = created;
-                reward.items.push_back(items::to_instance(it));
-                choice.items.push_back(std::move(it));
-            }
-        }
-    }
-    if (choice.items.empty()) return refuse("the reward table " + table->name + " lists nothing");
-    const auto box = items::guid_of(item.instance_guid);
-    if (!box) return refuse("the box's instance guid does not read");
-    const repl::GuidValue box_guid = *box;
-    const size_t listed = choice.items.size();
-    reward_choice_ = std::move(choice);
-    ++uses_applied_;
-    queue("ClientOpenRewardSelection", [box_guid, reward](bootstrap::PlayerBootstrap& pb) { return pb.open_reward_selection(box_guid, reward); }, conn, /*must_build=*/true);
-    spdlog::log(level_for(use_logged_), "[session] {}: a reward box opens: {} lists {} item(s)", name(), table->name, listed);
-}
-
-void PlayerSession::on_select_reward(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
-    const char* what = "ServerSelectReward";
-    if (!within_budget(item_budget_, what, now) || !room_for(4)) return;
-    const auto refuse = [&](const std::string& why) {
-        ++uses_refused_;
-        refuse_item_request(conn, what, why, now);
-    };
-    if (!reward_choice_) return refuse("no reward window is open");
-    const RewardChoice choice = std::move(*reward_choice_);
-    reward_choice_.reset();   // (one answer to one window)
-    const auto index = repl::rpcf::int_or(repl::rpcf::value_of(*rpc.call.rpc, rpc.call.params, "Index"), 0);
-    if (!index || *index < 0 || static_cast<size_t>(*index) >= choice.items.size()) return refuse("the choice is not one of the window's " + std::to_string(choice.items.size()));
-    const svc::InventoryItem* box = inventory_.at(svc::ItemContainer::Backpack, choice.slot);
-    if (!box || box->instance_guid != choice.box_guid) return refuse("the box is no longer where its window was opened");
-    const std::vector<svc::InventoryItem> chosen{choice.items[static_cast<size_t>(*index)]};
-    items::Inventory trial = inventory_;
-    trial.consume(svc::ItemContainer::Backpack, choice.slot, choice.box_guid, 1);
-    if (!trial.can_grant(chosen, item_catalog())) return refuse("the bags have no room for the reward: the box stays");
-    items::Outcome all = inventory_.consume(svc::ItemContainer::Backpack, choice.slot, choice.box_guid, 1);
-    if (!all.ok) return refuse(all.refusal);
-    const items::Outcome granted = inventory_.grant(chosen, item_catalog());
-    if (!granted.ok) {
-        // the room was checked: a refusal here is a record the table refuses, not something the client can cause
-        spdlog::error("[session] {}: the reward is not granted ({}): the box was consumed and nothing came of it", name(), granted.refusal);
-    } else {
-        all.events.insert(all.events.end(), granted.events.begin(), granted.events.end());
-    }
-    inventory_dirty_ = true;
-    inventory_changed_ = true;
-    ++items_applied_;
-    std::vector<bootstrap::ItemEvent> events = item_events_for(all);
-    add_item_toasts(events, /*removals=*/false);
-    queue("ClientReceiveStorageEvent", [events](bootstrap::PlayerBootstrap& pb) { return pb.item_events(events); }, conn, /*must_build=*/true);
-    spdlog::log(level_for(use_logged_), "[session] {}: a reward box gave item record {} (choice {} of {})", name(), chosen[0].item_record_id, *index, choice.items.size());
 }
 
 void PlayerSession::on_storage_event_request(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
@@ -816,8 +730,6 @@ void PlayerSession::register_items_rpcs(RpcTable& t) {
     t.add(RpcScope::Pawn, "ServerRequestStorageData", [](PlayerSession& s, const RpcContext& c) { s.on_storage_request(c.conn, c.rpc, c.now); });
     t.add(RpcScope::Pawn, "ServerItemUsed", [](PlayerSession& s, const RpcContext& c) { s.on_item_used(c.conn, c.rpc, c.now); });
     t.add(RpcScope::Pawn, "ServerActivateItem", [](PlayerSession& s, const RpcContext&) { s.on_activate_item_ignored(); });
-    t.add(RpcScope::PlayerController, "ServerSelectReward", [](PlayerSession& s, const RpcContext& c) { s.on_select_reward(c.conn, c.rpc, c.now); });
-    t.add(RpcScope::PlayerController, "ServerCancelSelectReward", [](PlayerSession& s, const RpcContext&) { s.reward_choice_.reset(); });   // (the box stays in the bag)
 }
 
 }}  // namespace aoc::worldd

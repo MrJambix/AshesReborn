@@ -16,7 +16,6 @@
 #include "session/members/chat.inc"
 #include "session/members/destiny.inc"
 #include "session/members/consumables.inc"
-#include "session/members/reward_boxes.inc"
 #include "session/members/currency.inc"
 #include "session/members/presence.inc"
 #include "session/members/auto_attack.inc"
@@ -31,4 +30,5 @@
 #include "session/members/citizenship.inc"
 #include "session/members/commissions.inc"
 #include "session/members/mount_command.inc"
+#include "session/members/chests.inc"
 #include "session/members/surface_move.inc"
