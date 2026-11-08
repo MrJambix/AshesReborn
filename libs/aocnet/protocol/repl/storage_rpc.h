@@ -142,8 +142,8 @@ struct LootPayload {
 std::optional<RpcParams> loot_payload_params(const schema::RpcSchema& rpc, const LootPayload& payload);
 std::optional<LootPayload> parse_loot_payload(const RpcCall& call);
 
-/// The events of a decoded ServerRequestLootStorageEvents call (none when the array is empty); nullopt for another RPC, an undecoded call or an array of
-/// more than 256 events.
+/// The events of a decoded ServerRequestLootStorageEvents call (none when the array is empty), or the one event of a ServerRequestLootStorageEvent call;
+/// nullopt for another RPC, an undecoded call or an array of more than 256 events.
 std::optional<std::vector<ItemStorageEvent>> parse_loot_events(const RpcCall& call);
 
 /// Crafting, step 2: the parameters of a ClientRecieveBatchedStorageEvents call (the game's spelling), the call that hands a collected job's items to the bags: ItemEvents, an array of

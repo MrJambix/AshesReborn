@@ -602,6 +602,8 @@ void PlayerSession::on_loot_request(Connection& conn, const repl::ClientRpc& rpc
 /// The client calls of the loot window (session/rpc_table.h).
 void PlayerSession::register_combat_rpcs(RpcTable& t) {
     t.add(RpcScope::PlayerController, "ServerRequestLootStorageEvents", [](PlayerSession& s, const RpcContext& c) { s.on_loot_request(c.conn, c.rpc, c.now); });
+    // the one-stack form (a stack dragged out of the window, 3 November: "ignoring the client's ServerRequestLootStorageEvent"): the same take
+    t.add(RpcScope::PlayerController, "ServerRequestLootStorageEvent", [](PlayerSession& s, const RpcContext& c) { s.on_loot_request(c.conn, c.rpc, c.now); });
 }
 
 }}  // namespace aoc::worldd

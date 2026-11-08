@@ -652,6 +652,23 @@ static void test_mover() {
           "a zero or NaN step does nothing");
     CHECK(m.advance(1.0) == npc::Mover::Status::Moving && std::fabs(m.ground().x - 100.0) < 1e-6, "a step of a second at 100 cm/s: 100 cm");
     CHECK(m.advance(10.0) == npc::Mover::Status::Arrived && std::fabs(m.ground().x - 300.0) < 1e-6, "a long step ends at the end of the path");
+    // a walk that stops short arrives, whatever the rounding of its last step: one that ended a hair outside its stop distance stayed Moving, crept on by nothing
+    // at every step and was sent as walking while it stood (a pet following its owner at 250 cm: "moved 0 cm in 5 s ... sent as walking true", 4 November)
+    int never = 0;
+    for (int i = 0; i < 200; ++i) {
+        npc::Mover p;
+        p.init(&n, 96.0, 360.0);
+        p.place(-5000.0 + i * 13.37, 300.0 + i * 7.11, 1000, 0);
+        if (!p.move_to({-2600.0 + i * 3.3, 250.0 - i * 1.7, 1000}, 720.0, 250.0)) continue;
+        int steps = 0;
+        while (p.moving() && steps < 2000) {
+            p.advance(1.0 / 15.0);
+            ++steps;
+        }
+        if (p.moving()) ++never;
+    }
+    std::printf("  [info] walks that stop 250 cm short and never arrive: %d of 200\n", never);
+    CHECK(never == 0, "every walk that stops 250 cm short arrives");
 }
 
 // ---- the table, hostile inputs, no navmesh, the cost ---------------------------------------------------------------------------------------------

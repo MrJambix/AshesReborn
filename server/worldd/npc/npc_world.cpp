@@ -636,7 +636,12 @@ void NpcWorld::pursue_step(Npc& n, double) {
         return;
     }
     const nav::Vec3 g = n.mover.ground();
-    if (std::hypot(at.x - g.x, at.y - g.y) <= n.pursue_stop) return;   // where it wants to be: the AI judges its range
+    if (std::hypot(at.x - g.x, at.y - g.y) <= n.pursue_stop) {   // where it wants to be: the AI judges its range
+        // a walk under way (to where the target was) ends here: the target came nearer than the walk's end, and a pursuer left on it walked on or, its path's stop distance
+        // not reached, stood sent as walking (a pet whose owner stepped up to it: "the pet is 221 cm from its owner, moved 0 cm ... sent as walking true")
+        if (n.mover.moving()) n.mover.stop();
+        return;
+    }
     // on its way, and the target has not gone far from where the way was found to lead: the way is kept and its end follows the target
     if (n.mover.moving() && std::hypot(at.x - n.pursue_plan_x, at.y - n.pursue_plan_y) < 200.0 && n.mover.set_end(at.x, at.y)) {
         n.pursue_x = at.x;

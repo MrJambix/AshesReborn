@@ -360,7 +360,14 @@ std::optional<LootPayload> parse_loot_payload(const RpcCall& call) {
 }
 
 std::optional<std::vector<ItemStorageEvent>> parse_loot_events(const RpcCall& call) {
-    if (!call.rpc || !call.decoded || !call.rpc->name || std::string_view("ServerRequestLootStorageEvents") != call.rpc->name) return std::nullopt;
+    if (!call.rpc || !call.decoded || !call.rpc->name) return std::nullopt;
+    // the one-event form (ServerRequestLootStorageEvent, ItemEvent: one FItemStorageEvent): the same take, of one stack
+    if (std::string_view("ServerRequestLootStorageEvent") == call.rpc->name) {
+        auto one = parse_storage_event(call);
+        if (!one) return std::nullopt;
+        return std::vector<ItemStorageEvent>{std::move(*one)};
+    }
+    if (std::string_view("ServerRequestLootStorageEvents") != call.rpc->name) return std::nullopt;
     const RepCommand* c = rpc_command(*call.rpc, "ItemEvents");
     if (!c || c->type != PropType::DynamicArray) return std::nullopt;
     const auto it = call.params.values.find(c->handle);

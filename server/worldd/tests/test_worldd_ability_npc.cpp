@@ -1090,6 +1090,31 @@ int main(int argc, char** argv) {
                     }
                     std::printf("  [info] following a walking owner: %d stops in 4 s, %.0f cm behind\n", stops, last_y - owner_at->y);
                     CHECK(stops <= 2, "a pet following a walking owner keeps walking");
+                    // ... and stands when it has caught up, not sent as walking on the spot (4 November: "moved 0 cm in 5 s ... sent as walking true" at 250 and 221 cm)
+                    const auto sent_walking = [&]() {
+                        const auto* a = w.registry.find(follower);
+                        const ::aoc::protocol::repl::Value* v = a && a->actor.obj.schema ? a->actor.obj.state.get(*a->actor.obj.schema, "CurrentMovementInput") : nullptr;
+                        const auto* in = v ? v->get_if<::aoc::protocol::repl::PlayerMovementInput>() : nullptr;
+                        return in && in->bits != 0;
+                    };
+                    const auto settle = [&](double seconds) {
+                        for (int i = 0; i < static_cast<int>(seconds * 10); ++i) {
+                            now += 0.1;
+                            w.npcs->note_player(77, 0, 0, now);
+                            w.npcs->tick(now);
+                        }
+                    };
+                    settle(4.0);
+                    const auto* f = w.registry.find(follower);
+                    const double gap = std::hypot(f->x - owner_at->x, f->y - owner_at->y);
+                    std::printf("  [info] the owner stopped: the pet stands %.0f cm from it\n", gap);
+                    CHECK(gap < 400.0 && !sent_walking(), "the owner stops: the pet catches up and stands, not sent as walking");
+                    owner_at->y += (owner_at->y < f->y ? 1.0 : -1.0) * std::max(0.0, gap - 150.0);   // (the owner steps up to it)
+                    settle(1.0);
+                    const double x0 = w.registry.find(follower)->x, y0 = w.registry.find(follower)->y;
+                    settle(2.0);
+                    CHECK(!sent_walking() && std::hypot(w.registry.find(follower)->x - x0, w.registry.find(follower)->y - y0) < 1.0,
+                          "the owner steps up to it: the pet stays where it is and is not sent as walking");
                     w.npcs->halt(follower);
                 }
                 // Lunge: the melee Hunter closes in a leap, not a run

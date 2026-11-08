@@ -157,7 +157,9 @@ Mover::Status Mover::advance(double dt, bool turn) {
     // end short of the destination when asked
     if (stop_distance_ > 0) {
         const double left = remaining();
-        if (left <= stop_distance_) {
+        // (within a centimetre: the step that brought it to its stop distance can end a rounding error outside it, and it would creep on by nothing at every step,
+        // Moving and sent as walking while it stands)
+        if (left <= stop_distance_ + kStopSlackCm) {
             finish(Status::Arrived);
             return status_;
         }

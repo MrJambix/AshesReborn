@@ -1,11 +1,13 @@
 # Patch notes
 
-## Next update: melody switching and pets
+## Next update: melodies, pets and loot
 
 ### Fixed
 - Bard: switching melodies now stops the old melody as soon as you press the new one, instead of about two seconds later.
 - Bard: when the game ends a melody on its own, the server now ends it too. Before, the melody kept playing on the server, and your next press to start it again turned it off instead.
 - Summoner: the effects your pet's attacks leave on a creature now end when the pet is dismissed, dies or despawns. Effects from your own attacks stay.
+- Summoner: your pet no longer walks on the spot once it has caught up with you. The same fix stops creatures and people walking in place when they reach the end of a short walk.
+- Loot: dragging a single item out of a loot window into your bag now works. Before, only "take all" did.
 
 ## 2026-11-04: Bard melodies
 

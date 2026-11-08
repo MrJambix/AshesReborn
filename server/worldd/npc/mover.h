@@ -34,6 +34,8 @@ public:
         Arrived,   // got there (until the next order)
         Blocked,   // no way: the destination is off the navmesh or not connected to where it stands
     };
+    /// A walk that stops short has arrived this near its stop distance (a rounding error of its last step must not leave it Moving).
+    static constexpr double kStopSlackCm = 1.0;
 
     Mover() = default;
 

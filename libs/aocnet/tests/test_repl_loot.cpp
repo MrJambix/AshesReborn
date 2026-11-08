@@ -108,6 +108,22 @@ int main() {
             }
             CHECK(shape, (label + ": each is a type-3 move of one slot of the loot container into one slot of the bag").c_str());
             CHECK((*ev)[0].move_source.slots[0].slot == 0 && (*ev)[1].move_source.slots[0].slot == 1, (label + ": the slots are the window's").c_str());
+            // the one-stack form (no recording: built from this call's first event), read as a take of that one stack
+            if (const schema::RpcSchema* single = pc->rpc("ServerRequestLootStorageEvent")) {
+                const auto one_params = storage_event_params(*single, (*ev)[0]);
+                CHECK(one_params.has_value(), (label + ": the first event builds a ServerRequestLootStorageEvent").c_str());
+                if (one_params) {
+                    RpcCall one;
+                    one.rpc = single;
+                    one.params = *one_params;
+                    one.decoded = true;
+                    const auto got = parse_loot_events(one);
+                    CHECK(got && got->size() == 1 && (*got)[0].move_source.slots[0].slot == 0 && (*got)[0].item.guid == (*ev)[0].item.guid,
+                          "ServerRequestLootStorageEvent reads as one take of its stack");
+                }
+            } else {
+                CHECK(false, "the PlayerController has ServerRequestLootStorageEvent");
+            }
         } else if (name == "ClientReceiveStorageEvent") {
             ++events;
             const auto e = parse_storage_event(call);
