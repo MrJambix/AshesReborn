@@ -286,6 +286,32 @@ void PlayerSession::on_citizenship_dues(Connection& conn, const repl::ClientRpc&
     });
 }
 
+void PlayerSession::run_citizenship(Connection& conn) {
+    const int64_t now_ms = wall_ms();
+    if (now_ms - citizenship_checked_ms_ < 5000) return;
+    citizenship_checked_ms_ = now_ms;
+    // another session of the account changed it (the world keeps the latest): this one follows, and leaves the saving to that one
+    if (const svc::Citizenship* shared = world_ ? world_->account_citizenship(account_id_) : nullptr; shared && *shared != citizenship_) {
+        citizenship_ = *shared;
+        citizenship_offer_.reset();
+        ++citizenship_adopted_;
+        spdlog::info("[nodes] {}: the account's citizenship changed in another of its sessions: node {}", name(), citizenship_.node_guid);
+        if (pb_.set_citizen_node(citizenship_.node_guid) && room_for(1)) queue("OwnerInfo", [](bootstrap::PlayerBootstrap& pb) { return pb.currencies_update(); }, conn);
+    }
+    // unpaid dues: at risk once overdue, lapsed after the node's time at risk
+    const world::CitizenshipRules* rules = world_ ? world_->citizenship_rules() : nullptr;
+    if (!rules || citizenship_.node_guid == 0) return;
+    const int64_t lapse = rules->lapse_ms(citizenship_.node_guid, citizenship_.dues_due_ms);
+    if (lapse == 0 || now_ms < lapse) return;
+    const int64_t node = citizenship_.node_guid;
+    ++citizenship_lapses_;
+    spdlog::info("[nodes] {}: the account's citizenship of node {} lapses: its dues were due at {} ms and stayed unpaid past {} ms", name(), node, citizenship_.dues_due_ms, lapse);
+    set_citizenship(conn, svc::Citizenship{}, "the citizenship's lapse");
+    send_citizenship_call(conn, "ClientShowCitizenshipToast", [node](const schema::RpcSchema& s, repl::RpcParams& p) {
+        return repl::set_rpc_param(s, p, "NodeGuid", repl::Value::i64(node)) && repl::set_rpc_param(s, p, "bRenouncing", repl::Value::boolean(true));
+    });
+}
+
 repl::CitizenshipWindowData PlayerSession::citizenship_window(int64_t now_ms) const {
     repl::CitizenshipWindowData d;
     if (citizenship_.node_guid == 0) return d;   // no citizenship: the window shows the non-citizen's panel
@@ -306,6 +332,7 @@ repl::CitizenshipWindowData PlayerSession::citizenship_window(int64_t now_ms) co
     s.dues_paid = due > now_ms ? s.dues_required : 0;
     s.dues_level_impact = s.dues_rank_impact = s.dues_non_owner_impact = 1.0;   // modelled: the dues' expressions are not run
     s.dues_overdue = due > 0 && now_ms >= due;
+    if (rules && due > 0 && now_ms >= rules->overdue_ms(due)) s.at_risk_start = static_cast<double>(rules->overdue_ms(due)) / 1000.0;   // CitizenshipAtRiskStartTime (Unix seconds)
     s.rank = 1;                                                               // modelled
     s.player_level = progress_.level;
     s.highest_level = progress_.level;

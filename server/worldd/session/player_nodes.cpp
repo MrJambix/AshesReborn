@@ -114,6 +114,7 @@ void PlayerSession::on_siege_cooldowns_request() {
 
 void PlayerSession::run_nodes(Connection& conn) {
     if (finished_ || failed_ || !join_.empty()) return;   // (the join includes the pawn's second state: the client's world exists, as retail's answers assume)
+    run_citizenship(conn);
     const world::CityNodes* nodes = world_ ? world_->city_nodes() : nullptr;
     const world::NodeWire* wire = world_ ? world_->node_wire() : nullptr;
     // room for a reply, leaving the others theirs (an answer burst of 98 must not starve a purchase's reply): no log when it is full, the next tick tries again

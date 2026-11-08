@@ -4,9 +4,10 @@
 
 ### New
 - Node citizenship: talk to the Sheriff of a node that is a Village or a Town to become a citizen of that node. You need to be level 10, and joining costs 20 Tax Vouchers. The window that opens has a button to buy them, for 4 Dull Glint each. Your whole account is a citizen of the one node, and your other characters share it.
-- Citizenship dues are 1 Tax Voucher every two weeks, due on Thursdays. Dues paid more than five days late cost 5 Tax Vouchers more.
+- Citizenship dues are 1 Tax Voucher every two weeks, due on Thursdays. Dues paid more than five days late cost 5 Tax Vouchers more, and put your citizenship at risk: if they stay unpaid for another week, your account loses its citizenship.
 - You can renounce your citizenship at the Sheriff, and join a node again straight away.
 - The citizenship tab of the node window now shows your citizenship, your characters and your dues. Before, it stayed empty.
+- If another of your characters is online when your citizenship changes, it sees the change within a few seconds.
 
 ### Fixed
 - Commission boards: a commission you take no longer shows as complete straight away. It stays in progress until you finish its objectives, and then you can turn it in. A commission you have turned in shows as complete on the board until the board refreshes.

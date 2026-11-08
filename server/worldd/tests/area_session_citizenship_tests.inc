@@ -230,6 +230,33 @@ void test_citizenship_flow() {
     h.run(milliseconds(300));
     calls = pc_calls_since(h, from);
     CHECK(count_calls(calls, "ClientShowAddNodeCitizenshipDialog") == 0, "no join dialog during the cooldown");
+
+    // another session of the account changes it: this one follows, without saving it again
+    svc::Citizenship other;
+    other.node_guid = kTestCitizenNode;
+    other.primary_character_id = "0123456789abcdef0123456789abcdef";
+    other.joined_ms = now_ms;
+    other.dues_due_ms = now_ms - 20LL * 86400000;   // twenty days ago: past the 5 overdue days and the 7 at risk
+    h.fx.world->set_account_citizenship(h.record.account_id, other);
+    h.s->set_citizenship_for_test(svc::Citizenship{});
+    // (the lapse is judged right after the adoption: first check the adoption with dues that are fine)
+    svc::Citizenship fine = other;
+    fine.dues_due_ms = now_ms + 86400000;
+    h.fx.world->set_account_citizenship(h.record.account_id, fine);
+    h.s->run_citizenship_for_test(h.conn);
+    CHECK(h.s->citizenship() == fine && h.s->citizenship_adopted() == 1, "a change another session of the account made is followed");
+    // dues unpaid far too long: the citizenship lapses
+    h.fx.world->set_account_citizenship(h.record.account_id, other);
+    from = h.got.size();
+    h.s->run_citizenship_for_test(h.conn);
+    h.run(milliseconds(300));
+    calls = pc_calls_since(h, from);
+    CHECK(h.s->citizenship_lapses() == 1 && h.s->citizenship().node_guid == 0 && count_calls(calls, "ClientShowCitizenshipToast") == 1,
+          "dues unpaid past the overdue date and the time at risk: the citizenship lapses, with the toast");
+    const svc::Citizenship* after_lapse = h.fx.world->account_citizenship(h.record.account_id);
+    CHECK(after_lapse && after_lapse->node_guid == 0, "... for the whole account");
+    world::CitizenshipRules r;
+    CHECK(r.lapse_ms(1, 1000) == 1000 + 5LL * 86400000 + 7LL * 86400000 && r.lapse_ms(1, 0) == 0, "the lapse: the due date, 5 overdue days, 7 at risk; none without a due date");
 }
 
 }  // namespace

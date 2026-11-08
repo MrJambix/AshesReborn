@@ -34,6 +34,8 @@ private:
     void send_citizenship_call(Connection& conn, const char* rpc, std::function<bool(const protocol::schema::RpcSchema&, repl::RpcParams&)> fill);
     /// Takes `cost` Tax Receipts (the TaxVoucher items); the events go to the client and the bag is saved.  False with `why`, changing nothing, when the bags hold fewer.
     bool pay_tax_receipts(Connection& conn, int32_t cost, std::string& why);
+    /// Every few seconds: the account's citizenship as another session of it changed it (adopted, not saved again), and a citizenship whose dues stayed unpaid too long lapses.
+    void run_citizenship(Connection& conn);
     /// The node at the NPC's place: its guid and level (0 and -1 for none).
     std::pair<int64_t, int> citizenship_node_at(double x, double y) const;
     svc::Citizenship                citizenship_;
@@ -41,6 +43,8 @@ private:
     std::optional<CitizenshipOffer> citizenship_offer_;
     RequestBudget                   citizenship_budget_{kVendorBurst, kVendorInterval};
     size_t                          citizenship_log_ = 0;
+    int64_t                         citizenship_checked_ms_ = 0;   // run_citizenship's last look
+    uint32_t citizenship_lapses_ = 0, citizenship_adopted_ = 0;
     uint32_t citizenship_joins_ = 0, citizenship_renounces_ = 0, citizenship_dues_paid_ = 0, citizenship_refused_ = 0, citizenship_windows_ = 0, citizenship_dialogs_ = 0;
 public:
     const svc::Citizenship& citizenship() const { return citizenship_; }
@@ -50,6 +54,10 @@ public:
     uint32_t citizenship_refused() const { return citizenship_refused_; }
     uint32_t citizenship_windows() const { return citizenship_windows_; }
     uint32_t citizenship_dialogs() const { return citizenship_dialogs_; }
+    uint32_t citizenship_lapses() const { return citizenship_lapses_; }
+    uint32_t citizenship_adopted() const { return citizenship_adopted_; }
+    /// A test: run_citizenship now (not waiting for its few seconds).
+    void run_citizenship_for_test(Connection& conn) { citizenship_checked_ms_ = 0; run_citizenship(conn); }
     /// The node of the standing offer (0: none).
     int64_t citizenship_offer_node() const { return citizenship_offer_ ? citizenship_offer_->node : 0; }
     /// A test: the Node Administrator's line for `npc`, as the conversation runs it.

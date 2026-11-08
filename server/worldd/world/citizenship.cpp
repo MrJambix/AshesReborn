@@ -101,6 +101,12 @@ std::optional<CitizenshipRules> CitizenshipRules::load(const std::string& path, 
             if (days >= 0 && days <= 365) r.overdue_days = days;
         }
     }
+    {
+        Stmt st;   // (a content.db without the column keeps the default)
+        if (sqlite3_prepare_v2(db.db, "SELECT guid, citizenship_at_risk_secs FROM city_node", -1, &st.s, nullptr) == SQLITE_OK) {
+            while (sqlite3_step(st.s) == SQLITE_ROW) r.at_risk_secs[sqlite3_column_int64(st.s, 0)] = sqlite3_column_int64(st.s, 1);
+        }
+    }
     if (r.cooldown_secs.empty()) {
         error = path + "'s citizenship_node lists no level: no node takes citizens";
         return std::nullopt;
