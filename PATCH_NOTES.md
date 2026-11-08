@@ -1,8 +1,11 @@
 # Patch notes
 
-## Next update: node citizenship and mayors, melodies, pets and loot
+## Next update: node citizenship and mayors, knockbacks, stacking, coffers, melodies, pets and loot
 
 ### New
+- Knockbacks and pulls on creatures: the Bard's Get Off The Stage throws a creature up and away, the Mage's Cone of Cold pushes it back (less the farther away it is) and freezes it a second later, and the Tank's Grapple pulls it in front of you. A creature that is thrown or pushed cannot walk or attack until it lands. Bosses stay where they stand.
+- Stacks: dragging a stack onto a stack of the same item fills it up to its limit, and the rest stays where it was. Splitting a stack puts the new one in a free slot. Dragging a stack onto a full stack or another item swaps them. New items fill the stacks you already hold first. All of this works in the warehouse too.
+- Coffers: a random coffer gives you what it rolls when you open it. A choose-one box opens its window, and you get the item you pick.
 - Mayors: every Village and Town node now holds mayoral elections. A day after the node first takes citizens, a five-day registration opens. Any citizen can stand for mayor at the Sheriff. Five days of voting follow, from the voting window of the node window. Your vote counts for your whole account, and you can rank the candidates. The winner becomes the node's mayor until the next election, about three weeks later.
 - The mayor can set a message for the node and see the list of its citizens. A mayor who gives up their citizenship gives up the office too.
 - Type `.election` in chat to see the election of the node you are standing in: its stage, the time left, the candidates and the mayor.
