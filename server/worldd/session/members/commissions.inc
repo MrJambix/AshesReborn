@@ -20,3 +20,10 @@ private:
     repl::CommissionBoardList commission_list_;        // ... and what it listed
     size_t                    commission_logged_ = 0;
     uint32_t                  commission_opens_ = 0, commission_taken_ = 0, commission_refused_ = 0;
+    /// The board cards (their InstanceGuid) whose commission this character finished and claimed: the card shows bCompletedAlready for the rest of its refresh window
+    /// (the card's guid is made from the board and the window, so a new window's cards are new).  Not saved.
+    std::set<quest::Guid128>  commission_done_;
+public:
+    /// A test: the character claimed the commission of the card `card`.
+    void note_commission_done_for_test(const quest::Guid128& card) { commission_done_.insert(card); }
+private:

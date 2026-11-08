@@ -22,6 +22,7 @@
 #include "svc/services.h"
 
 #include <array>
+#include <compare>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -46,6 +47,7 @@ struct Guid128 {
     std::string hex() const;                                   // 32 lower-case digits, the words in order
     static std::optional<Guid128> from_hex(std::string_view s);
     bool operator==(const Guid128&) const = default;
+    auto operator<=>(const Guid128&) const = default;   // (an ordered set of guids: a session's claimed commission cards)
 };
 
 /// EQuestCreateResponse, the values this module answers with.

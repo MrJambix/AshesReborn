@@ -110,6 +110,7 @@ void PlayerSession::on_destiny_claim(Connection& conn, const repl::ClientRpc& rp
     quest_log_.touch(*q);
     spdlog::info("[quests] {}: claimed the rewards of {}", name(), def->name);
     const bool commission = def->flavor == "Commission";
+    if (commission && !q->preview.zero()) commission_done_.insert(q->preview);   // the board's card shows it completed from now on
     grant_quest_rewards(conn, tables, commission ? "a claimed commission reward" : "a claimed Destiny reward", now, record);
     quest_sync(conn, commission ? "a commission reward was claimed" : "a Destiny reward was claimed");
 }

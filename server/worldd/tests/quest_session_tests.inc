@@ -1667,7 +1667,14 @@ static void test_commission_board() {
     send(pick.instance);
     const qs::QuestInstance* q = h.s->quest_log().find(pick.quest);
     CHECK(q && q->preview == (qs::Guid128{pick.instance.a, pick.instance.b, pick.instance.c, pick.instance.d}), "the commission is in the log with the card's guid (QuestPreviewGuid)");
-    CHECK(h.s->commission_board().commissions[0].completed, "the board shows the card taken");
+    CHECK(!h.s->commission_board().commissions[0].completed, "the taken card is NOT sent as completed (bCompletedAlready): its objectives are still to do");
+    h.s->open_commission_board(h.conn, *a, h.t);
+    h.run(milliseconds(300));
+    CHECK(!h.s->commission_board().commissions.empty() && !h.s->commission_board().commissions[0].completed, "... nor when the board is opened again while it runs");
+    h.s->note_commission_done_for_test(qs::Guid128{pick.instance.a, pick.instance.b, pick.instance.c, pick.instance.d});
+    h.s->open_commission_board(h.conn, *a, h.t);
+    h.run(milliseconds(300));
+    CHECK(!h.s->commission_board().commissions.empty() && h.s->commission_board().commissions[0].completed, "once claimed, the card shows completed for the rest of its window");
     const size_t after = h.s->quest_log().instances().size();
     send(pick.instance);
     CHECK(h.s->quest_log().instances().size() == after, "the same card again takes nothing (the quest is in the log)");

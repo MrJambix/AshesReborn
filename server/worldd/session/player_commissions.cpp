@@ -141,9 +141,12 @@ void PlayerSession::open_commission_board(Connection& conn, const world::WorldAc
         p.node = node;
         uint64_t s = seed ^ static_cast<uint64_t>(c->quest);
         p.instance = repl::GuidValue{static_cast<uint32_t>(splitmix(s)), static_cast<uint32_t>(splitmix(s)), static_cast<uint32_t>(splitmix(s)), static_cast<uint32_t>(splitmix(s))};
-        // taken already by this character from this board in this window: the card shows it so
+        // bCompletedAlready: the card's commission is FINISHED (done, or claimed in this window) -- the client draws such a card as completed.  A commission that is only taken
+        // is not: the card knows it is taken from the quest log (FQuestInstance.QuestPreviewGuid), and its objectives decide when it is done.  (Before, a taken card was
+        // sent as completed: every commission showed complete at once and could not be turned in.)
         const quest::Guid128 pg = guid128(p.instance);
-        for (const quest::QuestInstance& q : quest_log_.instances()) p.completed = p.completed || q.preview == pg;
+        p.completed = commission_done_.count(pg) != 0;
+        for (const quest::QuestInstance& q : quest_log_.instances()) p.completed = p.completed || (q.preview == pg && q.status == quest::Status::Completed);
         list.commissions.push_back(std::move(p));
     }
     commission_actor_ = a.id;
@@ -186,8 +189,7 @@ void PlayerSession::on_commission_accept(Connection& conn, const repl::ClientRpc
         q.preview = guid128(g);
         q.preview_node = entry->node;
         quest_log_.touch(q);
-        entry->completed = true;
-        break;
+        break;   // (the card is taken, not completed: bCompletedAlready stays false until the commission is done)
     }
     ++commission_taken_;
     quest_sync(conn, "a commission was taken");

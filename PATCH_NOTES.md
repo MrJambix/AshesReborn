@@ -9,6 +9,7 @@
 - The citizenship tab of the node window now shows your citizenship, your characters and your dues. Before, it stayed empty.
 
 ### Fixed
+- Commission boards: a commission you take no longer shows as complete straight away. It stays in progress until you finish its objectives, and then you can turn it in. A commission you have turned in shows as complete on the board until the board refreshes.
 - Bard: switching melodies now stops the old melody as soon as you press the new one, instead of about two seconds later.
 - Bard: when the game ends a melody on its own, the server now ends it too. Before, the melody kept playing on the server, and your next press to start it again turned it off instead.
 - Summoner: the effects your pet's attacks leave on a creature now end when the pet is dismissed, dies or despawns. Effects from your own attacks stay.
