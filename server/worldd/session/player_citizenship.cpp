@@ -495,6 +495,11 @@ std::vector<world::Elections::Change> PlayerWorld::tick_elections(int64_t now_ms
     const world::CitizenshipRules* rules = &*citizenship_rules_;
     const world::CityNodes* registry = city_nodes_;
     auto changes = elections_->advance(now_ms, [rules, registry](int64_t node) { return rules->takes_citizens(registry->level_of(node)); }, nodes);
+    for (const auto& [node, ended] : elections_->advance_commissions(now_ms)) {   // the mayors' commissions: an expiry, a cooldown or a node reward that ran out
+        const world::mayor::MayoralCommission* c = world::mayor::commission(ended.record);
+        spdlog::info("[nodes] node {}: the mayoral commission {} {}", node, c ? c->name : std::to_string(ended.record),
+                     ended.kind == world::mayor::Ended::Expired ? "expired" : ended.kind == world::mayor::Ended::Cooled ? "may be bought again" : "no longer rewards the node");
+    }
     for (const world::Elections::Change& c : changes) {
         const world::CityNodeInfo* n = city_nodes_->by_guid(c.node);
         spdlog::info("[nodes] the election of {} enters {}{}", n ? n->display_name : std::to_string(c.node), world::election_state_name(c.state),

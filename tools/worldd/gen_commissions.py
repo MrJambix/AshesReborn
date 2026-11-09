@@ -6,7 +6,13 @@
 The commission boards: contentc compiles the commissions as quests (flavor "Commission"), but not what a board needs of the raw
 records: each CommissionBoardRecordBase's filter, size and refresh, and each commission's CommissionData (its type, tags and
 biome).  A board offers the Generic commissions its CommissionTypeFilter matches (a tag matches its parents, as gameplay tags
-do); PlayerSponsored ones are the mayors'.  Run from the repository root; `--out FILE` writes elsewhere.
+do); PlayerSponsored ones are the mayors'.
+
+The mayors' commissions (PlayerSponsored): the ones a node's mayor can buy, with what CommissionData sets (MoneyCost, MayoralCompletionCount,
+Expiration, Cooldown, AllowMultipleCompletion) and the node reward their RewardId names (a NodeRewardRecordBase: a NodeModification for a time).
+Their names say whose they are: zLegacy_MCOM_<region>_<node>_..., where <node> is a node's name or a word for the whole region (ANY, Kill, Gather,
+Scout); a region is the nodes its commissions name.  Left out: the disabled, the tests, the war ones (MCOM_War: a war declaration's), the
+templates and copies.  Run from the repository root; `--out FILE` writes elsewhere.
 """
 import gzip
 import json
@@ -92,6 +98,44 @@ def main():
                 ok.append(i)
         b["offers"] = ok
 
+    # the mayors' commissions
+    def node_reward(guid):
+        r = record(guid) if guid else {}
+        mods = r.get("NodeMods") or []
+        if not mods:
+            return 0, 0
+        m = mods[0]
+        return int((m.get("Mod") or {}).get("Guid") or 0), int((m.get("Duration") or {}).get("Duration") or 0)
+
+    for guid, data in db.execute("select guid, data from record where schema = 'NodeRewardRecordBase'"):
+        raw[guid] = data
+    mayoral = []
+    regions = {}
+    region_words = {"ANY", "Kill", "Gather", "Scout", "Cull"}
+    for guid, name, level, disabled in db.execute("select guid, name, level, disabled from quest where flavor = 'Commission' order by guid"):
+        cd = record(guid).get("CommissionData") or {}
+        if cd.get("CommissionType") != "ENarrativeCommissionType::PlayerSponsored" or disabled or not name.startswith("zLegacy_MCOM_"):
+            continue
+        parts = name.split("_")
+        if len(parts) < 5 or parts[2] == "War" or any(w in name for w in ("Template", "(Copy)", "PlayerExpressionRewardCheck", "Type_Target", "DISABLED")):
+            continue
+        region, who = parts[2].lower(), parts[3]
+        node = "" if who in region_words else who.lower()
+        if node:
+            regions.setdefault(region, set()).add(node)
+        reward = int((cd.get("RewardId") or {}).get("Guid") or 0)
+        mod, mod_ms = node_reward(reward)
+        mayoral.append({"guid": guid, "name": name, "level": int(level or 0), "region": region, "node": node, "cost": int(cd.get("MoneyCost") or 0),
+                        "count": max(1, int(cd.get("MayoralCompletionCount") or 1)), "expire": int((cd.get("Expiration") or {}).get("Duration") or 0),
+                        "cool": int((cd.get("Cooldown") or {}).get("Duration") or 0), "multiple": bool(cd.get("AllowMultipleCompletion")),
+                        "reward": reward, "mod": mod, "mod_ms": mod_ms, "resource": 0, "resource_qty": 0})
+        costs = cd.get("ResourceCost") or []
+        if len(costs) > 1:
+            sys.exit(f"{name}: more than one ResourceCost: this tool carries one")
+        if costs:
+            mayoral[-1]["resource"] = int((costs[0].get("Resource") or {}).get("Guid") or 0)
+            mayoral[-1]["resource_qty"] = int(costs[0].get("Quantity") or 0)
+
     by_name = {b["name"]: b["guid"] for b in boards}
     lines = []
     w = lines.append
@@ -142,6 +186,43 @@ def main():
         w(f"    {{{b['guid']}, {cpp_str(b['name'])}, {b['per']}, {b['refresh']}, {span}}},   // {b['mode']}({', '.join(b['tags'])}): {len(b['offers'])}")
     w("};")
     w("")
+    w("/// A mayor's commission (PlayerSponsored): what buying it costs the node's treasury and what completing it takes and gives.")
+    w("struct MayoralCommission {")
+    w("    int64_t     quest;          // the quest record a player takes")
+    w("    int         level;")
+    w("    const char* region;         // the region of its name (\"rvr\" ...)")
+    w("    const char* node;           // the node of its name, lower case without spaces (\"joeva\", \"newaela\"); \"\": any node of the region")
+    w("    int64_t     money_cost;     // MoneyCost (copper, from the node's treasury)")
+    w("    int32_t     completions;    // MayoralCompletionCount: completions it takes")
+    w("    int64_t     expiration_ms;  // Expiration: how long it stays on the board")
+    w("    int64_t     cooldown_ms;    // Cooldown: after it ends, before the mayor may buy it again")
+    w("    bool        multiple;       // AllowMultipleCompletion: a character may complete it more than once")
+    w("    int64_t     node_reward;    // RewardId: the NodeRewardRecordBase")
+    w("    int64_t     node_mod;       // ... its NodeModification")
+    w("    int64_t     node_mod_ms;    // ... for this long")
+    w("    int64_t     resource;       // ResourceCost: a resource of the node's storage it also costs (0: none) ...")
+    w("    int32_t     resource_qty;   // ... and how many")
+    w("    const char* name;")
+    w("};")
+    w("")
+    w("inline constexpr MayoralCommission kMayoralCommissions[] = {")
+    for m in mayoral:
+        w(f"    {{{m['guid']}, {m['level']}, {cpp_str(m['region'])}, {cpp_str(m['node'])}, {m['cost']}, {m['count']}, {m['expire']}, {m['cool']}, "
+          f"{'true' if m['multiple'] else 'false'}, {m['reward']}, {m['mod']}, {m['mod_ms']}, {m['resource']}, {m['resource_qty']}, {cpp_str(m['name'])}}},")
+    w("};")
+    w("")
+    w("/// The nodes of each region (the nodes its mayoral commissions name).")
+    w("struct MayoralRegionNode {")
+    w("    const char* region;")
+    w("    const char* node;")
+    w("};")
+    w("")
+    w("inline constexpr MayoralRegionNode kMayoralRegionNodes[] = {")
+    for region in sorted(regions):
+        for node in sorted(regions[region]):
+            w(f"    {{{cpp_str(region)}, {cpp_str(node)}}},")
+    w("};")
+    w("")
     w("/// The board record a board Blueprint (its class name) opens.")
     w("struct BlueprintBoard {")
     w("    const char* blueprint;")
@@ -156,6 +237,7 @@ def main():
     w("}  // namespace aoc::worldd::quest::commissions")
     open(out_path, "w", encoding="utf-8", newline="\n").write("\n".join(lines) + "\n")
     print(f"{out_path}: {len(commissions)} commissions, {len(boards)} boards: " + ", ".join(f"{b['name']} {len(b['offers'])}" for b in boards))
+    print(f"  {len(mayoral)} mayoral commissions over {len(regions)} regions: " + ", ".join(f"{r} {len(n)}" for r, n in sorted(regions.items())))
 
 
 if __name__ == "__main__":

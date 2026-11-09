@@ -29,6 +29,7 @@
 #include "session/members/market.inc"
 #include "session/members/citizenship.inc"
 #include "session/members/node_taxes.inc"
+#include "session/members/mayor_commissions.inc"
 #include "session/members/commissions.inc"
 #include "session/members/mount_command.inc"
 #include "session/members/chests.inc"

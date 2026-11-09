@@ -29,6 +29,8 @@
 // ============================================================================
 #pragma once
 
+#include "world/mayor_commissions.h"
+
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -110,6 +112,7 @@ struct NodeElection {
     int64_t        treasury = 0;                                   // the node's money (copper): the taxes its shops took
     std::vector<NodeNews> news;                                    // the node's notification feed, oldest first (at most kMaxNews)
     int64_t        dues_anchor_ms = 0;                             // the node's dues schedule: its dates are this plus whole periods (0: none yet)
+    MayorCommissions commissions;                                  // the mayor's commissions (world/mayor_commissions.h)
     bool operator==(const NodeElection&) const = default;
 };
 
@@ -175,6 +178,13 @@ public:
     /// The node's dues schedule (0: none yet), and its start if it has none (the first citizen's join).
     int64_t dues_anchor(int64_t node) const;
     void    set_dues_anchor(int64_t node, int64_t at_ms);
+    /// The node's mayoral commissions (null: a node the store does not hold).
+    const MayorCommissions* commissions(int64_t node) const;
+    /// Changes the node's commissions with `f(commissions, treasury)` (it may take from the treasury, which never goes below nothing); `f` says whether it
+    /// changed anything, and so does this.
+    bool change_commissions(int64_t node, const std::function<bool(MayorCommissions&, int64_t& treasury)>& f);
+    /// Brings every node's commissions to `now_ms` (expired, cooled down, a node reward run out): what ended, by node.
+    std::vector<std::pair<int64_t, mayor::Ended>> advance_commissions(int64_t now_ms);
     /// A notification for the node's feed (the oldest goes past kMaxNews).
     void add_news(int64_t node, NodeNews n);
     static constexpr size_t kMaxNews = 32;

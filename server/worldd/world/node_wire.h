@@ -54,6 +54,8 @@ struct LevelGrants {
     int     relic_slots = 0;
     int     node_essence = 0;
     float   vehicle_deploy_radius = 0;
+    int     commission_hand_slots = 0;   // the mayor's hand of commissions to buy from (CommissionHandSlots)
+    int     commission_slots = 0;        // the mayor's commissions running at once (CommissionSlots)
 };
 
 class NodeWire {

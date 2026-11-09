@@ -602,6 +602,117 @@ void test_node_taxes() {
     CHECK(el->treasury(kTestCitizenNode) == 1234 + 66, "ServerGMAddNodeGold adds to the treasury");
 }
 
+/// The mayor's commissions through a session (session/player_mayor_commissions.cpp): the hand as ClientReceiveMayoralCommissionHand, a purchase from the treasury, the
+/// node's board listing it (ClientReceiveMayoralCommissions), a claimed completion counting, and the console finishing it.
+void test_mayor_commissions() {
+    std::printf("node citizenship: the mayor's commissions\n");
+    CitizenHarness h(/*gm_level=*/3);
+    h.play();
+    h.run(milliseconds(1500));
+    spdlog::set_level(std::getenv("AOC_TEST_CITIZEN_LOG") ? spdlog::level::info : spdlog::level::off);
+    h.fx.world->set_elections(world::ElectionRules{}, "");
+    world::Elections* el = h.fx.world->elections();
+    h.s->set_gm_enabled(true);
+    h.s->set_mayor_slots_for_test(10, 6);
+    el->set_citizen(kTestCitizenNode, world::ElectionPerson{h.record.account_id, kCyb, "cyb", 1});
+    el->set_mayor(kTestCitizenNode, world::ElectionPerson{h.record.account_id, kCyb, "cyb", 1}, 1);
+    const int64_t record = quest::commissions::kMayoralCommissions[0].quest;   // (Testhold draws none: a game master puts one in its hand)
+    const auto value = [](const repl::RpcCall* c, const char* path) { return c ? repl::rpcf::value_of(*c->rpc, c->params, path) : nullptr; };
+    const auto hand = [&](size_t from) -> std::optional<std::tuple<int64_t, repl::ArrayValue, repl::ArrayValue, int64_t>> {
+        const auto calls = pc_calls_since(h, from);
+        const repl::RpcCall* c = last_call(calls, "ClientReceiveMayoralCommissionHand");
+        const repl::Value* node = value(c, "Data.Node");
+        const repl::Value* cards = value(c, "Data.Hand");
+        const repl::Value* active = value(c, "Data.ActiveCommissions");
+        const repl::Value* slots = value(c, "Data.SlotCount");
+        if (!node || !cards || !active || !slots || !cards->get_if<repl::ArrayValue>() || !active->get_if<repl::ArrayValue>()) return std::nullopt;
+        return std::make_tuple(*node->get_if<int64_t>(), *cards->get_if<repl::ArrayValue>(), *active->get_if<repl::ArrayValue>(), *slots->get_if<int64_t>());
+    };
+    const auto el_i64 = [](const repl::ElementState& e, uint16_t k) {
+        const auto it = e.values.find(k);
+        const int64_t* v = it == e.values.end() ? nullptr : it->second.get_if<int64_t>();
+        return v ? *v : int64_t{-1};
+    };
+    // the console puts a commission in the hand; the mayor's tab asks for it
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMAddCommissionToMayorHand", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::set_rpc_param(r, p, "NodeGuid", repl::Value::i64(kTestCitizenNode));
+        repl::set_rpc_param(r, p, "CommissionRecordId", repl::Value::i64(record));
+    });
+    h.run(milliseconds(300));
+    size_t from = h.got.size();
+    h.t += milliseconds(500);
+    h.pc_call("ServerRequestMayoralCommissionHand", [](const schema::RpcSchema&, repl::RpcParams&) {});
+    h.run(milliseconds(300));
+    auto got = hand(from);
+    CHECK(got && std::get<0>(*got) == kTestCitizenNode && std::get<1>(*got).elements.size() == 1 && el_i64(std::get<1>(*got).elements[0], 1) == record &&
+              std::get<2>(*got).elements.empty() && std::get<3>(*got) == 6,
+          "ClientReceiveMayoralCommissionHand: the node, its hand with the commission, nothing running, 6 slots");
+    // a purchase the treasury cannot pay, then one it can
+    const auto buy = [&]() {
+        h.t += milliseconds(500);
+        h.pc_call("ServerPurchaseMayoralCommission", [&](const schema::RpcSchema& r, repl::RpcParams& p) { repl::set_rpc_param(r, p, "CommissionRecordId", repl::Value::i64(record)); });
+        h.run(milliseconds(300));
+    };
+    buy();
+    CHECK(h.s->mayor_purchases() == 0 && h.s->mayor_purchases_refused() == 1 && el->commissions(kTestCitizenNode)->active.empty(), "an empty treasury buys nothing");
+    el->add_treasury(kTestCitizenNode, 60'000);
+    from = h.got.size();
+    buy();
+    got = hand(from);
+    const world::MayorCommissions* mc = el->commissions(kTestCitizenNode);
+    CHECK(h.s->mayor_purchases() == 1 && el->treasury(kTestCitizenNode) == 10'000 && mc && mc->active.size() == 1 && mc->active[0].record == record,
+          "the mayor buys it: 50,000 copper of the treasury, and it runs");
+    CHECK(got && std::get<1>(*got).elements.empty() && std::get<2>(*got).elements.size() == 1 && el_i64(std::get<2>(*got).elements[0], 5) == record,
+          "... and the hand goes back with it running, out of the hand");
+    bool news = false;
+    for (const world::NodeNews& n : el->node(kTestCitizenNode)->news) news = news || (n.type == 12 && n.commission == record);
+    CHECK(news, "the node's feed has the new commission (NewMayoralCommission)");
+    // the node's board lists it
+    const world::MayorGuid g = mc->active[0].guid;
+    const auto board = [&]() -> std::optional<repl::ElementState> {
+        const size_t at = h.got.size();
+        h.s->send_mayor_board_for_test(h.conn, kTestCitizenNode, h.t);
+        h.run(milliseconds(300));
+        const auto calls = pc_calls_since(h, at);
+        const repl::RpcCall* c = last_call(calls, "ClientReceiveMayoralCommissions");
+        const repl::Value* list = value(c, "CommissionList");
+        const repl::Value* node = value(c, "NodeGuid");
+        if (!list || !node || !list->get_if<repl::ArrayValue>() || list->get_if<repl::ArrayValue>()->elements.size() != 1 || *node->get_if<int64_t>() != kTestCitizenNode)
+            return std::nullopt;
+        return list->get_if<repl::ArrayValue>()->elements[0];
+    };
+    auto card = board();
+    const auto flag = [](const repl::ElementState& e, uint16_t k) {
+        const auto it = e.values.find(k);
+        const bool* b = it == e.values.end() ? nullptr : it->second.get_if<bool>();
+        return b && *b;
+    };
+    CHECK(card && el_i64(*card, 1) == record && static_cast<uint32_t>(el_i64(*card, 2)) == g.a && el_i64(*card, 7) == 0 && !flag(*card, 8),
+          "ClientReceiveMayoralCommissions: the board lists it with its guid, no completion, not completed by the player");
+    // a claimed completion counts
+    quest::QuestInstance q;
+    q.record = record;
+    q.preview = quest::Guid128{g.a, g.b, g.c, g.d};
+    q.preview_node = kTestCitizenNode;
+    h.s->note_mayor_commission_done_for_test(q);
+    card = board();
+    CHECK(h.s->mayor_completions() == 1 && el->commissions(kTestCitizenNode)->active[0].completions == 1 && card && el_i64(*card, 7) == 1 && flag(*card, 8),
+          "the player's claim counts: one completion, and the board shows it completed by the player");
+    // the console finishes it
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMAddParticipationCompletionToMayoralCommission", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::set_rpc_param(r, p, "NodeGuid", repl::Value::i64(kTestCitizenNode));
+        repl::set_rpc_param(r, p, "CommissionRecordId", repl::Value::i64(record));
+        repl::set_rpc_param(r, p, "NumIncreaseBy", repl::Value::i64(500));
+        repl::set_rpc_param(r, p, "bApplyToAllInstances", repl::Value::boolean(false));
+    });
+    h.run(milliseconds(300));
+    mc = el->commissions(kTestCitizenNode);
+    CHECK(mc->active.empty() && mc->cooling.size() == 1 && mc->cooling[0].completed && mc->rewards.size() == (quest::commissions::kMayoralCommissions[0].node_mod != 0 ? 1u : 0u),
+          "enough completions finish it: it cools down, and the node has its reward");
+}
+
 /// What the client sees of an election a game master moves on with ".election next": at every phase the citizen's window comes again unasked (the node window opens
 /// the candidacy or the vote from its MayorElectionStateChanged notification), with the phase's start and end and its countdown; the results with ClientFinishMayorVote;
 /// the mayor's message at the next login.
@@ -706,3 +817,4 @@ AOC_REGISTER_TEST(test_mayor_flow);
 AOC_REGISTER_TEST(test_citizenship_gm);
 AOC_REGISTER_TEST(test_node_taxes);
 AOC_REGISTER_TEST(test_election_in_game);
+AOC_REGISTER_TEST(test_mayor_commissions);

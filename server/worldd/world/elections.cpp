@@ -462,6 +462,30 @@ void Elections::set_dues_anchor(int64_t node, int64_t at_ms) {
     ++version_;
 }
 
+const MayorCommissions* Elections::commissions(int64_t node) const {
+    const auto it = nodes_.find(node);
+    return it == nodes_.end() ? nullptr : &it->second.commissions;
+}
+
+bool Elections::change_commissions(int64_t node, const std::function<bool(MayorCommissions&, int64_t& treasury)>& f) {
+    if (node == 0) return false;
+    NodeElection& e = nodes_[node];
+    int64_t treasury = e.treasury;
+    const bool changed = f(e.commissions, treasury);
+    e.treasury = std::max<int64_t>(0, treasury);
+    if (changed) ++version_;
+    return changed;
+}
+
+std::vector<std::pair<int64_t, mayor::Ended>> Elections::advance_commissions(int64_t now_ms) {
+    std::vector<std::pair<int64_t, mayor::Ended>> out;
+    for (auto& [node, e] : nodes_) {
+        for (const mayor::Ended& x : mayor::advance(e.commissions, now_ms)) out.emplace_back(node, x);
+    }
+    if (!out.empty()) ++version_;
+    return out;
+}
+
 void Elections::add_news(int64_t node, NodeNews n) {
     if (node == 0) return;
     auto& feed = nodes_[node].news;
@@ -554,6 +578,24 @@ std::string Elections::to_json() const {
         n["dues_off"] = e.dues_disabled;
         n["treasury"] = e.treasury;
         if (e.dues_anchor_ms != 0) n["dues_anchor"] = e.dues_anchor_ms;
+        const MayorCommissions& mc = e.commissions;
+        if (!(mc == MayorCommissions{})) {
+            nlohmann::json m;
+            m["hand"] = mc.hand;
+            m["serial"] = mc.serial;
+            m["active"] = nlohmann::json::array();
+            for (const MayorActiveCommission& a : mc.active) {
+                m["active"].push_back({{"guid", {a.guid.a, a.guid.b, a.guid.c, a.guid.d}}, {"record", a.record}, {"started", a.started_ms}, {"expires", a.expires_ms},
+                                       {"completions", a.completions}, {"by", a.completed_by}});
+            }
+            m["cooling"] = nlohmann::json::array();
+            for (const MayorCoolingCommission& c : mc.cooling) {
+                m["cooling"].push_back({{"record", c.record}, {"until", c.until_ms}, {"completed", c.completed}, {"acknowledged", c.acknowledged}});
+            }
+            m["rewards"] = nlohmann::json::array();
+            for (const NodeRewardMod& r : mc.rewards) m["rewards"].push_back({{"mod", r.mod}, {"commission", r.commission}, {"until", r.until_ms}});
+            n["commissions"] = std::move(m);
+        }
         for (const NodeNews& w : e.news) {
             n["news"].push_back({{"type", w.type}, {"at", w.at_ms}, {"mayor", w.mayor}, {"plot", w.plot}, {"building", w.building}, {"commission", w.commission},
                                  {"state", w.building_state}});
@@ -593,6 +635,29 @@ bool Elections::from_json(const std::string& text, std::string& error) {
             e.dues_disabled = n.value("dues_off", false);
             e.treasury = std::max<int64_t>(0, n.value("treasury", int64_t{0}));
             e.dues_anchor_ms = std::max<int64_t>(0, n.value("dues_anchor", int64_t{0}));
+            if (n.contains("commissions") && n["commissions"].is_object()) {
+                const auto& m = n["commissions"];
+                MayorCommissions& mc = e.commissions;
+                if (m.contains("hand")) mc.hand = m["hand"].get<std::vector<int64_t>>();
+                mc.serial = m.value("serial", uint64_t{0});
+                for (const auto& a : m.value("active", nlohmann::json::array())) {
+                    MayorActiveCommission x;
+                    const auto g = a.value("guid", std::vector<uint32_t>{});
+                    if (g.size() == 4) x.guid = MayorGuid{g[0], g[1], g[2], g[3]};
+                    x.record = a.value("record", int64_t{0});
+                    x.started_ms = a.value("started", int64_t{0});
+                    x.expires_ms = a.value("expires", int64_t{0});
+                    x.completions = a.value("completions", int32_t{0});
+                    x.completed_by = a.value("by", std::vector<std::string>{});
+                    if (x.record != 0 && !x.guid.zero()) mc.active.push_back(std::move(x));
+                }
+                for (const auto& c : m.value("cooling", nlohmann::json::array())) {
+                    mc.cooling.push_back(MayorCoolingCommission{c.value("record", int64_t{0}), c.value("until", int64_t{0}), c.value("completed", false), c.value("acknowledged", false)});
+                }
+                for (const auto& r : m.value("rewards", nlohmann::json::array())) {
+                    mc.rewards.push_back(NodeRewardMod{r.value("mod", int64_t{0}), r.value("commission", int64_t{0}), r.value("until", int64_t{0})});
+                }
+            }
             if (n.contains("news")) {
                 for (const auto& w : n["news"]) {
                     if (e.news.size() >= kMaxNews) break;

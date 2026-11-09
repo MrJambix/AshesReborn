@@ -13,10 +13,12 @@
 #include "vendor/node_tax.h"
 #include "vendor/town_shops.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -380,6 +382,83 @@ void test_rules() {
     CHECK(r && r->ranked_limit == 3, "a ballot ranks at most 3 candidates (ElectionConstants)");
 }
 
+void test_mayor_commissions() {
+    std::printf("the mayor's commissions: the hand, buying, completions, the cooldown and the node reward\n");
+    namespace mc = aoc::worldd::world::mayor;
+    CHECK(mc::node_key("New Aela") == "newaela" && mc::node_key("Joeva") == "joeva", "a node's name as the commissions write it");
+    const auto joeva = mc::pool("joeva");
+    size_t own = 0, shared = 0;
+    for (const auto* c : joeva) (std::string(c->node) == "joeva" ? own : shared) += 1;
+    CHECK(own >= 10 && shared >= 10 && mc::pool("testhold").empty(), "Joeva draws its own commissions and the Riverlands' shared ones; a node no commission names draws none");
+    constexpr int64_t kJoevaNode = 108646121231993;
+    MayorCommissions s;
+    CHECK(mc::refill_hand(s, "joeva", 10, kJoevaNode) && s.hand.size() == 10, "a Village's hand: 10 commissions");
+    std::set<int64_t> distinct(s.hand.begin(), s.hand.end());
+    bool all_ours = true;
+    for (const int64_t r : s.hand) all_ours = all_ours && std::any_of(joeva.begin(), joeva.end(), [&](const auto* c) { return c->quest == r; });
+    CHECK(distinct.size() == 10 && all_ours, "... ten different ones, all Joeva's to draw");
+    const int64_t t0 = kNov10Noon;
+    const int64_t pick = s.hand[0];
+    const mc::MayoralCommission* c = mc::commission(pick);
+    CHECK(c && c->money_cost == 50000 && c->completions == 100 && c->expiration_ms == 2 * kDay && c->cooldown_ms == 6 * kHour && c->node_mod != 0 && c->node_mod_ms == kDay,
+          "a commission of the data: 50,000 copper, 100 completions, 48 h on the board, 6 h cooling, a node reward for 24 h");
+    CHECK(mc::purchase(s, kJoevaNode, 42, 6, 1'000'000, t0) == mc::Buy::Unknown, "a record that is no mayor's commission is not bought");
+    CHECK(mc::purchase(s, kJoevaNode, pick, 6, 49'999, t0) == mc::Buy::Treasury && s.active.empty(), "the treasury must hold its cost");
+    MayorActiveCommission started;
+    CHECK(mc::purchase(s, kJoevaNode, pick, 6, 50'000, t0, &started) == mc::Buy::Ok && s.active.size() == 1 && !started.guid.zero() && started.expires_ms == t0 + 2 * kDay,
+          "bought: it runs for 48 h with a guid of its own");
+    CHECK(s.hand.size() == 9 && std::find(s.hand.begin(), s.hand.end(), pick) == s.hand.end() && mc::refill_hand(s, "joeva", 10, kJoevaNode) && s.hand.size() == 10 &&
+              std::find(s.hand.begin(), s.hand.end(), pick) == s.hand.end(),
+          "it leaves the hand, which is filled again without it");
+    CHECK(mc::purchase(s, kJoevaNode, pick, 6, 1'000'000, t0) == mc::Buy::NotInHand, "a running commission is not in the hand");
+    while (s.active.size() < 6) {
+        const int64_t r = s.hand[0];
+        if (mc::purchase(s, kJoevaNode, r, 6, 1'000'000, t0) != mc::Buy::Ok) break;
+    }
+    CHECK(s.active.size() == 6 && mc::purchase(s, kJoevaNode, s.hand[0], 6, 1'000'000, t0) == mc::Buy::NoSlot, "a Village runs 6 at once: a seventh is refused");
+    // completions
+    const MayorGuid g = started.guid;
+    CHECK(mc::complete(s, g, "AAAA", t0 + kHour) == mc::Done::Counted && mc::find(s, g)->completions == 1 && mc::completed_by(*mc::find(s, g), "AAAA"),
+          "a character's completion counts");
+    CHECK(c->multiple || mc::complete(s, g, "AAAA", t0 + kHour) == mc::Done::Already, "the same character again does not (AllowMultipleCompletion false)");
+    CHECK(mc::complete(s, MayorGuid{9, 9, 9, 9}, "BBBB", t0) == mc::Done::NotActive, "a guid that runs nowhere counts for nothing");
+    CHECK(mc::complete(s, g, "", t0 + kHour, 98) == mc::Done::Counted && mc::find(s, g)->completions == 99, "a game master's completions count too");
+    CHECK(mc::complete(s, g, "CCCC", t0 + 2 * kHour) == mc::Done::Finished && !mc::find(s, g) && s.active.size() == 5, "the hundredth completes it: it stops running");
+    CHECK(s.cooling.size() == 1 && s.cooling[0].record == pick && s.cooling[0].completed && s.cooling[0].until_ms == t0 + 2 * kHour + 6 * kHour,
+          "it cools down 6 h, done");
+    CHECK(s.rewards.size() == 1 && s.rewards[0].mod == c->node_mod && s.rewards[0].until_ms == t0 + 2 * kHour + kDay, "the node has its reward's modification for 24 h");
+    s.hand.push_back(pick);
+    CHECK(mc::purchase(s, kJoevaNode, pick, 6, 1'000'000, t0 + 3 * kHour) == mc::Buy::Cooling, "it may not be bought while it cools down");
+    s.hand.pop_back();
+    // the clock
+    auto ended = mc::advance(s, t0 + 2 * kHour + 6 * kHour);
+    CHECK(ended.size() == 1 && ended[0].kind == mc::Ended::Cooled && s.cooling.empty() && s.rewards.size() == 1, "after 6 h it may be bought again; the reward still runs");
+    ended = mc::advance(s, t0 + 2 * kDay);
+    size_t expired = 0;
+    for (const auto& e : ended) expired += e.kind == mc::Ended::Expired;
+    CHECK(expired == 5 && s.active.empty() && s.cooling.size() == 5 && !s.cooling[0].completed, "the others expire after 48 h, not done, and cool down");
+    ended = mc::advance(s, t0 + 2 * kHour + kDay + 1);
+    CHECK(s.rewards.empty(), "the node reward ends after its 24 h");
+    // the store keeps them
+    Elections e;
+    e.set_citizen(kJoevaNode, who(1, kAnn, "Ann"));
+    MayorActiveCommission kept;
+    e.change_commissions(kJoevaNode, [&](MayorCommissions& m, int64_t& treasury) {
+        treasury = 120'000;
+        mc::refill_hand(m, "joeva", 10, kJoevaNode);
+        const int64_t r = m.hand[0];
+        mc::purchase(m, kJoevaNode, r, 6, treasury, t0, &kept);
+        treasury -= 50'000;
+        mc::complete(m, kept.guid, "AAAA", t0 + 1);
+        return true;
+    });
+    CHECK(e.treasury(kJoevaNode) == 70'000 && e.commissions(kJoevaNode) && e.commissions(kJoevaNode)->active.size() == 1, "the store pays from the node's treasury");
+    std::string why;
+    Elections back;
+    CHECK(back.from_json(e.to_json(), why) && back.commissions(kJoevaNode) && *back.commissions(kJoevaNode) == *e.commissions(kJoevaNode),
+          "the hand, the running commission with its completions and the counter are written to the file and read back");
+}
+
 }  // namespace
 
 int main() {
@@ -393,6 +472,7 @@ int main() {
     test_min_citizens();
     test_taxes();
     test_tax_limits();
+    test_mayor_commissions();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -310,6 +310,7 @@ add_library(worldd_core STATIC
     world/citizenship.cpp
     world/citizenship.h
     world/elections.cpp
+    world/mayor_commissions.cpp
     world/elections.h
     world/city_nodes.cpp
     world/city_nodes.h

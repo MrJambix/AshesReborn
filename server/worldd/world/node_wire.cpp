@@ -82,7 +82,8 @@ std::unique_ptr<NodeWire> NodeWire::load(const std::string& path, const CityNode
     {
         Stmt st;
         const char* sql =
-            "SELECT l.node_guid, l.level, COALESCE(SUM(m.relic_slots), 0), COALESCE(SUM(m.node_essence), 0), COALESCE(MAX(m.vehicle_deploy_radius), 0) "
+            "SELECT l.node_guid, l.level, COALESCE(SUM(m.relic_slots), 0), COALESCE(SUM(m.node_essence), 0), COALESCE(MAX(m.vehicle_deploy_radius), 0), "
+            "COALESCE(SUM(m.commission_hand_slots), 0), COALESCE(SUM(m.commission_slots), 0) "
             "FROM city_node_level l JOIN node_level_details_mod d ON d.details_guid = l.details_guid JOIN node_modification m ON m.guid = d.mod_guid "
             "GROUP BY l.node_guid, l.level ORDER BY l.node_guid, l.level";
         if (!prepare(st, sql, "the node level details")) return nullptr;
@@ -94,6 +95,8 @@ std::unique_ptr<NodeWire> NodeWire::load(const std::string& path, const CityNode
             g.relic_slots = sqlite3_column_int(st.s, 2);
             g.node_essence = sqlite3_column_int(st.s, 3);
             g.vehicle_deploy_radius = static_cast<float>(sqlite3_column_double(st.s, 4));
+            g.commission_hand_slots = sqlite3_column_int(st.s, 5);
+            g.commission_slots = sqlite3_column_int(st.s, 6);
             it->second.grants.push_back(g);
         }
     }
