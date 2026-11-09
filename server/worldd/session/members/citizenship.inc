@@ -37,6 +37,14 @@ private:
     /// The account's dues now (world/citizenship.h): what one period costs at `now_ms`, with the late part once overdue; `factors` and `rank` (when given) get what
     /// it was made of.
     int32_t citizenship_dues(int64_t now_ms, world::CitizenshipRules::DuesFactors* factors = nullptr, int* rank = nullptr) const;
+    /// The citizenship node's next dues date after `now_ms` (its schedule; a node with none yet: from the account's join, or now).
+    int64_t node_dues_date(int64_t now_ms) const;
+    /// Starts `node`'s dues schedule at `at_ms` if it has none (the store keeps it).
+    void    start_dues_schedule(int64_t node, int64_t at_ms);
+    /// Whether the dues for the node's coming date are paid (then the window shows them paid and a payment is refused).
+    bool    dues_paid_ahead(int64_t now_ms) const;
+    /// The highest level among the account's characters (HighestCharacterLevelOnAccount: the dues' level impact).
+    int     account_highest_level() const;
     /// Every few seconds: the account's citizenship as another session of it changed it (adopted, not saved again), and a citizenship whose dues stayed unpaid too long lapses.
     void run_citizenship(Connection& conn);
     // ---- stage 2: mayors
@@ -66,6 +74,8 @@ private:
     int64_t                         citizenship_checked_ms_ = 0;   // run_citizenship's last look
     uint64_t                        election_seen_version_ = 0;    // the elections' version run_elections last looked at
     int                             election_seen_state_ = -1;     // the state of the citizenship node's election then (-1: none)
+    size_t                          election_seen_candidates_ = 0; // its candidates then (a change sends the window again)
+    uint32_t                        election_windows_pushed_ = 0;  // windows sent for a phase or candidates change
     int64_t                         mayor_node_ = 0;               // OwnerInfo.MayorNode as last set
     uint32_t                        mayor_candidacies_ = 0, mayor_votes_ = 0, mayor_results_seen_ = 0;
     uint32_t citizenship_lapses_ = 0, citizenship_adopted_ = 0;
@@ -105,10 +115,16 @@ public:
     uint32_t mayor_candidacies() const { return mayor_candidacies_; }
     uint32_t mayor_votes() const { return mayor_votes_; }
     uint32_t mayor_results_seen() const { return mayor_results_seen_; }
+    uint32_t election_windows_pushed() const { return election_windows_pushed_; }
     int64_t  mayor_node() const { return mayor_node_; }
     std::string election_command_for_test(Connection& conn, const std::string& args) { return on_election_command(conn, args); }
     /// A test: run_citizenship now (not waiting for its few seconds).
     void run_citizenship_for_test(Connection& conn) { citizenship_checked_ms_ = 0; run_citizenship(conn); }
+    /// A test: the elections as a new login first looks at them (the mayor's message comes again).
+    void relogin_elections_for_test() {
+        election_seen_version_ = 0;
+        election_seen_state_ = -1;
+    }
     /// The node of the standing offer (0: none).
     int64_t citizenship_offer_node() const { return citizenship_offer_ ? citizenship_offer_->node : 0; }
     /// A test: the Node Administrator's line for `npc`, as the conversation runs it.

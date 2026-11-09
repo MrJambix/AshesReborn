@@ -331,7 +331,7 @@ void test_citizenship_window() {
     d.state = 2;
     d.named_guids.push_back({{1, 2, 3, 4}, "Bo", {{5, 6, 7, 8}}});
     d.names.push_back({{9, 10, 11, 12}, "Cy"});
-    d.count = 7;
+    d.phase_seconds_left = 7;
     d.status.primary = {{21, 22, 23, 24}, "Dee"};
     d.status.alternates.push_back({{25, 26, 27, 28}, "Ed"});
     d.status.dues_paid = 3;

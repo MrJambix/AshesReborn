@@ -34,7 +34,7 @@ protocol::repl::NodeTaxDetails untaxed_table(int64_t node);
 protocol::repl::NodeTaxDetails default_table(int64_t node);
 
 /// The table of a node whose mayor set rates (`overrides`, by tag; null: none): the default table with each tag the mayor set at the mayor's rate, both flags set
-/// (retail's flags of an entry a node's owners changed).
+/// (the flags the client reads as an entry a node's mayor changed).
 protocol::repl::NodeTaxDetails node_table(int64_t node, const std::map<std::string, world::TaxOverride>* overrides);
 
 }  // namespace aoc::worldd::vendor

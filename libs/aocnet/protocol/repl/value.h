@@ -830,7 +830,7 @@ struct CitizenshipWindowData {
     uint8_t                            state = 0;      // compared by the window with a notification's ElectionState (1 to 3): the node's election state
     std::vector<CitizenshipNamedGuids> named_guids;    // a TMap<FGuid, {FString, TArray<FGuid>}>, in the map's order
     std::vector<std::pair<GuidValue, std::string>> names;   // a TMap<FGuid, FString>, in the map's order
-    int32_t                            count = 0;      // an int32 (not read yet)
+    int32_t                            phase_seconds_left = 0;   // the seconds left in the election's current phase
     CitizenshipStatus                  status;         // the player's FCitizenshipStatus
     int64_t dues_due_time = 0;                         // FCitizenshipDuesData: CitizenshipDuesDueTime (unix seconds)
     int64_t late_fees_due_time = 0;                    //   LateFeesDueTime

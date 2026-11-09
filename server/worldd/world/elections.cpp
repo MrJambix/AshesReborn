@@ -91,15 +91,9 @@ int64_t ElectionRules::election_start_ms(int64_t not_before_ms) const {
 
 int64_t ElectionRules::election_end_ms(int64_t start_ms) const {
     const int64_t day0 = floor_div(start_ms, kDayMs);
-    const int64_t end = (day0 + std::max(1, election_days) - 1) * kDayMs + static_cast<int64_t>(std::clamp(end_hour, 0, 23)) * kHourMs;
+    // through the end of the end hour: hour 23 of the last day ends at 00:00 of the day after
+    const int64_t end = (day0 + std::max(1, election_days) - 1) * kDayMs + static_cast<int64_t>(std::clamp(end_hour, 0, 23) + 1) * kHourMs;
     return std::max(end, start_ms + kHourMs);   // (an end hour before the start hour on a one-day election: an hour)
-}
-
-int64_t ElectionRules::results_ms(int64_t end_ms) const {
-    const int64_t day0 = floor_div(end_ms, kDayMs);
-    int64_t at = day0 * kDayMs + static_cast<int64_t>(std::clamp(results_hour, 0, 23)) * kHourMs;
-    if (at <= end_ms) at += kDayMs;
-    return at;
 }
 
 std::optional<ElectionRules> ElectionRules::load(const std::string& path, std::string& error) {
@@ -113,7 +107,7 @@ std::optional<ElectionRules> ElectionRules::load(const std::string& path, std::s
     std::optional<ElectionRules> out;
     if (sqlite3_prepare_v2(db,
                            "SELECT election_type, registration_days, election_days, first_registration_secs, first_wait_for_results_secs, first_election_secs, start_day, "
-                           "start_hour, end_hour, results_hour, min_term_days FROM election_def "
+                           "start_hour, end_hour, min_term_days FROM election_def "
                            "WHERE name NOT LIKE 'TEST%' ORDER BY guid LIMIT 1",
                            -1, &st, nullptr) != SQLITE_OK) {
         error = path + " has no election_def table";
@@ -130,8 +124,7 @@ std::optional<ElectionRules> ElectionRules::load(const std::string& path, std::s
         if (const int d = sqlite3_column_int(st, 6); d >= 1 && d <= 31) r.start_day = d;
         if (const int h = sqlite3_column_int(st, 7); h >= 0 && h <= 23) r.start_hour = h;
         if (const int h = sqlite3_column_int(st, 8); h >= 0 && h <= 23) r.end_hour = h;
-        if (const int h = sqlite3_column_int(st, 9); h >= 0 && h <= 23) r.results_hour = h;
-        if (const int d = sqlite3_column_int(st, 10); d >= 0 && d <= 365) r.min_term_days = d;
+        if (const int d = sqlite3_column_int(st, 9); d >= 0 && d <= 365) r.min_term_days = d;
         out = r;
     } else {
         error = path + "'s election_def has no definition";
@@ -456,6 +449,19 @@ void Elections::add_treasury(int64_t node, int64_t copper) {
     ++version_;
 }
 
+int64_t Elections::dues_anchor(int64_t node) const {
+    const auto it = nodes_.find(node);
+    return it == nodes_.end() ? 0 : it->second.dues_anchor_ms;
+}
+
+void Elections::set_dues_anchor(int64_t node, int64_t at_ms) {
+    if (node == 0 || at_ms <= 0) return;
+    NodeElection& e = nodes_[node];
+    if (e.dues_anchor_ms != 0) return;   // (the schedule is the node's: set once)
+    e.dues_anchor_ms = at_ms;
+    ++version_;
+}
+
 void Elections::add_news(int64_t node, NodeNews n) {
     if (node == 0) return;
     auto& feed = nodes_[node].news;
@@ -499,11 +505,16 @@ std::optional<size_t> Elections::tally(const NodeElection& e) {
     if (e.candidates.empty()) return std::nullopt;
     std::set<std::string> out;   // candidates out of the count
     for (size_t round = 0; round < e.candidates.size(); ++round) {
+        std::set<std::string> standing_ids;
+        for (const ElectionPerson& c : e.candidates) {
+            if (!out.count(c.character_id)) standing_ids.insert(c.character_id);
+        }
+        // each ballot counts for its first choice still standing: a choice who withdrew (no candidate now) or was counted out passes it on
         std::map<std::string, size_t> firsts;
         size_t total = 0;
         for (const auto& [account, ranked] : e.votes) {
             for (const std::string& id : ranked) {
-                if (out.count(id)) continue;
+                if (!standing_ids.count(id)) continue;
                 ++firsts[id];
                 ++total;
                 break;
@@ -542,6 +553,7 @@ std::string Elections::to_json() const {
         n["first"] = e.first;
         n["dues_off"] = e.dues_disabled;
         n["treasury"] = e.treasury;
+        if (e.dues_anchor_ms != 0) n["dues_anchor"] = e.dues_anchor_ms;
         for (const NodeNews& w : e.news) {
             n["news"].push_back({{"type", w.type}, {"at", w.at_ms}, {"mayor", w.mayor}, {"plot", w.plot}, {"building", w.building}, {"commission", w.commission},
                                  {"state", w.building_state}});
@@ -580,6 +592,7 @@ bool Elections::from_json(const std::string& text, std::string& error) {
             e.first = n.value("first", false);
             e.dues_disabled = n.value("dues_off", false);
             e.treasury = std::max<int64_t>(0, n.value("treasury", int64_t{0}));
+            e.dues_anchor_ms = std::max<int64_t>(0, n.value("dues_anchor", int64_t{0}));
             if (n.contains("news")) {
                 for (const auto& w : n["news"]) {
                     if (e.news.size() >= kMaxNews) break;

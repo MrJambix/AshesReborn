@@ -28,14 +28,6 @@ struct Stmt {
     }
 };
 
-int weekday_of(const std::string& name) {
-    static const char* const kDays[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
-    for (int i = 0; i < 7; ++i) {
-        if (name == kDays[i]) return i;
-    }
-    return -1;
-}
-
 /// A dues formula's "var Threshold = N;" (the data's CitizenshipRankImpact and LevelImpact declare one each); nullopt when it has none.
 std::optional<double> formula_threshold(const std::string& text) {
     static const std::regex kThreshold(R"(var\s+Threshold\s*=\s*([0-9]+(?:\.[0-9]+)?))");
@@ -60,29 +52,26 @@ int64_t price_in(const std::string& json, int64_t tier) {
 
 }  // namespace
 
-CitizenshipRules::DuesFactors CitizenshipRules::dues_factors(int rank, int level, int node_level, size_t citizens) const {
+CitizenshipRules::DuesFactors CitizenshipRules::dues_factors(int rank, int level, int node_level) const {
     DuesFactors f;
     // the data's formulas: x / Threshold when that is above 1, else 1
     if (rank_threshold > 0 && rank / rank_threshold > 1.0) f.rank = rank / rank_threshold;
     if (level_threshold > 0 && level / level_threshold > 1.0) f.level = level / level_threshold;
     f.non_owner = non_owner_impact > 0 ? non_owner_impact : 1.0;
     if (const auto it = dues_level_scalar.find(node_level); it != dues_level_scalar.end() && it->second > 0) f.node_level = it->second;
-    for (const auto& [from, scalar] : population_scalars) {
-        if (static_cast<double>(citizens) >= from && scalar > 0) f.population = scalar;
-    }
     return f;
 }
 
 int32_t CitizenshipRules::dues_amount(const DuesFactors& f) const {
-    const double v = static_cast<double>(std::max(1, base_dues)) * f.rank * f.level * f.non_owner * f.node_level * f.population;
-    return static_cast<int32_t>(std::clamp<double>(std::ceil(v - 1e-9), 1.0, 100000.0));
+    const double v = static_cast<double>(std::max(1, base_dues)) * f.rank * f.level * f.non_owner * f.node_level;
+    return static_cast<int32_t>(std::clamp<double>(std::floor(v + 1e-9), 1.0, 100000.0));
 }
 
 int32_t CitizenshipRules::dues_owed(int64_t due_ms, int64_t now_ms, int32_t amount, int node_level) const {
     if (due_ms <= 0 || now_ms < overdue_ms(due_ms)) return amount;
     const auto it = missed_dues_increase.find(node_level);
     const double increase = it == missed_dues_increase.end() ? 0.0 : std::max(0.0, it->second);
-    return static_cast<int32_t>(std::ceil(amount * (1.0 + increase) - 1e-9)) + late_fee;
+    return std::max<int32_t>(1, static_cast<int32_t>(std::floor(amount * (1.0 + increase) + 1e-9))) + late_fee;
 }
 
 const TaxLimit* CitizenshipRules::tax_limit(int64_t node, const std::string& tag) const {
@@ -105,15 +94,10 @@ int64_t CitizenshipRules::cooldown_ms(int level) const {
     return it == cooldown_secs.end() ? 0 : std::max<int64_t>(0, it->second) * 1000;
 }
 
-int64_t CitizenshipRules::next_due_ms(int64_t from_ms) const {
-    constexpr int64_t kDay = 86400000;
-    const int64_t earliest = from_ms + static_cast<int64_t>(std::max(1, dues_weeks)) * 7 * kDay;
-    int64_t day = earliest / kDay;   // days since 1970-01-01, a Thursday (weekday 4)
-    if (earliest % kDay != 0) ++day;
-    const int64_t weekday = (day + 4) % 7;
-    const int64_t want = due_weekday >= 0 && due_weekday < 7 ? due_weekday : 4;
-    day += (want - weekday + 7) % 7;
-    return day * kDay;
+int64_t CitizenshipRules::next_dues_ms(int64_t anchor_ms, int64_t now_ms) const {
+    const int64_t period = period_ms();
+    if (now_ms < anchor_ms) return anchor_ms + period;
+    return anchor_ms + ((now_ms - anchor_ms) / period + 1) * period;
 }
 
 std::optional<CitizenshipRules> CitizenshipRules::load(const std::string& path, std::string& error) {
@@ -125,13 +109,10 @@ std::optional<CitizenshipRules> CitizenshipRules::load(const std::string& path, 
     CitizenshipRules r;
     {
         Stmt st;
+        // (the generic record's InitialDueCost is not the join's cost, which is CitizenshipCost 1: the table only shows the file holds citizenship)
         if (sqlite3_prepare_v2(db.db, "SELECT initial_due_cost FROM citizenship_generic ORDER BY guid LIMIT 1", -1, &st.s, nullptr) != SQLITE_OK) {
             error = path + " has no citizenship_generic table (" + sqlite3_errmsg(db.db) + ")";
             return std::nullopt;
-        }
-        if (sqlite3_step(st.s) == SQLITE_ROW) {
-            const int cost = sqlite3_column_int(st.s, 0);
-            if (cost > 0 && cost <= 100000) r.join_cost = cost;
         }
     }
     {
@@ -152,28 +133,23 @@ std::optional<CitizenshipRules> CitizenshipRules::load(const std::string& path, 
     {
         Stmt st;
         if (sqlite3_prepare_v2(db.db,
-                               "SELECT due_day_of_week, weeks, late_fee, overdue_days, base_dues_guid, rank_impact, level_impact, non_property_owner FROM citizenship_dues_def "
+                               "SELECT weeks, late_fee, overdue_days, base_dues_guid, rank_impact, level_impact, non_property_owner FROM citizenship_dues_def "
                                "ORDER BY guid LIMIT 1",
                                -1, &st.s, nullptr) != SQLITE_OK) {
             error = path + " has no citizenship_dues_def table (" + sqlite3_errmsg(db.db) + ")";
             return std::nullopt;
         }
         if (sqlite3_step(st.s) == SQLITE_ROW) {
-            const unsigned char* day = sqlite3_column_text(st.s, 0);
-            if (day) {
-                const int w = weekday_of(reinterpret_cast<const char*>(day));
-                if (w >= 0) r.due_weekday = w;
-            }
-            const int weeks = sqlite3_column_int(st.s, 1);
+            const int weeks = sqlite3_column_int(st.s, 0);
             if (weeks > 0 && weeks <= 52) r.dues_weeks = weeks;
-            const double fee = sqlite3_column_double(st.s, 2);
+            const double fee = sqlite3_column_double(st.s, 1);
             if (fee >= 0 && fee <= 100000) r.late_fee = static_cast<int32_t>(std::lround(fee));
-            const int days = sqlite3_column_int(st.s, 3);
+            const int days = sqlite3_column_int(st.s, 2);
             if (days >= 0 && days <= 365) r.overdue_days = days;
-            const int64_t base = sqlite3_column_int64(st.s, 4);
-            if (const auto t = formula_threshold(column_text(st.s, 5))) r.rank_threshold = *t;
-            if (const auto t = formula_threshold(column_text(st.s, 6))) r.level_threshold = *t;
-            if (const double v = std::strtod(column_text(st.s, 7).c_str(), nullptr); v > 0 && v <= 100) r.non_owner_impact = v;
+            const int64_t base = sqlite3_column_int64(st.s, 3);
+            if (const auto t = formula_threshold(column_text(st.s, 4))) r.rank_threshold = *t;
+            if (const auto t = formula_threshold(column_text(st.s, 5))) r.level_threshold = *t;
+            if (const double v = std::strtod(column_text(st.s, 6).c_str(), nullptr); v > 0 && v <= 100) r.non_owner_impact = v;
             sqlite3_finalize(st.s);
             st.s = nullptr;
             // BaseDuesRequired: a BaseItemValue whose buy price is in the dues tier
@@ -207,12 +183,6 @@ std::optional<CitizenshipRules> CitizenshipRules::load(const std::string& path, 
                 l.max_flat = static_cast<int32_t>(std::lround(sqlite3_column_double(st.s, 7)));
                 r.tax_limits[sqlite3_column_int64(st.s, 0)][column_text(st.s, 1)] = l;
             }
-        }
-    }
-    {
-        Stmt st;   // the citizens' count scalars of the dues (a content.db without the table: none)
-        if (sqlite3_prepare_v2(db.db, "SELECT threshold, scalar FROM citizenship_scalar WHERE kind = 'dues' ORDER BY threshold", -1, &st.s, nullptr) == SQLITE_OK) {
-            while (sqlite3_step(st.s) == SQLITE_ROW) r.population_scalars.emplace_back(sqlite3_column_double(st.s, 0), sqlite3_column_double(st.s, 1));
         }
     }
     {

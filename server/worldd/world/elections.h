@@ -12,15 +12,19 @@
 //                  the first election      RegistrationPeriod (the client's "prevote") FirstTimeRegistrationPeriodDurationSeconds (1 day), ActiveElection
 //                                          FirstTimeElectionPeriodDurationSeconds (1 day), AwaitingElectionResults FirstTimeWaitForResultsPeriodDurationSeconds (10 s);
 //                  then every month        ActiveElection from day ElectionPeriodStartDay of the month at ElectionPeriodStartHour (the 1st, 00:00 UTC) for
-//                                          ElectionPeriodDurationDays (5), ending at ElectionPeriodEndHour of its last day (the 5th, 23:00); RegistrationPeriod the
-//                                          RegistrationPeriodDurationDays (5) before it; the results at ElectionResultsHour (01:00) after the end;
+//                                          ElectionPeriodDurationDays (5), through the end of ElectionPeriodEndHour of its last day (hour 23: the vote ends at 00:00
+//                                          after the 5th); RegistrationPeriod the RegistrationPeriodDurationDays (5) before it; AwaitingElectionResults one second, the
+//                                          results, the post-election state and the mayor at 00:00:01;
 //                  PostElection            the mayor's term, until the next month's registration (at least MinimumLengthOfTermDays, 0 in the data).
 //                A first registration with no candidate runs again; a monthly one with no candidate skips that month's vote, and the mayor stays.  The day of
 //                ElectionPeriodStartDay is read as the day of the month (the data's other days are weekdays by name), the times as UTC.
 //    who         the node's citizens (kept here from the sessions' citizenship changes: an account that joins, renounces or lapses), one vote per account; a candidate is a
 //                citizen who registered in the registration period.  The mayor's account loses the office with its citizenship.
-//    the count   ranked choice (ServerRankedChoiceVoteForMayor sends the ranking; the window sends one): an instant runoff, the candidate with the fewest first choices out
-//                each round; a tie goes to the one who registered first.  A ballot keeps at most RankedChoiceVoteCountLimit (3) candidates.
+//    the count   ranked choice (ServerRankedChoiceVoteForMayor sends the ranking; the window sends one): an instant runoff.  Each ballot counts for its first choice
+//                still standing (one who withdrew or was counted out passes the ballot on; a ballot with none left counts no more); a majority of the ballots
+//                still counting wins, else the candidate with the fewest goes, the later registered of a tie first.  A ballot keeps at most
+//                RankedChoiceVoteCountLimit (3) candidates.
+//    the dues    the node's dues dates (CitizenshipRules): one schedule for all its citizens, from dues_anchor_ms (its first citizen's join) every period.
 //    the rank    a citizen's CitizenshipRank is its place in the node's citizens by when it joined (1: the first), which the dues' rank impact reads.
 // ============================================================================
 #pragma once
@@ -63,8 +67,7 @@ struct ElectionRules {
     int32_t election_days = 5;                 // ElectionPeriodDurationDays
     int     start_day = 1;                     // ElectionPeriodStartDay: the day of the month
     int     start_hour = 0;                    // ElectionPeriodStartHour (UTC)
-    int     end_hour = 23;                     // ElectionPeriodEndHour, of the election's last day
-    int     results_hour = 1;                  // ElectionResultsHour: the first such hour after the end
+    int     end_hour = 23;                     // ElectionPeriodEndHour, of the election's last day: the vote runs through the end of that hour
     int32_t min_term_days = 0;                 // MinimumLengthOfTermDays
     size_t  ranked_limit = 3;                  // ElectionConstants' RankedChoiceVoteCountLimit
     std::map<int64_t, int> min_citizens;       // CityNodeRecordBase's MayorMinimumCitizens by node (not listed, or 0: 1)
@@ -76,10 +79,10 @@ struct ElectionRules {
     uint8_t election_type = 0;                 // EMayorElectionType: Scientific 0
     /// The monthly cycle's ActiveElection start: the first one (day start_day of a month at start_hour) whose registration starts at or after `not_before_ms`.
     int64_t election_start_ms(int64_t not_before_ms) const;
-    /// The end of the election that starts at `start_ms`: end_hour of its election_days-th day.
+    /// The end of the election that starts at `start_ms`: the end of hour end_hour of its election_days-th day.
     int64_t election_end_ms(int64_t start_ms) const;
-    /// The results of an election that ended at `end_ms`: the first results_hour after it.
-    int64_t results_ms(int64_t end_ms) const;
+    /// The results of an election that ended at `end_ms`: one second after it.
+    int64_t results_ms(int64_t end_ms) const { return end_ms + 1000; }
     /// content.db's election_def: the first definition that is no test one.  nullopt with `error` for a file without the table.
     static std::optional<ElectionRules> load(const std::string& content_db_path, std::string& error);
 };
@@ -106,6 +109,7 @@ struct NodeElection {
     std::map<std::string, TaxOverride> taxes;                      // the mayor's rates by NodeTax tag (the others are the data's defaults)
     int64_t        treasury = 0;                                   // the node's money (copper): the taxes its shops took
     std::vector<NodeNews> news;                                    // the node's notification feed, oldest first (at most kMaxNews)
+    int64_t        dues_anchor_ms = 0;                             // the node's dues schedule: its dates are this plus whole periods (0: none yet)
     bool operator==(const NodeElection&) const = default;
 };
 
@@ -168,6 +172,9 @@ public:
     /// The node's treasury gains `copper` (a shop's tax; a game master's ServerGMAddNodeGold).
     void add_treasury(int64_t node, int64_t copper);
     int64_t treasury(int64_t node) const;
+    /// The node's dues schedule (0: none yet), and its start if it has none (the first citizen's join).
+    int64_t dues_anchor(int64_t node) const;
+    void    set_dues_anchor(int64_t node, int64_t at_ms);
     /// A notification for the node's feed (the oldest goes past kMaxNews).
     void add_news(int64_t node, NodeNews n);
     static constexpr size_t kMaxNews = 32;

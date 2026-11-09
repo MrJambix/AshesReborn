@@ -211,6 +211,7 @@ std::unique_ptr<PlayerSession> PlayerSession::join(Connection& conn, PlayerWorld
             n.guid_hex = other.id;
             for (char& c : n.guid_hex) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             n.name = other.name;
+            n.level = other.level;
             n.citizen_node = citizenship.node_guid;   // citizenship is the account's
             listed_self = listed_self || n.guid_hex == own;
             built.setup->account_characters.push_back(std::move(n));

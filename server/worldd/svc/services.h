@@ -193,6 +193,7 @@ struct ActionbarSlot {
 struct AccountCharacter {
     std::string id;     // 32 hex digits
     std::string name;
+    int32_t     level = 0;
 };
 
 /// Node citizenship (migration 0027, aoc.character.v1.Citizenship): an account's.  node_guid 0 is none (then only the renounce cooldown counts); times are Unix

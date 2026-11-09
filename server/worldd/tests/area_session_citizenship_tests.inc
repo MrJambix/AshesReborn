@@ -57,7 +57,7 @@ struct CitizenHarness : Harness {
         fx.world->set_city_nodes(nodes.get());
         world::CitizenshipRules rules;
         rules.dues_tier = kTestReceiptTier;
-        rules.join_cost = 3;
+        rules.join_cost = 1;   // (the join dialog's CitizenshipCost)
         rules.dues_cost = 1;
         rules.late_fee = 1;
         rules.level_threshold = 1000;   // (the flow's dues stay at 1: the level impact of the data's formula is tested in test_worldd_elections)
@@ -112,6 +112,7 @@ void test_citizenship_flow() {
     h.play();
     h.run(milliseconds(1500));
     spdlog::set_level(std::getenv("AOC_TEST_CITIZEN_LOG") ? spdlog::level::info : spdlog::level::off);
+    h.fx.world->set_elections(world::ElectionRules{}, "");   // (the store that keeps the node's dues schedule)
     CHECK(h.zoned, "the player stands in a zone of influence (the test's node is over it)");
     CHECK(h.s->inventory().count_of(fi::kPotion) == 5, "the character carries 5 potions, the test's tax receipts");
 
@@ -137,8 +138,8 @@ void test_citizenship_flow() {
     h.run(milliseconds(300));
     calls = pc_calls_since(h, from);
     const repl::RpcCall* dialog = last_call(calls, "ClientShowAddNodeCitizenshipDialog");
-    CHECK(dialog && call_int(*dialog, "NodeGuid") == kTestCitizenNode && call_int(*dialog, "CitizenshipCost") == 3 && call_int(*dialog, "VendorDefRecordGuid") == kTestReceiptShop,
-          "the line opens the join dialog: the node, a cost of 3 and the shop of the tax receipts");
+    CHECK(dialog && call_int(*dialog, "NodeGuid") == kTestCitizenNode && call_int(*dialog, "CitizenshipCost") == 1 && call_int(*dialog, "VendorDefRecordGuid") == kTestReceiptShop,
+          "the line opens the join dialog: the node, a cost of 1 and the shop of the tax receipts");
     const int64_t now_s = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     CHECK(dialog && call_int(*dialog, "CitizenshipDuesDueTime") >= now_s + 14 * 86400 && call_int(*dialog, "CitizenshipDuesDueTime") < now_s + 21 * 86400,
           "... with the first dues due on a due day two to three weeks away (Unix seconds)");
@@ -153,14 +154,14 @@ void test_citizenship_flow() {
     // the application
     const size_t saves = h.sink.progress.size();
     from = h.got.size();
-    h.apply(kTestCitizenNode, 3);
+    h.apply(kTestCitizenNode, 1);
     h.run(milliseconds(300));
     calls = pc_calls_since(h, from);
     const repl::RpcCall* ok = last_call(calls, "ClientCitizenshipApplicationSuccessful");
     const repl::RpcCall* toast = last_call(calls, "ClientShowCitizenshipToast");
-    CHECK(ok && call_int(*ok, "NumDuesFulfilled") == 3, "the application succeeds: 3 dues fulfilled");
+    CHECK(ok && call_int(*ok, "NumDuesFulfilled") == 1, "the application succeeds: 1 due fulfilled (CitizenshipCost 1)");
     CHECK(toast && call_int(*toast, "NodeGuid") == kTestCitizenNode, "... with the citizenship toast for the node");
-    CHECK(count_calls(calls, "ClientReceiveStorageEvent") >= 1 && h.s->inventory().count_of(fi::kPotion) == 2, "the 3 tax receipts leave the bags (5 -> 2), told as storage events");
+    CHECK(count_calls(calls, "ClientReceiveStorageEvent") >= 1 && h.s->inventory().count_of(fi::kPotion) == 4, "the tax receipt leaves the bags (5 -> 4), told as storage events");
     CHECK(h.s->citizenship().node_guid == kTestCitizenNode && h.s->citizenship().primary_character_id == kCyb && h.s->citizenship().joined_ms > 0 &&
               h.s->citizenship().dues_due_ms > h.s->citizenship().joined_ms,
           "the account is a citizen of the node, the player its primary character, with dues due later");
@@ -178,8 +179,13 @@ void test_citizenship_flow() {
     calls = pc_calls_since(h, from);
     const repl::CitizenshipWindowData* after = window_of(last_call(calls, "ClientPopulateCitizenshipData"));
     CHECK(after && after->status.primary.name == "cyb" && after->status.dues_required == 1 && after->status.player_level == 12 && after->dues_state == 0 &&
-              after->dues_due_time == h.s->citizenship().dues_due_ms / 1000,
+              after->dues_due_time == h.s->citizenship().dues_due_ms / 1000 && after->status.property_state == 2,
           "the window names the player as the primary character, 1 Tax Receipt of dues, awaiting the due date");
+    const world::Elections* dues_el = h.fx.world->elections();
+    CHECK(dues_el && dues_el->dues_anchor(kTestCitizenNode) == h.s->citizenship().joined_ms &&
+              h.s->citizenship().dues_due_ms == h.s->citizenship().joined_ms + 14LL * 86400000,
+          "the node's first citizen starts its dues schedule: the first date a period after the join");
+    CHECK(after && after->status.dues_paid == 0, "a new citizen's dues for the coming date are unpaid: DuesPaid 0");
 
     // a second offer: the account is a citizen already
     from = h.got.size();
@@ -188,12 +194,29 @@ void test_citizenship_flow() {
     calls = pc_calls_since(h, from);
     CHECK(count_calls(calls, "ClientShowAddNodeCitizenshipDialog") == 0 && count_calls(calls, "ClientCitizenshipApplicationRejection") == 1, "a second offer is refused: a citizen already");
 
-    // the dues: paid ahead is refused; overdue costs the late fee and moves the date on
+    // the dues, one rule for the window and the payment: unpaid, they are taken; paid, the window shows them paid and a payment is refused
+    const int64_t coming = h.s->citizenship().dues_due_ms;
     from = h.got.size();
+    h.t += milliseconds(500);
     h.pc_call("ServerFulfillCitizenshipDues", [](const schema::RpcSchema& r, repl::RpcParams& p) { repl::set_rpc_param(r, p, "DuesRequired", repl::Value::i64(1)); });
     h.run(milliseconds(300));
     calls = pc_calls_since(h, from);
-    CHECK(count_calls(calls, "ClientCitizenshipDuesFulfillmentRejection") == 1 && h.s->inventory().count_of(fi::kPotion) == 2, "dues a whole period ahead are refused");
+    CHECK(last_call(calls, "ClientCitizenshipDuesFulfillmentSuccessful") && h.s->inventory().count_of(fi::kPotion) == 3 &&
+              h.s->citizenship().dues_due_ms == coming + 14LL * 86400000,
+          "the unpaid dues of the coming date are taken (4 -> 3); the next unpaid date is the one after it");
+    from = h.got.size();
+    h.t += milliseconds(500);
+    h.pc_call("ServerSetEssentialCitizenshipWindowData", [](const schema::RpcSchema&, repl::RpcParams&) {});
+    h.run(milliseconds(300));
+    const repl::CitizenshipWindowData* paid_window = window_of(last_call(pc_calls_since(h, from), "ClientPopulateCitizenshipData"));
+    CHECK(paid_window && paid_window->status.dues_paid == 1 && paid_window->dues_due_time == coming / 1000,
+          "... the window shows them paid, and still the node's coming date");
+    from = h.got.size();
+    h.t += milliseconds(500);
+    h.pc_call("ServerFulfillCitizenshipDues", [](const schema::RpcSchema& r, repl::RpcParams& p) { repl::set_rpc_param(r, p, "DuesRequired", repl::Value::i64(1)); });
+    h.run(milliseconds(300));
+    calls = pc_calls_since(h, from);
+    CHECK(count_calls(calls, "ClientCitizenshipDuesFulfillmentRejection") == 1 && h.s->inventory().count_of(fi::kPotion) == 3, "paid dues are not paid again");
     svc::Citizenship overdue = h.s->citizenship();
     const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     overdue.dues_due_ms = now_ms - 10LL * 86400000;   // ten days ago: past the 5 overdue days
@@ -204,8 +227,9 @@ void test_citizenship_flow() {
     h.run(milliseconds(300));
     calls = pc_calls_since(h, from);
     const repl::RpcCall* paid = last_call(calls, "ClientCitizenshipDuesFulfillmentSuccessful");
-    CHECK(paid && call_int(*paid, "NumFulfilled") == 2 && h.s->inventory().count_of(fi::kPotion) == 0, "overdue dues cost the dues and the late fee: 2 Tax Receipts");
-    CHECK(h.s->citizenship().dues_due_ms > now_ms, "... and the next date is after now");
+    CHECK(paid && call_int(*paid, "NumFulfilled") == 2 && h.s->inventory().count_of(fi::kPotion) == 1, "overdue dues cost the dues and the late fee: 2 Tax Receipts");
+    CHECK(h.s->citizenship().dues_due_ms > now_ms && (h.s->citizenship().dues_due_ms - dues_el->dues_anchor(kTestCitizenNode)) % (14LL * 86400000) == 0,
+          "... and the next unpaid date is after now, one of the node's");
 
     // the renouncement: another's name is refused; the player's own ends it
     from = h.got.size();
@@ -578,9 +602,107 @@ void test_node_taxes() {
     CHECK(el->treasury(kTestCitizenNode) == 1234 + 66, "ServerGMAddNodeGold adds to the treasury");
 }
 
+/// What the client sees of an election a game master moves on with ".election next": at every phase the citizen's window comes again unasked (the node window opens
+/// the candidacy or the vote from its MayorElectionStateChanged notification), with the phase's start and end and its countdown; the results with ClientFinishMayorVote;
+/// the mayor's message at the next login.
+void test_election_in_game() {
+    std::printf("node citizenship: an election a game master moves on, as the client sees it\n");
+    CitizenHarness h(/*gm_level=*/3);
+    h.play();
+    h.run(milliseconds(1500));
+    spdlog::set_level(std::getenv("AOC_TEST_CITIZEN_LOG") ? spdlog::level::info : spdlog::level::off);
+    h.fx.world->set_elections(world::ElectionRules{}, "");
+    world::Elections* el = h.fx.world->elections();
+    h.s->set_gm_enabled(true);
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    h.s->set_citizenship_for_test(svc::Citizenship{kTestCitizenNode, kCyb, now_ms, now_ms + 14LL * 86400000, 0});
+    h.s->run_citizenship_for_test(h.conn);
+    // the window as the client gets it unasked, and its election notification
+    const auto pushed = [&](size_t from) -> std::optional<repl::CitizenshipWindowData> {   // (a copy: the calls are a temporary list)
+        const auto calls = pc_calls_since(h, from);
+        const repl::CitizenshipWindowData* w = window_of(last_call(calls, "ClientPopulateCitizenshipData"));
+        return w ? std::optional<repl::CitizenshipWindowData>(*w) : std::nullopt;
+    };
+    const auto phase_ok = [&](const std::optional<repl::CitizenshipWindowData>& w, uint8_t state) {
+        const world::NodeElection* e = el->node(kTestCitizenNode);
+        if (!w || !e || w->state != state || w->notifications.empty()) return false;
+        const repl::NodeNotification& n = w->notifications[0];
+        const int64_t left = (e->phase_ends_ms - now_ms) / 1000;
+        return n.type == 7 && n.election_state == state && n.created == e->phase_started_ms / 1000 && n.timestamp == e->phase_ends_ms / 1000 &&
+               std::abs(w->phase_seconds_left - left) <= 120;
+    };
+    const auto next = [&]() {
+        h.t += milliseconds(500);
+        const std::string said = h.s->election_command_for_test(h.conn, "next");
+        h.run(milliseconds(300));
+        return said;
+    };
+    // the first registration: the citizen stands (the window answers the candidacy)
+    if (el->node(kTestCitizenNode)->state == world::ElectionState::AwaitingFirst) next();
+    CHECK(el->node(kTestCitizenNode)->state == world::ElectionState::Registration, "the citizen's node is in its first registration");
+    size_t from = h.got.size();
+    h.t += milliseconds(500);
+    h.pc_call("ServerAddNodeMayorCandidate", [](const schema::RpcSchema&, repl::RpcParams&) {});
+    h.run(milliseconds(300));
+    CHECK(phase_ok(pushed(from), 1) && count_calls(pc_calls_since(h, from), "ClientPopulateCitizenshipData") == 1,
+          "RegistrationPeriod: one window with the notification the candidacy modal opens on, the phase's start, end and countdown");
+    // .election next: the vote opens on every citizen's client
+    const uint32_t pushes = h.s->election_windows_pushed();
+    from = h.got.size();
+    const std::string said = next();
+    CHECK(said.find("ActiveElection") != std::string::npos && h.s->election_windows_pushed() == pushes + 1, ".election next: ActiveElection, and the window goes to the citizen");
+    auto w = pushed(from);
+    CHECK(phase_ok(w, 2), "... its notification in ActiveElection (the voting modal's), the phase's start and end, the countdown to its end");
+    CHECK(w && w->names.size() == 1 && w->names[0].second == "cyb", "... with the candidates the voting modal lists");
+    // the vote, then the results
+    const auto own = items::guid_of(kCyb);
+    h.t += milliseconds(500);
+    h.pc_call("ServerRankedChoiceVoteForMayor", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::ArrayValue list;
+        repl::ElementState g;
+        g.values[1] = repl::Value::i64(static_cast<int32_t>(own->a));
+        g.values[2] = repl::Value::i64(static_cast<int32_t>(own->b));
+        g.values[3] = repl::Value::i64(static_cast<int32_t>(own->c));
+        g.values[4] = repl::Value::i64(static_cast<int32_t>(own->d));
+        list.elements.push_back(std::move(g));
+        repl::set_rpc_param(r, p, "RankedCandidateGuids", repl::Value(std::move(list)));
+    });
+    h.run(milliseconds(300));
+    from = h.got.size();
+    next();
+    CHECK(phase_ok(pushed(from), 3), ".election next: AwaitingElectionResults reaches the client");
+    from = h.got.size();
+    next();
+    auto calls = pc_calls_since(h, from);
+    const repl::RpcCall* finish = last_call(calls, "ClientFinishMayorVote");
+    const repl::Value* winner = finish ? repl::rpcf::value_of(*finish->rpc, finish->params, "WinnerName") : nullptr;
+    w = pushed(from);
+    CHECK(winner && winner->get_if<std::string>() && *winner->get_if<std::string>() == "cyb" && h.s->mayor_node() == kTestCitizenNode,
+          ".election next: the results, ClientFinishMayorVote naming the mayor, OwnerInfo.MayorNode");
+    bool elected = false;
+    if (w) {
+        for (const repl::NodeNotification& n : w->notifications) elected = elected || (n.type == 6 && n.mayor == "cyb");
+    }
+    CHECK(phase_ok(w, 4) && elected, "... and the window in PostElection with the MayorElected notification");
+    // the mayor's message: at the next login the citizen is told it
+    h.t += milliseconds(500);
+    h.pc_call("ServerSetMayorMessage", [](const schema::RpcSchema& r, repl::RpcParams& p) { repl::set_rpc_param(r, p, "Message", repl::Value::str("Taxes are due")); });
+    h.run(milliseconds(300));
+    from = h.got.size();
+    h.s->relogin_elections_for_test();
+    h.s->run_citizenship_for_test(h.conn);
+    h.run(milliseconds(300));
+    const auto login_calls = pc_calls_since(h, from);
+    const repl::RpcCall* callout = last_call(login_calls, "ClientMayorMessageCallout");
+    const repl::Value* text = callout ? repl::rpcf::value_of(*callout->rpc, callout->params, "Message") : nullptr;
+    CHECK(text && text->get_if<std::string>() && *text->get_if<std::string>() == "Taxes are due", "a citizen's login brings the mayor's message");
+    CHECK(count_calls(login_calls, "ClientFinishMayorVote") == 0, "... and not the results again");
+}
+
 }  // namespace
 
 AOC_REGISTER_TEST(test_citizenship_flow);
 AOC_REGISTER_TEST(test_mayor_flow);
 AOC_REGISTER_TEST(test_citizenship_gm);
 AOC_REGISTER_TEST(test_node_taxes);
+AOC_REGISTER_TEST(test_election_in_game);

@@ -113,7 +113,11 @@ std::string PlayerSession::gm_join_citizenship(Connection& conn, int64_t node, c
     c.node_guid = node;
     c.primary_character_id = character_id_;
     c.joined_ms = now_ms;
-    c.dues_due_ms = rules->next_due_ms(now_ms);
+    start_dues_schedule(node, now_ms);
+    {
+        const world::Elections* el = world_->elections();
+        c.dues_due_ms = rules->next_dues_ms(el && el->dues_anchor(node) != 0 ? el->dues_anchor(node) : now_ms, now_ms);
+    }
     citizenship_offer_.reset();
     ++citizenship_joins_;
     spdlog::info("[gm] {}: {} makes the account a citizen of node {}", name(), by, node);
@@ -146,8 +150,8 @@ std::string PlayerSession::citizenship_status_text() const {
     int rank = 0;
     const int32_t owed = citizenship_dues(now_ms, &f, &rank);
     char buf[256];
-    std::snprintf(buf, sizeof buf, ": a citizen of node %lld (rank %d), dues %d due in %lld s (level x%.2f, rank x%.2f, citizens x%.2f)",
-                  static_cast<long long>(citizenship_.node_guid), rank, owed, static_cast<long long>((citizenship_.dues_due_ms - now_ms) / 1000), f.level, f.rank, f.population);
+    std::snprintf(buf, sizeof buf, ": a citizen of node %lld (rank %d), dues %d %s, due in %lld s (level x%.2f, rank x%.2f)", static_cast<long long>(citizenship_.node_guid),
+                  rank, owed, dues_paid_ahead(now_ms) ? "paid" : "unpaid", static_cast<long long>((citizenship_.dues_due_ms - now_ms) / 1000), f.level, f.rank);
     return name() + buf;
 }
 

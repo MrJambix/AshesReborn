@@ -275,7 +275,7 @@ CharacterResult GrpcServices::get_character(const std::string& id) {
         list_req.set_account_id(r.character.account_id);
         characterv1::ListCharactersResponse list_resp;
         if (stubs_->character->ListCharacters(&list_ctx, list_req, &list_resp).ok()) {
-            for (const auto& other : list_resp.characters()) r.character.account_characters.push_back({other.id(), other.name()});
+            for (const auto& other : list_resp.characters()) r.character.account_characters.push_back({other.id(), other.name(), other.level()});
         }
     }
     return r;

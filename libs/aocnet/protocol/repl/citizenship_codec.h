@@ -126,7 +126,7 @@ inline bool write_citizenship_window(emit::BunchWriter& out, const CitizenshipWi
         write_guid_words(out, e.first);
         if (!write_fstring(out, e.second)) return false;
     }
-    out.write_int32(d.count);
+    out.write_int32(d.phase_seconds_left);
     const CitizenshipStatus& s = d.status;
     write_guid_words(out, s.primary.guid);
     if (!write_fstring(out, s.primary.name)) return false;
@@ -209,7 +209,7 @@ inline std::optional<CitizenshipWindowData> read_citizenship_window(wire::Packet
         if (!nm) return std::nullopt;
         d.names.emplace_back(key, std::move(*nm));
     }
-    d.count = static_cast<int32_t>(r.read_uint32());
+    d.phase_seconds_left = static_cast<int32_t>(r.read_uint32());
     CitizenshipStatus& s = d.status;
     s.primary.guid = read_guid_words(r);
     auto primary = read_fstring(r);

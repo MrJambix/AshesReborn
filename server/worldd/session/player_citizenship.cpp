@@ -19,8 +19,12 @@
 //    * the window: ServerSetEssentialCitizenshipWindowData() (AAoCPlayerController::RequestCitizenshipWindowData 0x146ae61a0, at most once per the window's update frequency)
 //      -> ClientPopulateCitizenshipData(FEssentialCitizenshipWindowData) (protocol/repl/citizenship_codec.h).
 //
-//  Modelled (no retail recording of any of it is here): the cost (InitialDueCost, world/citizenship.h), the dues schedule, the window's rank, property state and the parts of
-//  the window data that are not read yet (sent empty), and the offer's lifetime.  Times on the wire are Unix seconds (the window compares them with the seconds since 1970
+//  The election's mechanics in the window: its MayorElectionStateChanged notification (Created the phase's start, Timestamp its end) is what the node window opens
+//  the candidacy modal on (RegistrationPeriod) or the voting modal (ActiveElection), and the int32 after the two maps is the phase's seconds left.  The window
+//  goes again to every citizen online when the phase changes or a candidate registers (ClientPopulateCitizenshipData only stores the data and updates an open
+//  window), the results come with ClientFinishMayorVote, and the mayor's message comes at the login.
+//
+//  Modelled: the window's rank, the parts of the window data that are not read yet (sent empty), and the offer's lifetime.  Times on the wire are Unix seconds (the window compares them with the seconds since 1970
 //  the client keeps at its receipt, 0x146a9e580).
 // ============================================================================
 #include "session/player_session_util.h"
@@ -159,7 +163,9 @@ void PlayerSession::open_citizenship_dialog(Connection& conn, const world::World
         citizenship_offer_ = CitizenshipOffer{npc.id, node, vendor, rules->join_cost, true, now};
         ++citizenship_dialogs_;
         const int32_t cost = rules->join_cost;
-        const int64_t due_s = rules->next_due_ms(now_ms) / 1000;
+        const world::Elections* el = world_->elections();
+        const int64_t anchor = el && el->dues_anchor(node) != 0 ? el->dues_anchor(node) : now_ms;   // (a node with no citizen yet: its schedule starts with this one)
+        const int64_t due_s = rules->next_dues_ms(anchor, now_ms) / 1000;
         const FIntrepidNetworkGUID g = npc.actor.guid;
         spdlog::log(level_for(citizenship_log_), "[nodes] {}: {} offers the citizenship of node {} for {} Tax Receipts (dues next on {} s)", name(), npc.npc.name, node, cost, due_s);
         send_citizenship_call(conn, "ClientShowAddNodeCitizenshipDialog", [node, cost, due_s, g, vendor](const schema::RpcSchema& s, repl::RpcParams& p) {
@@ -223,7 +229,11 @@ void PlayerSession::on_citizenship_application(Connection& conn, const repl::Cli
     c.node_guid = *node;
     c.primary_character_id = character_id_;
     c.joined_ms = now_ms;
-    c.dues_due_ms = rules->next_due_ms(now_ms);
+    start_dues_schedule(c.node_guid, now_ms);
+    {
+        const world::Elections* el = world_->elections();
+        c.dues_due_ms = rules->next_dues_ms(el && el->dues_anchor(c.node_guid) != 0 ? el->dues_anchor(c.node_guid) : now_ms, now_ms);   // the node's next date
+    }
     citizenship_offer_.reset();
     ++citizenship_joins_;
     spdlog::info("[nodes] {}: the account becomes a citizen of node {} ({} Tax Receipts paid; dues next due at {} ms)", name(), c.node_guid, cost, c.dues_due_ms);
@@ -280,15 +290,14 @@ void PlayerSession::on_citizenship_dues(Connection& conn, const repl::ClientRpc&
     if (citizenship_.node_guid == 0) return refuse("the account is a citizen of no node");
     if (const world::Elections* el = world_->elections(); el && el->dues_disabled(citizenship_.node_guid)) return refuse("the node's dues are switched off");
     const int64_t now_ms = wall_ms();
-    const int64_t period = static_cast<int64_t>(rules->dues_weeks) * 7 * 86400000;
-    if (citizenship_.dues_due_ms - now_ms > period) return refuse("the dues are paid until " + std::to_string(citizenship_.dues_due_ms) + " ms already");
+    if (dues_paid_ahead(now_ms)) return refuse("the dues for the node's coming date (" + std::to_string(node_dues_date(now_ms)) + " ms) are paid already");
     const int32_t owed = citizenship_dues(now_ms);
     if (*asked != owed) spdlog::log(level_for(citizenship_log_), "[nodes] {}: the client asks to pay {} dues, {} are owed: what is owed is taken", name(), *asked, owed);
     std::string why;
     if (!pay_tax_receipts(conn, owed, why)) return refuse(why);
     svc::Citizenship c = citizenship_;
-    // the next period: one period on from the date that was due, or from now for dues paid after they were overdue
-    c.dues_due_ms = c.dues_due_ms > 0 && now_ms < rules->overdue_ms(c.dues_due_ms) ? c.dues_due_ms + period : rules->next_due_ms(now_ms);
+    // paid for the node's coming date (an overdue payment too): the next unpaid date is the one after it
+    c.dues_due_ms = node_dues_date(now_ms) + rules->period_ms();
     ++citizenship_dues_paid_;
     spdlog::info("[nodes] {}: pays {} Tax Receipt(s) of citizenship dues for node {}: next due at {} ms", name(), owed, c.node_guid, c.dues_due_ms);
     set_citizenship(conn, c, "the citizenship dues");
@@ -344,7 +353,7 @@ repl::CitizenshipWindowData PlayerSession::citizenship_window(int64_t now_ms) co
     world::CitizenshipRules::DuesFactors factors;
     int rank = 1;
     s.dues_required = citizenship_dues(now_ms, &factors, &rank);
-    s.dues_paid = due > now_ms ? s.dues_required : 0;
+    s.dues_paid = dues_paid_ahead(now_ms) ? s.dues_required : 0;   // (the payment's rule: 0 until the coming date is paid)
     s.dues_level_impact = factors.level;        // DuesLevelImpact
     s.dues_rank_impact = factors.rank;          // DuesCitizenshipRankImpact
     s.dues_non_owner_impact = factors.non_owner;   // DuesNonPropertyOwnerImpact
@@ -352,16 +361,20 @@ repl::CitizenshipWindowData PlayerSession::citizenship_window(int64_t now_ms) co
     if (rules && due > 0 && now_ms >= rules->overdue_ms(due)) s.at_risk_start = static_cast<double>(rules->overdue_ms(due)) / 1000.0;   // CitizenshipAtRiskStartTime (Unix seconds)
     s.rank = rank;                                                            // CitizenshipRank: the place among the node's citizens by when they joined
     s.player_level = progress_.level;
-    s.highest_level = progress_.level;
-    s.property_state = 1;                                                     // ApartmentRenter (modelled: no housing)
-    d.dues_due_time = due / 1000;
-    d.late_fees_due_time = rules && due > 0 ? rules->overdue_ms(due) / 1000 : 0;
+    s.highest_level = account_highest_level();
+    s.property_state = 2;                                                     // EPropertyOwnershipState's count: neither owner nor renter (no housing)
+    // the date shown: the player's unpaid one while it is ahead and not past the node's coming date, else the node's coming date (after a date passes, the next one)
+    const int64_t coming = node_dues_date(now_ms);
+    const int64_t shown = due > now_ms ? std::min(due, coming) : coming;
+    d.dues_due_time = shown / 1000;
+    d.late_fees_due_time = rules && due > 0 ? rules->overdue_ms(due > now_ms ? shown : due) / 1000 : 0;
     d.dues_state = due > 0 && now_ms >= due ? 1 : 0;                          // AwaitingOverdueDate once due, else AwaitingDueDate
     // stage 2: the node's election.  The second map is the candidates (UVotingWindow::Populate 0x1468d01e0 makes an item of each, its guid and name), the first the ballots by
     // the voter's character guid (the window looks the player's up by PrimaryCharacter, then AlternateCharacters, and marks the first of its guids chosen); the byte is the state.
     const world::Elections* el = world_ ? world_->elections() : nullptr;
     if (const world::NodeElection* e = el ? el->node(citizenship_.node_guid) : nullptr) {
         d.state = static_cast<uint8_t>(e->state);
+        d.phase_seconds_left = static_cast<int32_t>(std::clamp<int64_t>((e->phase_ends_ms - now_ms) / 1000, 0, INT32_MAX));   // the phase's countdown
         if (e->state == world::ElectionState::Registration || e->state == world::ElectionState::Active || e->state == world::ElectionState::AwaitingResults) {
             for (const world::ElectionPerson& c : e->candidates) {
                 if (const auto g = items::guid_of(c.character_id); g && d.names.size() < repl::kMaxCitizenshipEntries) d.names.emplace_back(*g, c.name);
@@ -377,8 +390,9 @@ repl::CitizenshipWindowData PlayerSession::citizenship_window(int64_t now_ms) co
             d.named_guids.push_back(std::move(ballot));
         }
         repl::NodeNotification n;   // the election's state, the notification the window shows for it
-        n.type = 7;                 // ENodeSystemNotificationType::MayorElectionStateChanged
-        n.created = n.timestamp = e->phase_started_ms / 1000;
+        n.type = 7;                 // ENodeSystemNotificationType::MayorElectionStateChanged: the node window opens the candidacy (Registration) or the vote (Active) on it
+        n.created = e->phase_started_ms / 1000;   // the phase's start
+        n.timestamp = std::max(e->phase_ends_ms, e->phase_started_ms) / 1000;   // and its end
         n.election_type = el->rules().election_type;
         n.election_state = static_cast<uint8_t>(e->state);
         d.notifications.push_back(std::move(n));
@@ -415,6 +429,7 @@ repl::CitizenshipWindowData PlayerSession::citizenship_window(int64_t now_ms) co
 void PlayerSession::send_citizenship_window(Connection& conn) {
     const repl::CitizenshipWindowData d = citizenship_window(wall_ms());
     ++citizenship_windows_;
+    election_seen_candidates_ = d.names.size();   // (this window lists the candidates already: run_elections need not send it again for them)
     send_citizenship_call(conn, "ClientPopulateCitizenshipData", [d](const schema::RpcSchema& s, repl::RpcParams& p) {
         return repl::set_rpc_param(s, p, "EssentialCitizenshipData", repl::Value(d));
     });
@@ -497,12 +512,43 @@ int32_t PlayerSession::citizenship_dues(int64_t now_ms, world::CitizenshipRules:
     const world::Elections* el = world_->elections();
     if (el && el->dues_disabled(citizenship_.node_guid)) return 0;   // a game master switched the node's dues off
     const int r = el ? std::max(1, el->citizen_rank(citizenship_.node_guid, account_id_)) : 1;
-    const size_t citizens = el ? el->citizen_count(citizenship_.node_guid) : 1;
     const int node_level = world_->city_nodes() ? world_->city_nodes()->level_of(citizenship_.node_guid) : 0;
-    const world::CitizenshipRules::DuesFactors f = rules->dues_factors(r, progress_.level, node_level, citizens);
+    const world::CitizenshipRules::DuesFactors f = rules->dues_factors(r, account_highest_level(), node_level);
     if (factors) *factors = f;
     if (rank) *rank = r;
     return rules->dues_owed(citizenship_.dues_due_ms, now_ms, rules->dues_amount(f), node_level);
+}
+
+int64_t PlayerSession::node_dues_date(int64_t now_ms) const {
+    const world::CitizenshipRules* rules = world_ ? world_->citizenship_rules() : nullptr;
+    if (!rules || citizenship_.node_guid == 0) return 0;
+    const world::Elections* el = world_->elections();
+    int64_t anchor = el ? el->dues_anchor(citizenship_.node_guid) : 0;
+    if (anchor == 0) anchor = citizenship_.joined_ms > 0 ? citizenship_.joined_ms : now_ms;
+    return rules->next_dues_ms(anchor, now_ms);
+}
+
+void PlayerSession::start_dues_schedule(int64_t node, int64_t at_ms) {
+    world::Elections* el = world_ ? world_->elections() : nullptr;
+    if (!el || node == 0 || el->dues_anchor(node) != 0) return;
+    el->set_dues_anchor(node, at_ms);
+    world_->save_elections();
+    spdlog::info("[nodes] the dues schedule of node {} starts at {} ms", node, at_ms);
+}
+
+bool PlayerSession::dues_paid_ahead(int64_t now_ms) const {
+    if (citizenship_.node_guid == 0) return false;
+    if (const world::Elections* el = world_ ? world_->elections() : nullptr; el && el->dues_disabled(citizenship_.node_guid)) return false;
+    return citizenship_.dues_due_ms > node_dues_date(now_ms);
+}
+
+int PlayerSession::account_highest_level() const {
+    int best = progress_.level;
+    const std::string own = upper(character_id_);
+    for (const bootstrap::AccountCharacterNode& c : pb_.setup().account_characters) {
+        if (c.guid_hex != own) best = std::max<int>(best, c.level);   // (this character's own is its live level)
+    }
+    return best;
 }
 
 world::ElectionPerson PlayerSession::citizen_person() const {
@@ -527,6 +573,8 @@ void PlayerSession::run_elections(Connection& conn, int64_t now_ms) {
             el->set_citizen(citizenship_.node_guid, citizen_person());
             world_->save_elections();
         }
+        // a node with citizens from before its dues schedule: it starts at this citizen's date, so that date is one of the node's
+        if (el->dues_anchor(citizenship_.node_guid) == 0) start_dues_schedule(citizenship_.node_guid, citizenship_.dues_due_ms > 0 ? citizenship_.dues_due_ms : now_ms);
     }
     world_->tick_elections(now_ms);
     if (el->version() == election_seen_version_) return;
@@ -539,6 +587,20 @@ void PlayerSession::run_elections(Connection& conn, int64_t now_ms) {
     }
     const world::NodeElection* e = citizenship_.node_guid != 0 ? el->node(citizenship_.node_guid) : nullptr;
     const int state = e ? static_cast<int>(e->state) : -1;
+    const size_t candidates = e ? e->candidates.size() : 0;
+    // the login's first look: the mayor's message goes to the node's citizens
+    if (e && election_seen_state_ < 0 && e->mayor.account != 0 && !e->mayor_message.empty()) {
+        const std::string mayor = e->mayor.name, text = e->mayor_message;
+        send_citizenship_call(conn, "ClientMayorMessageCallout", [mayor, text](const schema::RpcSchema& s, repl::RpcParams& p) {
+            return repl::set_rpc_param(s, p, "MayorName", repl::Value::str(mayor)) && repl::set_rpc_param(s, p, "Message", repl::Value::str(text));
+        });
+    }
+    // a phase change or a new candidate while this session watched: the window again, so its notification opens the candidacy or the vote as it stands now
+    if (e && election_seen_state_ >= 0 && (state != election_seen_state_ || candidates != election_seen_candidates_)) {
+        ++election_windows_pushed_;
+        send_citizenship_window(conn);
+    }
+    election_seen_candidates_ = candidates;
     // the results: the node's election came to its term while this session watched (not at its first look: a login after the results is not told them again)
     if (e && state == static_cast<int>(world::ElectionState::Post) && election_seen_state_ >= 0 && election_seen_state_ != static_cast<int>(world::ElectionState::Post)) {
         ++mayor_results_seen_;
