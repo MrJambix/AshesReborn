@@ -1,6 +1,6 @@
 # Patch notes
 
-## Next update: node citizenship and mayors, emotes, knockbacks, stacking, coffers, melodies, pets and loot
+## 2026-11-09: node citizenship and mayors, emotes, knockbacks, stacking, coffers, melodies, pets and loot
 
 ### New
 - Emotes: type /sit, /wave, /bow, /dance, /cheer, /clap or any of the game's other emote commands, in any letter case, to play it. Players around you see it. A second /sit stands you up, and /dance plays one of four dances.
