@@ -473,8 +473,114 @@ void test_citizenship_gm() {
     CHECK(h.s->citizenship().renounce_cooldown_until_ms == 0, "ServerGMEndCitizenshipRenounceCooldown ends the renounce cooldown");
 }
 
+/// The mayor's taxes through a session (session/player_node_taxes.cpp): a rate within the node's limits is taken and the table goes back with it, one outside them is
+/// refused, a player who is no mayor gets the callout; the mayor's view of the treasury.
+void test_node_taxes() {
+    std::printf("node citizenship: the mayor's taxes and the node's treasury\n");
+    CitizenHarness h(/*gm_level=*/3);
+    h.play();
+    h.run(milliseconds(1500));
+    spdlog::set_level(std::getenv("AOC_TEST_CITIZEN_LOG") ? spdlog::level::info : spdlog::level::off);
+    h.fx.world->set_elections(world::ElectionRules{}, "");
+    world::Elections* el = h.fx.world->elections();
+    world::CitizenshipRules rules = *h.fx.world->citizenship_rules();
+    constexpr int64_t kTable = 7770099;
+    rules.node_tax_table[kTestCitizenNode] = kTable;
+    rules.tax_limits[kTable]["NodeTax"] = world::TaxLimit{0.5f, 0.1f, 1.0f, 0, 0, 0};
+    h.fx.world->set_citizenship_rules(rules);
+    const auto send_rate = [&](float percent) {
+        h.t += milliseconds(500);
+        h.pc_call("ServerSetTaxOverride", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+            repl::NodeTaxDetails d;
+            d.node = kTestCitizenNode;
+            repl::NodeTaxEntry e;
+            e.tag = "NodeTax.ArtisanTax";
+            e.tax_percent = percent;
+            d.entries.push_back(e);
+            repl::set_rpc_param(r, p, "TaxUpdates", repl::Value(std::move(d)));
+        });
+        h.run(milliseconds(300));
+    };
+    const auto table_rate = [&](const std::vector<repl::RpcCall>& calls) -> float {
+        const repl::RpcCall* c = last_call(calls, "ClientSetNodeTaxTable");
+        const repl::Value* v = c ? repl::rpcf::value_of(*c->rpc, c->params, "NodeTaxDetails") : nullptr;
+        const repl::NodeTaxDetails* d = v ? v->get_if<repl::NodeTaxDetails>() : nullptr;
+        if (!d) return -1.0f;
+        for (const repl::NodeTaxEntry& e : d->entries) {
+            if (e.tag == "NodeTax.ArtisanTax") return e.flag_a && e.flag_b ? e.tax_percent : -2.0f;
+        }
+        return -3.0f;
+    };
+    // no mayor yet: the callout
+    size_t from = h.got.size();
+    send_rate(0.25f);
+    auto calls = pc_calls_since(h, from);
+    CHECK(!el->taxes(kTestCitizenNode) && count_calls(calls, "ClientShowMustBeMayorCallout") == 1 && h.s->tax_overrides_refused() == 1,
+          "a player who is no mayor of the node sets no tax: ClientShowMustBeMayorCallout");
+    // the mayor
+    el->set_citizen(kTestCitizenNode, world::ElectionPerson{h.record.account_id, kCyb, "cyb", 1});
+    el->set_mayor(kTestCitizenNode, world::ElectionPerson{h.record.account_id, kCyb, "cyb", 1}, 1);
+    from = h.got.size();
+    send_rate(0.25f);
+    calls = pc_calls_since(h, from);
+    CHECK(el->taxes(kTestCitizenNode) && el->taxes(kTestCitizenNode)->at("NodeTax.ArtisanTax").percent == 0.25f && h.s->tax_overrides_taken() == 1,
+          "the mayor's rate within the node's limits (10% to 100%) is taken");
+    CHECK(table_rate(calls) == 0.25f, "... and the node's table goes back with it, marked as changed");
+    h.s->set_citizenship_for_test(svc::Citizenship{kTestCitizenNode, kCyb, 1, 2, 0});   // (a citizen of the node, its dues long due)
+    from = h.got.size();
+    h.t += milliseconds(500);
+    h.pc_call("ServerSetEssentialCitizenshipWindowData", [](const schema::RpcSchema&, repl::RpcParams&) {});
+    h.run(milliseconds(300));
+    calls = pc_calls_since(h, from);
+    const repl::CitizenshipWindowData* w = window_of(last_call(calls, "ClientPopulateCitizenshipData"));
+    bool taxes_news = false, dues_news = false;
+    for (const repl::NodeNotification& n : w ? w->notifications : std::vector<repl::NodeNotification>{}) {
+        taxes_news = taxes_news || (n.type == 10 && n.mayor == "cyb");
+        dues_news = dues_news || n.type == 11;
+    }
+    CHECK(taxes_news, "the citizenship window's feed tells of the mayor's new taxes (Taxes, by the mayor)");
+    CHECK(dues_news, "... and of the player's dues being due (CitizenshipDuesDue)");
+    from = h.got.size();
+    send_rate(0.05f);
+    calls = pc_calls_since(h, from);
+    CHECK(el->taxes(kTestCitizenNode)->at("NodeTax.ArtisanTax").percent == 0.25f && h.s->tax_overrides_refused() == 2 && table_rate(calls) == 0.25f,
+          "a rate below the node's minimum is refused; the table keeps the rate before");
+    // the treasury
+    el->add_treasury(kTestCitizenNode, 1234);
+    from = h.got.size();
+    h.t += milliseconds(500);
+    h.pc_call("ServerShowMayorInventory", [](const schema::RpcSchema& r, repl::RpcParams& p) { repl::set_rpc_param(r, p, "NodeGuid", repl::Value::i64(kTestCitizenNode)); });
+    h.run(milliseconds(300));
+    calls = pc_calls_since(h, from);
+    const repl::RpcCall* inv = last_call(calls, "ClientShowMayorInventory");
+    const repl::Value* gold = inv ? repl::rpcf::value_of(*inv->rpc, inv->params, "InventoryGold") : nullptr;
+    const repl::Value* desc = inv ? repl::rpcf::value_of(*inv->rpc, inv->params, "NodeDescription") : nullptr;
+    CHECK(gold && gold->get_if<int64_t>() && *gold->get_if<int64_t>() == 1234 && desc && desc->get_if<std::string>() && *desc->get_if<std::string>() == "Testhold",
+          "the mayor's view of the treasury: the node's name and its 1234 copper");
+    // a game master's rate past the limits, and gold for the treasury
+    h.s->set_gm_enabled(true);
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMSetTaxOverride", [](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::set_rpc_param(r, p, "NodeName", repl::Value::str("Testhold"));
+        repl::set_rpc_param(r, p, "TaxTag", repl::Value::str("NodeTax.GoodsTax"));
+        repl::set_rpc_param(r, p, "NewTaxPercent", repl::Value::f32(0.02f));
+        repl::set_rpc_param(r, p, "NewFlatTaxAmount", repl::Value::i64(3));
+    });
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMAddNodeGold", [](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::set_rpc_param(r, p, "NodeGuid", repl::Value::i64(kTestCitizenNode));
+        repl::set_rpc_param(r, p, "Amount", repl::Value::i64(66));
+    });
+    h.run(milliseconds(300));
+    const auto* taxes = el->taxes(kTestCitizenNode);
+    CHECK(taxes && taxes->count("NodeTax.GoodsTax") && taxes->at("NodeTax.GoodsTax").percent == 0.02f && taxes->at("NodeTax.GoodsTax").flat == 3,
+          "ServerGMSetTaxOverride sets a rate past the node's limits");
+    CHECK(el->treasury(kTestCitizenNode) == 1234 + 66, "ServerGMAddNodeGold adds to the treasury");
+}
+
 }  // namespace
 
 AOC_REGISTER_TEST(test_citizenship_flow);
 AOC_REGISTER_TEST(test_mayor_flow);
 AOC_REGISTER_TEST(test_citizenship_gm);
+AOC_REGISTER_TEST(test_node_taxes);

@@ -138,6 +138,15 @@ std::optional<ElectionRules> ElectionRules::load(const std::string& path, std::s
     }
     if (st) sqlite3_finalize(st);
     st = nullptr;
+    // CityNodeRecordBase's MayorMinimumCitizens (contentc's city_node.mayor_min_citizens; a file without the column: 1 for every node)
+    if (out && sqlite3_prepare_v2(db, "SELECT guid, mayor_min_citizens FROM city_node", -1, &st, nullptr) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const int n = sqlite3_column_int(st, 1);
+            if (n > 0 && n <= 100000) out->min_citizens[sqlite3_column_int64(st, 0)] = n;
+        }
+    }
+    if (st) sqlite3_finalize(st);
+    st = nullptr;
     // ElectionConstants' RankedChoiceVoteCountLimit (contentc's node_constant; a file without it: 3)
     if (out && sqlite3_prepare_v2(db, "SELECT value FROM node_constant WHERE name = 'RankedChoiceVoteCountLimit'", -1, &st, nullptr) == SQLITE_OK &&
         sqlite3_step(st) == SQLITE_ROW) {
@@ -201,8 +210,8 @@ std::vector<Elections::Change> Elections::advance(int64_t now_ms, const std::fun
             bool waits = false;
             switch (e.state) {
                 case ElectionState::AwaitingFirst:
-                    // the first election starts with the node's first citizen
-                    if (e.citizens.empty()) {
+                    // the first election starts once the node has the citizens it needs to elect a mayor (MayorMinimumCitizens)
+                    if (e.citizens.empty() || e.citizens.size() < static_cast<size_t>(rules_.citizens_for_election(node))) {
                         waits = true;
                         break;
                     }
@@ -210,6 +219,13 @@ std::vector<Elections::Change> Elections::advance(int64_t now_ms, const std::fun
                     enter(node, e, ElectionState::Registration, std::max(at, now_ms), out);
                     break;
                 case ElectionState::Registration:
+                    if (e.citizens.size() < static_cast<size_t>(rules_.citizens_for_election(node))) {
+                        // too few citizens to elect a mayor: no vote; the first waits for them again, a monthly one keeps the mayor
+                        if (e.first) enter(node, e, ElectionState::AwaitingFirst, at, out);
+                        else enter(node, e, ElectionState::Post, at, out, /*count=*/false);
+                        if (e.state == ElectionState::AwaitingFirst) waits = true;
+                        break;
+                    }
                     if (!e.candidates.empty()) enter(node, e, ElectionState::Active, at, out);
                     else if (e.first) enter(node, e, ElectionState::Registration, at, out);   // the first: the registration runs again
                     else enter(node, e, ElectionState::Post, at, out, /*count=*/false);        // a month with no candidate: no vote
@@ -227,8 +243,23 @@ std::vector<Elections::Change> Elections::advance(int64_t now_ms, const std::fun
 std::optional<Elections::Change> Elections::skip(int64_t node, int64_t now_ms) {
     auto it = nodes_.find(node);
     if (it == nodes_.end()) return std::nullopt;
-    it->second.phase_ends_ms = now_ms;
-    std::vector<Change> out = advance(now_ms, nullptr, {});
+    NodeElection& e = it->second;
+    std::vector<Change> out;
+    // a game master's: the next phase whatever the citizens (the minimum for an election only holds the cycle's own steps)
+    switch (e.state) {
+        case ElectionState::AwaitingFirst:
+            e.first = true;
+            enter(node, e, ElectionState::Registration, now_ms, out);
+            break;
+        case ElectionState::Registration:
+            if (!e.candidates.empty()) enter(node, e, ElectionState::Active, now_ms, out);
+            else if (e.first) enter(node, e, ElectionState::Registration, now_ms, out);
+            else enter(node, e, ElectionState::Post, now_ms, out, /*count=*/false);
+            break;
+        case ElectionState::Active: enter(node, e, ElectionState::AwaitingResults, now_ms, out); break;
+        case ElectionState::AwaitingResults: enter(node, e, ElectionState::Post, now_ms, out); break;
+        case ElectionState::Post: enter(node, e, ElectionState::Registration, now_ms, out); break;
+    }
     if (out.empty()) return std::nullopt;
     return out.back();
 }
@@ -404,6 +435,40 @@ const ElectionPerson* Elections::candidate_named(int64_t node, const std::string
     return nullptr;
 }
 
+void Elections::set_tax(int64_t node, const std::string& tag, TaxOverride rate) {
+    if (node == 0 || tag.empty()) return;
+    NodeElection& e = nodes_[node];
+    const auto it = e.taxes.find(tag);
+    if (it != e.taxes.end() && it->second == rate) return;
+    e.taxes[tag] = rate;
+    ++version_;
+}
+
+const std::map<std::string, TaxOverride>* Elections::taxes(int64_t node) const {
+    const NodeElection* e = this->node(node);
+    return e && !e->taxes.empty() ? &e->taxes : nullptr;
+}
+
+void Elections::add_treasury(int64_t node, int64_t copper) {
+    if (node == 0 || copper == 0) return;
+    NodeElection& e = nodes_[node];
+    e.treasury = std::max<int64_t>(0, e.treasury + copper);
+    ++version_;
+}
+
+void Elections::add_news(int64_t node, NodeNews n) {
+    if (node == 0) return;
+    auto& feed = nodes_[node].news;
+    feed.push_back(std::move(n));
+    if (feed.size() > kMaxNews) feed.erase(feed.begin(), feed.begin() + static_cast<std::ptrdiff_t>(feed.size() - kMaxNews));
+    ++version_;
+}
+
+int64_t Elections::treasury(int64_t node) const {
+    const NodeElection* e = this->node(node);
+    return e ? e->treasury : 0;
+}
+
 void Elections::set_dues_disabled(int64_t node, bool off) {
     if (node == 0) return;
     NodeElection& e = nodes_[node];
@@ -476,6 +541,12 @@ std::string Elections::to_json() const {
         n["message"] = e.mayor_message;
         n["first"] = e.first;
         n["dues_off"] = e.dues_disabled;
+        n["treasury"] = e.treasury;
+        for (const NodeNews& w : e.news) {
+            n["news"].push_back({{"type", w.type}, {"at", w.at_ms}, {"mayor", w.mayor}, {"plot", w.plot}, {"building", w.building}, {"commission", w.commission},
+                                 {"state", w.building_state}});
+        }
+        for (const auto& [tag, r] : e.taxes) n["taxes"].push_back({{"tag", tag}, {"percent", r.percent}, {"flat", r.flat}});
         for (const ElectionPerson& c : e.candidates) n["candidates"].push_back(person_json(c));
         for (const auto& [a, p] : e.citizens) n["citizens"].push_back(person_json(p));
         for (const auto& [a, ranked] : e.votes) {
@@ -508,6 +579,18 @@ bool Elections::from_json(const std::string& text, std::string& error) {
             e.mayor_message = n.value("message", std::string());
             e.first = n.value("first", false);
             e.dues_disabled = n.value("dues_off", false);
+            e.treasury = std::max<int64_t>(0, n.value("treasury", int64_t{0}));
+            if (n.contains("news")) {
+                for (const auto& w : n["news"]) {
+                    if (e.news.size() >= kMaxNews) break;
+                    e.news.push_back(NodeNews{w.value("type", uint8_t{0}), w.value("at", int64_t{0}), w.value("mayor", std::string()), w.value("plot", int64_t{0}),
+                                              w.value("building", int64_t{0}), w.value("commission", int64_t{0}), w.value("state", uint8_t{0})});
+                }
+            }
+            if (n.contains("taxes")) {
+                for (const auto& t : n["taxes"]) e.taxes[t.value("tag", std::string())] = TaxOverride{t.value("percent", 0.0f), t.value("flat", int32_t{0})};
+                e.taxes.erase(std::string());
+            }
             if (n.contains("candidates")) for (const auto& c : n["candidates"]) e.candidates.push_back(person_of(c));
             if (n.contains("citizens")) for (const auto& c : n["citizens"]) { const ElectionPerson p = person_of(c); if (p.account != 0) e.citizens[p.account] = p; }
             if (n.contains("votes")) {

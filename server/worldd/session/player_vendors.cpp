@@ -182,9 +182,11 @@ void PlayerSession::on_node_tax_request(Connection& conn, const repl::ClientRpc&
             return;
         }
         ++tax_tables_sent_;
-        spdlog::log(level_for(tax_logged_), "[session] {}: the window of {} asks for the taxes of node {}: sending the default table ({} tags)", name(), a->npc.name, asked,
-                    vendor::default_table(asked).entries.size());
-        queue("ClientSetNodeTaxTable", [asked](bootstrap::PlayerBootstrap& pb) { return pb.node_tax_table(vendor::default_table(asked)); }, conn, /*must_build=*/true);
+        const world::Elections* el = world_ ? world_->elections() : nullptr;
+        auto table = std::make_shared<protocol::repl::NodeTaxDetails>(vendor::node_table(asked, el ? el->taxes(asked) : nullptr));
+        spdlog::log(level_for(tax_logged_), "[session] {}: the window of {} asks for the taxes of node {}: sending its table ({} tags{})", name(), a->npc.name, asked,
+                    table->entries.size(), el && el->taxes(asked) ? ", with the mayor's rates" : "");
+        queue("ClientSetNodeTaxTable", [table](bootstrap::PlayerBootstrap& pb) { return pb.node_tax_table(*table); }, conn, /*must_build=*/true);
         return;
     }
     ++tax_tables_sent_;
@@ -346,7 +348,10 @@ void PlayerSession::buy_from_town_shop(Connection& conn, const repl::VendorPurch
         const items::CurrencyTier* t = currencies ? currencies->tier(tier) : nullptr;
         return t && t->carried;
     };
-    const vendor::TownShops::Quote quote = shops->quote(vendor_def_, cart, shops->default_rate(vendor_def_), holds, item_tier);
+    // the shopkeeper's node: its mayor's rates, and its treasury takes the tax
+    const int64_t shop_node = keeper ? citizenship_node_at(keeper->x, keeper->y).first : 0;
+    world::Elections* governed = world_->elections();
+    const vendor::TownShops::Quote quote = shops->quote(vendor_def_, cart, shops->rate(vendor_def_, governed ? governed->taxes(shop_node) : nullptr), holds, item_tier);
     if (!quote.ok) {
         if (unreadable) spdlog::warn("[session] {}: a shop predicate does not evaluate: the listing is not sold", name());
         return refuse(quote.refusal);
@@ -399,6 +404,14 @@ void PlayerSession::buy_from_town_shop(Connection& conn, const repl::VendorPurch
     const int64_t before = wallet_.copper();
     if (in_node) wallet_.pay_currency(items::kNodeCurrency, quote.total);   // checked above: it cannot be short
     else if (!in_glint) wallet_.pay(quote.total);
+    if (!in_glint && !in_node && governed && shop_node != 0) {
+        // the tax of a purchase in money goes to the node's treasury: what the cart costs less what it costs untaxed
+        const vendor::TownShops::Quote untaxed = shops->quote(vendor_def_, cart, vendor::TaxRate{}, holds, item_tier);
+        if (untaxed.ok && quote.total > untaxed.total) {
+            governed->add_treasury(shop_node, quote.total - untaxed.total);
+            world_->save_elections();
+        }
+    }
     inventory_dirty_ = true;
     inventory_changed_ = true;
     ++items_applied_;
@@ -560,7 +573,11 @@ void PlayerSession::repair_at_town_shop(Connection& conn, const repl::VendorTran
     const content::ContentDb* db = world_ ? world_->content() : nullptr;
     if (!shops || !db) return refuse("worldd has no town shops");
     if (cart.instances.empty() || cart.instances.size() > vendor::kMaxShopCartLines) return refuse("a repair of " + std::to_string(cart.instances.size()) + " items");
-    const vendor::TaxRate tax = shops->default_rate(vendor_def_);
+    const world::WorldActor* keeper = registry_ ? registry_->find(vendor_actor_) : nullptr;
+    const int64_t shop_node = keeper ? citizenship_node_at(keeper->x, keeper->y).first : 0;   // its mayor's rates; its treasury takes the tax
+    world::Elections* governed = world_->elections();
+    const vendor::TaxRate tax = shops->rate(vendor_def_, governed ? governed->taxes(shop_node) : nullptr);
+    int64_t untaxed_total = 0;
     struct Mended {
         svc::InventoryItem item;
         float              full = 0;
@@ -584,6 +601,9 @@ void PlayerSession::repair_at_town_shop(Connection& conn, const repl::VendorTran
                                                                *facts, items::kMoneyTier, tax, progress_.level);
         if (!quote.ok) return refuse("item " + std::to_string(held->item_record_id) + " is not repaired: " + quote.refusal);
         total += quote.total;
+        const vendor::RepairQuote untaxed = vendor::quote_repair(shops->data(), vendor_def_, held->item_record_id, held->quality, static_cast<double>(held->durability),
+                                                                 static_cast<double>(full), *facts, items::kMoneyTier, vendor::TaxRate{}, progress_.level);
+        untaxed_total += untaxed.ok ? untaxed.total : quote.total;
         mended.push_back({*held, full});
     }
     if (!wallet_.can_pay(total)) {
@@ -602,6 +622,10 @@ void PlayerSession::repair_at_town_shop(Connection& conn, const repl::VendorTran
     }
     const int64_t before = wallet_.copper();
     wallet_.pay(total);   // checked above: it cannot be short
+    if (governed && shop_node != 0 && total > untaxed_total) {
+        governed->add_treasury(shop_node, total - untaxed_total);   // the repair's tax to the node's treasury
+        world_->save_elections();
+    }
     inventory_dirty_ = true;
     inventory_changed_ = true;
     ++items_applied_;

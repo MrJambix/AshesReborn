@@ -391,6 +391,23 @@ repl::CitizenshipWindowData PlayerSession::citizenship_window(int64_t now_ms) co
             m.election_state = static_cast<uint8_t>(world::ElectionState::Post);
             d.notifications.push_back(std::move(m));
         }
+        for (auto it = e->news.rbegin(); it != e->news.rend() && d.notifications.size() + 1 < repl::kMaxCitizenshipNotifications; ++it) {
+            repl::NodeNotification n2;   // the node's feed: taxes, commissions, buildings
+            n2.type = it->type;
+            n2.created = n2.timestamp = it->at_ms / 1000;
+            n2.mayor = it->mayor;
+            n2.plot = it->plot;
+            n2.building = it->building;
+            n2.building_state = it->building_state;
+            n2.commission = it->commission;
+            d.notifications.push_back(std::move(n2));
+        }
+    }
+    if (citizenship_.dues_due_ms > 0 && now_ms >= citizenship_.dues_due_ms && d.notifications.size() < repl::kMaxCitizenshipNotifications) {
+        repl::NodeNotification due;   // the player's own: the dues are due (ENodeSystemNotificationType::CitizenshipDuesDue)
+        due.type = 11;
+        due.created = due.timestamp = citizenship_.dues_due_ms / 1000;
+        d.notifications.push_back(std::move(due));
     }
     return d;
 }

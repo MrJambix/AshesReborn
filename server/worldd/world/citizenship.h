@@ -41,6 +41,12 @@ namespace aoc::worldd::world {
 /// The TaxReceipts currency tier (CurrencyTierDefRecordBase "TaxReceipts"): its one kind is the TaxVoucher item.
 constexpr int64_t kTaxReceiptsTier = 6064631941190189059;
 
+/// The limits of a NodeTax tag in a node's tax table (TaxDetailsRecordBase): what its mayor may set.
+struct TaxLimit {
+    float   default_percent = 0.5f, min_percent = 0, max_percent = 1;
+    int32_t default_flat = 0, min_flat = 0, max_flat = 0;
+};
+
 struct CitizenshipRules {
     int64_t dues_tier = kTaxReceiptsTier;   // what joining and the dues are paid in
     int32_t join_cost = 20;                 // InitialDueCost: Tax Receipts to join
@@ -57,6 +63,10 @@ struct CitizenshipRules {
     std::map<int, double> dues_level_scalar;          // DuesNodeLevelScalar by node level (a level not listed: 1)
     std::map<int, double> missed_dues_increase;       // MissedDuesPercentIncrease by node level (not listed: 0)
     std::vector<std::pair<double, double>> population_scalars;   // DuesPopulationCountScalars: (citizens from, scalar), by threshold
+    std::map<int64_t, int64_t> node_tax_table;                       // city node -> its NodeGlobalTaxTable (CityNodeRecordBase's TaxTable)
+    std::map<int64_t, std::map<std::string, TaxLimit>> tax_limits;   // tax table -> NodeTax tag -> its limits
+    /// The limits of `tag` in `node`'s table, from the tag up the tag tree (the first listed); null when the table lists none of them.
+    const TaxLimit* tax_limit(int64_t node, const std::string& tag) const;
     std::map<int, int64_t> cooldown_secs;   // the node levels that take citizens, and their renounce cooldown
     std::map<int64_t, int64_t> at_risk_secs;   // city_node.citizenship_at_risk_secs by node (a node not listed, or 0: kDefaultAtRiskSecs)
     static constexpr int64_t kDefaultAtRiskSecs = 604800;

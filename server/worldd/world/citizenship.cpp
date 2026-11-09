@@ -85,6 +85,21 @@ int32_t CitizenshipRules::dues_owed(int64_t due_ms, int64_t now_ms, int32_t amou
     return static_cast<int32_t>(std::ceil(amount * (1.0 + increase) - 1e-9)) + late_fee;
 }
 
+const TaxLimit* CitizenshipRules::tax_limit(int64_t node, const std::string& tag) const {
+    const auto t = node_tax_table.find(node);
+    if (t == node_tax_table.end()) return nullptr;
+    const auto table = tax_limits.find(t->second);
+    if (table == tax_limits.end()) return nullptr;
+    std::string at = tag;
+    while (!at.empty()) {
+        if (const auto it = table->second.find(at); it != table->second.end()) return &it->second;
+        const size_t dot = at.rfind('.');
+        if (dot == std::string::npos) break;
+        at.resize(dot);
+    }
+    return nullptr;
+}
+
 int64_t CitizenshipRules::cooldown_ms(int level) const {
     const auto it = cooldown_secs.find(level);
     return it == cooldown_secs.end() ? 0 : std::max<int64_t>(0, it->second) * 1000;
@@ -167,6 +182,30 @@ std::optional<CitizenshipRules> CitizenshipRules::load(const std::string& path, 
                 if (sqlite3_step(st.s) == SQLITE_ROW) {
                     if (const int64_t n = price_in(column_text(st.s, 0), r.dues_tier); n > 0 && n <= 100000) r.base_dues = static_cast<int32_t>(n);
                 }
+            }
+        }
+    }
+    {
+        Stmt st;   // the nodes' tax tables and their tags' limits (a content.db without them: no node takes a mayor's rates)
+        if (sqlite3_prepare_v2(db.db, "SELECT guid, tax_table_guid FROM city_node WHERE tax_table_guid != 0", -1, &st.s, nullptr) == SQLITE_OK) {
+            while (sqlite3_step(st.s) == SQLITE_ROW) r.node_tax_table[sqlite3_column_int64(st.s, 0)] = sqlite3_column_int64(st.s, 1);
+        }
+    }
+    {
+        Stmt st;
+        if (sqlite3_prepare_v2(db.db,
+                               "SELECT t.table_guid, t.tag, d.default_percent, d.min_percent, d.max_percent, d.default_flat, d.min_flat, d.max_flat FROM node_tax_table_tag t "
+                               "JOIN node_tax_details d ON d.guid = t.details_guid",
+                               -1, &st.s, nullptr) == SQLITE_OK) {
+            while (sqlite3_step(st.s) == SQLITE_ROW) {
+                TaxLimit l;
+                l.default_percent = static_cast<float>(sqlite3_column_double(st.s, 2));
+                l.min_percent = static_cast<float>(sqlite3_column_double(st.s, 3));
+                l.max_percent = static_cast<float>(sqlite3_column_double(st.s, 4));
+                l.default_flat = static_cast<int32_t>(std::lround(sqlite3_column_double(st.s, 5)));
+                l.min_flat = static_cast<int32_t>(std::lround(sqlite3_column_double(st.s, 6)));
+                l.max_flat = static_cast<int32_t>(std::lround(sqlite3_column_double(st.s, 7)));
+                r.tax_limits[sqlite3_column_int64(st.s, 0)][column_text(st.s, 1)] = l;
             }
         }
     }

@@ -10,6 +10,8 @@
 // ============================================================================
 #include "world/citizenship.h"
 #include "world/elections.h"
+#include "vendor/node_tax.h"
+#include "vendor/town_shops.h"
 
 #include <cmath>
 #include <cstdio>
@@ -230,6 +232,72 @@ void test_dues() {
           "... the citizens' count scalars, the Village's 50% for missed dues, the node level scalars");
 }
 
+void test_min_citizens() {
+    std::printf("the citizens a node needs to elect a mayor\n");
+    ElectionRules r;
+    r.min_citizens[kNode] = 3;
+    Elections e(r);
+    const auto takes = [](int64_t n) { return n == kNode; };
+    e.set_citizen(kNode, who(1, kAnn, "Ann"));
+    e.set_citizen(kNode, who(2, kBob, "Bob"));
+    e.advance(kNov10Noon, takes, {kNode});
+    CHECK(e.node(kNode)->state == ElectionState::AwaitingFirst, "two citizens of a node that needs three: no election yet");
+    e.set_citizen(kNode, who(3, kCy, "Cy"));
+    e.advance(kNov10Noon + kHour, takes, {kNode});
+    CHECK(e.node(kNode)->state == ElectionState::Registration && e.node(kNode)->first, "the third citizen starts the first election");
+    e.remove_citizen(3);
+    e.advance(kNov10Noon + kHour + kDay, takes, {kNode});
+    CHECK(e.node(kNode)->state == ElectionState::AwaitingFirst, "too few citizens when the first registration ends: it waits for them again");
+    CHECK(r.citizens_for_election(42) == 1, "a node the data gives no minimum needs one citizen");
+    const auto skipped = e.skip(kNode, kNov10Noon + 2 * kDay);
+    CHECK(skipped && e.node(kNode)->state == ElectionState::Registration && e.node(kNode)->first, "a game master's skip starts the first election even with too few citizens");
+}
+
+void test_taxes() {
+    std::printf("the mayor's taxes and the node's treasury\n");
+    Elections e;
+    CHECK(!e.taxes(kNode) && e.treasury(kNode) == 0, "a node starts with the data's rates and an empty treasury");
+    e.set_tax(kNode, "NodeTax.ArtisanTax", TaxOverride{0.2f, 0});
+    e.add_treasury(kNode, 150);
+    e.add_treasury(kNode, -500);
+    CHECK(e.taxes(kNode) && e.taxes(kNode)->at("NodeTax.ArtisanTax").percent == 0.2f && e.treasury(kNode) == 0, "a rate is kept; the treasury never goes below nothing");
+    e.add_treasury(kNode, 75);
+    std::string why;
+    Elections back;
+    CHECK(back.from_json(e.to_json(), why) && back.all() == e.all() && back.treasury(kNode) == 75, "the rates and the treasury are written to the file and read back");
+    // a shop's rate: the mayor's for its tag or the nearest tag above it, else the data's default
+    const auto* overrides = e.taxes(kNode);
+    const aoc::worldd::vendor::TaxRate deep = aoc::worldd::vendor::node_tax_rate("NodeTax.ArtisanTax.AgriculturalSupplyBaseTax.SalesTax", overrides);
+    const aoc::worldd::vendor::TaxRate other = aoc::worldd::vendor::node_tax_rate("NodeTax.GoodsTax", overrides);
+    const aoc::worldd::vendor::TaxRate plain = aoc::worldd::vendor::node_tax_rate("NodeTax.ArtisanTax.AgriculturalSupplyBaseTax.SalesTax", nullptr);
+    CHECK(deep.found && deep.percent == 0.2f, "a tag under the one the mayor set takes the mayor's rate");
+    CHECK(plain.found && plain.percent == aoc::worldd::vendor::default_tax_rate("NodeTax.ArtisanTax.AgriculturalSupplyBaseTax.SalesTax").percent && other.percent == plain.percent,
+          "the other tags keep the data's default");
+    const auto table = aoc::worldd::vendor::node_table(kNode, overrides);
+    size_t mine = 0;
+    for (const auto& en : table.entries) mine += en.tag == "NodeTax.ArtisanTax" && en.tax_percent == 0.2f && en.flag_a && en.flag_b;
+    CHECK(mine == 1 && table.entries.size() == aoc::worldd::vendor::default_table(kNode).entries.size(), "the node's table carries the mayor's rate, marked as changed");
+}
+
+void test_tax_limits() {
+    std::printf("the tax limits of the real content.db\n");
+    const char* env = std::getenv("AOC_CONTENT_DB");
+    const std::string path = env && *env ? env : "dist/content/content.db";
+    if (!std::filesystem::exists(path)) {
+        std::printf("  [skip] SKIP: no %s\n", path.c_str());
+        return;
+    }
+    constexpr int64_t kJoeva = 108646121231993;
+    std::string why;
+    const auto c = CitizenshipRules::load(path, why);
+    const TaxLimit* l = c ? c->tax_limit(kJoeva, "NodeTax.ArtisanTax.AgriculturalSupplyBaseTax.SalesTax") : nullptr;
+    CHECK(l && std::abs(l->min_percent - 0.1f) < 1e-6f && std::abs(l->max_percent - 1.0f) < 1e-6f && std::abs(l->default_percent - 0.5f) < 1e-6f,
+          "Joeva's tax table: a mayor sets a rate from 10% to 100% (the default 50%)");
+    CHECK(c && !c->tax_limit(kJoeva, "Something.Else"), "a tag outside the NodeTax tree has no limits");
+    const auto r = ElectionRules::load(path, why);
+    CHECK(r && r->citizens_for_election(kJoeva) == 10, "Joeva needs 10 citizens to elect a mayor (MayorMinimumCitizens)");
+}
+
 void test_rules() {
     std::printf("the election rules of the real content.db\n");
     const char* env = std::getenv("AOC_CONTENT_DB");
@@ -258,6 +326,9 @@ int main() {
     test_file();
     test_rules();
     test_dues();
+    test_min_citizens();
+    test_taxes();
+    test_tax_limits();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

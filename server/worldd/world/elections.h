@@ -37,6 +37,24 @@ namespace aoc::worldd::world {
 enum class ElectionState : uint8_t { AwaitingFirst = 0, Registration = 1, Active = 2, AwaitingResults = 3, Post = 4 };
 const char* election_state_name(ElectionState s);
 
+/// A rate the node's mayor set for a NodeTax tag (ServerSetTaxOverride): the percent of the price and the flat amount.
+struct TaxOverride {
+    float   percent = 0;
+    int32_t flat = 0;
+    bool operator==(const TaxOverride&) const = default;
+};
+
+/// One entry of a node's notification feed (the citizenship window's FNodeNotificationDetails): what happened, when, and what it names.  `type` is the client's
+/// ENodeSystemNotificationType (10 Taxes, 12 NewMayoralCommission, 1 to 5 the service buildings ...).
+struct NodeNews {
+    uint8_t     type = 0;
+    int64_t     at_ms = 0;
+    std::string mayor;                 // MayorName
+    int64_t     plot = 0, building = 0, commission = 0;
+    uint8_t     building_state = 0;    // EBuildingState
+    bool operator==(const NodeNews&) const = default;
+};
+
 struct ElectionRules {
     int64_t first_registration_secs = 86400;   // FirstTimeRegistrationPeriodDurationSeconds
     int64_t first_election_secs = 86400;       // FirstTimeElectionPeriodDurationSeconds
@@ -49,6 +67,12 @@ struct ElectionRules {
     int     results_hour = 1;                  // ElectionResultsHour: the first such hour after the end
     int32_t min_term_days = 0;                 // MinimumLengthOfTermDays
     size_t  ranked_limit = 3;                  // ElectionConstants' RankedChoiceVoteCountLimit
+    std::map<int64_t, int> min_citizens;       // CityNodeRecordBase's MayorMinimumCitizens by node (not listed, or 0: 1)
+    /// The citizens `node` needs to hold an election (at least 1).
+    int citizens_for_election(int64_t node) const {
+        const auto it = min_citizens.find(node);
+        return it == min_citizens.end() || it->second < 1 ? 1 : it->second;
+    }
     uint8_t election_type = 0;                 // EMayorElectionType: Scientific 0
     /// The monthly cycle's ActiveElection start: the first one (day start_day of a month at start_hour) whose registration starts at or after `not_before_ms`.
     int64_t election_start_ms(int64_t not_before_ms) const;
@@ -79,6 +103,9 @@ struct NodeElection {
     std::string    mayor_message;
     bool           first = false;                                  // this cycle is the node's first election (its own lengths)
     bool           dues_disabled = false;                          // a game master switched the node's citizenship dues off (ServerGMDisableCitizenshipDues)
+    std::map<std::string, TaxOverride> taxes;                      // the mayor's rates by NodeTax tag (the others are the data's defaults)
+    int64_t        treasury = 0;                                   // the node's money (copper): the taxes its shops took
+    std::vector<NodeNews> news;                                    // the node's notification feed, oldest first (at most kMaxNews)
     bool operator==(const NodeElection&) const = default;
 };
 
@@ -132,6 +159,18 @@ public:
     /// The node's citizenship dues off (ServerGMDisableCitizenshipDues) or on again (ServerGMTryEnableCitizenshipDues).
     void set_dues_disabled(int64_t node, bool off);
     bool dues_disabled(int64_t node) const;
+
+    // ---- the node's taxes and treasury
+    /// The node's rate for `tag` is `rate` now.
+    void set_tax(int64_t node, const std::string& tag, TaxOverride rate);
+    /// The rates the node's mayor set (null: none).
+    const std::map<std::string, TaxOverride>* taxes(int64_t node) const;
+    /// The node's treasury gains `copper` (a shop's tax; a game master's ServerGMAddNodeGold).
+    void add_treasury(int64_t node, int64_t copper);
+    int64_t treasury(int64_t node) const;
+    /// A notification for the node's feed (the oldest goes past kMaxNews).
+    void add_news(int64_t node, NodeNews n);
+    static constexpr size_t kMaxNews = 32;
 
     bool is_candidate(int64_t node, int64_t account) const;
     /// The account's CitizenshipRank in `node`: its place among the node's citizens by when they joined (1: the first; ties by account), 0 when it is no citizen there.
