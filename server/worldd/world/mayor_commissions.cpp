@@ -125,13 +125,17 @@ MayorActiveCommission& start(MayorCommissions& s, int64_t node, const MayoralCom
     return s.active.back();
 }
 
-Buy purchase(MayorCommissions& s, int64_t node, int64_t record, int slots, int64_t treasury, int64_t now_ms, MayorActiveCommission* started) {
+Buy purchase(MayorCommissions& s, int64_t node, int64_t record, int slots, int64_t treasury, int64_t now_ms, MayorActiveCommission* started,
+             const std::map<int64_t, int32_t>* stored) {
     const MayoralCommission* c = commission(record);
     if (!c) return Buy::Unknown;
     if (!in(s.hand, record)) return Buy::NotInHand;
     if (static_cast<int>(s.active.size()) >= slots) return Buy::NoSlot;
     if (cooling(s, record) || running(s, record)) return Buy::Cooling;
-    if (c->resource != 0 && c->resource_qty > 0) return Buy::ResourceCost;
+    if (c->resource != 0 && c->resource_qty > 0) {   // the node's stores must hold it
+        const auto held = stored ? stored->find(c->resource) : std::map<int64_t, int32_t>::const_iterator{};
+        if (!stored || held == stored->end() || held->second < c->resource_qty) return Buy::ResourceCost;
+    }
     if (treasury < c->money_cost) return Buy::Treasury;
     const MayorActiveCommission& a = start(s, node, *c, now_ms);
     if (started) *started = a;

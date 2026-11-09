@@ -113,6 +113,8 @@ struct NodeElection {
     std::vector<NodeNews> news;                                    // the node's notification feed, oldest first (at most kMaxNews)
     int64_t        dues_anchor_ms = 0;                             // the node's dues schedule: its dates are this plus whole periods (0: none yet)
     MayorCommissions commissions;                                  // the mayor's commissions (world/mayor_commissions.h)
+    std::map<int64_t, int32_t> stored;                             // the node's stores: an item record and its quantity (world/node_inventory_table.h)
+    bool           stocked = false;                                // the node has had what its record starts it with (InitialNodeResourcesId)
     bool operator==(const NodeElection&) const = default;
 };
 
@@ -185,6 +187,15 @@ public:
     bool change_commissions(int64_t node, const std::function<bool(MayorCommissions&, int64_t& treasury)>& f);
     /// Brings every node's commissions to `now_ms` (expired, cooled down, a node reward run out): what ended, by node.
     std::vector<std::pair<int64_t, mayor::Ended>> advance_commissions(int64_t now_ms);
+    // ---- the node's stores (FNodeInventoryData)
+    /// The node's stores (null: a node the store does not hold).
+    const std::map<int64_t, int32_t>* stored(int64_t node) const;
+    /// Changes the node with `f(node)`, its treasury and its stores with the rest (a purchase that takes money and goods at once): the treasury never goes below
+    /// nothing and an item whose quantity reaches nothing goes.  `f` says whether it changed anything, and so does this.
+    bool change_node(int64_t node, const std::function<bool(NodeElection&)>& f);
+    /// What the node's record starts it with, once (`stocked`): `money` copper to the treasury and the items to the stores.  True when it did now.
+    bool stock(int64_t node, int64_t money, const std::vector<std::pair<int64_t, int32_t>>& items);
+
     /// A notification for the node's feed (the oldest goes past kMaxNews).
     void add_news(int64_t node, NodeNews n);
     static constexpr size_t kMaxNews = 32;

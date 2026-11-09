@@ -206,13 +206,14 @@ void PlayerSession::on_mayor_commission_purchase(Connection& conn, const repl::C
     el->advance_commissions(wall);
     world::mayor::Buy result = world::mayor::Buy::Unknown;
     int64_t paid = 0;
-    el->change_commissions(node, [&](world::MayorCommissions& s, int64_t& treasury) {
-        result = world::mayor::purchase(s, node, record, g.commission_slots, treasury, wall);
+    el->change_node(node, [&](world::NodeElection& e) {
+        result = world::mayor::purchase(e.commissions, node, record, g.commission_slots, e.treasury, wall, nullptr, &e.stored);
         if (result != world::mayor::Buy::Ok) return false;
         const world::mayor::MayoralCommission* c = world::mayor::commission(record);
         paid = c ? c->money_cost : 0;
-        treasury -= paid;
-        world::mayor::refill_hand(s, mayor_node_key(node), g.commission_hand_slots, node);
+        e.treasury -= paid;
+        if (c && c->resource != 0 && c->resource_qty > 0) e.stored[c->resource] -= c->resource_qty;   // its ResourceCost, from the node's stores
+        world::mayor::refill_hand(e.commissions, mayor_node_key(node), g.commission_hand_slots, node);
         return true;
     });
     if (result != world::mayor::Buy::Ok) {

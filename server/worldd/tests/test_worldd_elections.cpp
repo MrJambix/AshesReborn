@@ -13,6 +13,7 @@
 #include "vendor/node_tax.h"
 #include "vendor/town_shops.h"
 #include "world/city_nodes.h"
+#include "world/node_inventory_table.h"
 #include "dialogue/expression.h"
 
 #include <algorithm>
@@ -514,6 +515,54 @@ void test_citizen_shops() {
           "Node_IsPlayerCitizenOfNode and Node_IsPlayerCitizen read the citizenship too");
 }
 
+/// The node's stores (world/elections.h NodeElection::stored, session/player_node_inventory.cpp): the start from the data once, the file, a ResourceCost commission.
+void test_node_stores() {
+    std::printf("the node's stores\n");
+    Elections el{ElectionRules{}};
+    const int64_t node = 4242;
+    CHECK(el.stock(node, 1525050, {{11, 225}, {12, 225}}) && el.treasury(node) == 1525050 && el.stored(node) && el.stored(node)->at(11) == 225 && el.stored(node)->at(12) == 225,
+          "a node is stocked: the money to its treasury, the goods to its stores");
+    CHECK(!el.stock(node, 1525050, {{11, 225}}) && el.treasury(node) == 1525050 && el.stored(node)->at(11) == 225, "... once");
+    el.change_node(node, [](NodeElection& e) {
+        e.stored[11] -= 225;
+        e.treasury -= 99999999;
+        return true;
+    });
+    CHECK(el.stored(node)->count(11) == 0 && el.stored(node)->at(12) == 225 && el.treasury(node) == 0, "a kind used up goes, and the treasury goes no lower than nothing");
+    Elections back{ElectionRules{}};
+    std::string error;
+    CHECK(back.from_json(el.to_json(), error) && back.stored(node) && *back.stored(node) == *el.stored(node) && back.node(node) && back.node(node)->stocked,
+          "the file keeps the stores and that the node was stocked");
+    // a mayoral commission with a ResourceCost: sold once the stores hold it
+    const aoc::worldd::quest::commissions::MayoralCommission* rc = nullptr;
+    for (const auto& c : aoc::worldd::quest::commissions::kMayoralCommissions) {
+        if (c.resource != 0 && c.resource_qty > 0 && !rc) rc = &c;
+    }
+    CHECK(rc != nullptr, "(a mayoral commission with a ResourceCost)");
+    if (rc) {
+        MayorCommissions s;
+        s.hand = {rc->quest};
+        const std::map<int64_t, int32_t> none, short_of{{rc->resource, rc->resource_qty - 1}}, enough{{rc->resource, rc->resource_qty}};
+        CHECK(mayor::purchase(s, node, rc->quest, 6, rc->money_cost, 1000) == mayor::Buy::ResourceCost &&
+                  mayor::purchase(s, node, rc->quest, 6, rc->money_cost, 1000, nullptr, &none) == mayor::Buy::ResourceCost &&
+                  mayor::purchase(s, node, rc->quest, 6, rc->money_cost, 1000, nullptr, &short_of) == mayor::Buy::ResourceCost,
+              "a commission with a ResourceCost is not bought while the node's stores lack it");
+        CHECK(mayor::purchase(s, node, rc->quest, 6, rc->money_cost, 1000, nullptr, &enough) == mayor::Buy::Ok && s.active.size() == 1, "... and is once they hold it");
+    }
+    // the data: where nodes start
+    namespace ni = aoc::worldd::world::node_inventory;
+    const ni::NodeStart* halcyon = nullptr;
+    for (const ni::NodeStart& n : ni::kNodeStarts) {
+        if (std::string(n.name) == "Verra_RVR_Halcyon") halcyon = &n;
+    }
+    CHECK(halcyon && std::string(ni::kContents[halcyon->contents].name) == "Default_InitialNodeResources" && ni::kContents[halcyon->contents].money == 1525050 &&
+              ni::kContents[halcyon->contents].count == 3,
+          "Halcyon starts with Default_InitialNodeResources: 1,525,050 copper and three kinds of goods");
+    bool spirits = false;
+    for (const ni::Commodity& c : ni::kCommodities) spirits = spirits || (std::string(c.name) == "Commodity_Spirits_T1" && c.item != 0);
+    CHECK(spirits, "the commodities name the item each makes (Commodity_Spirits_T1)");
+}
+
 int main() {
     test_cycle();
     test_calendar();
@@ -527,6 +576,7 @@ int main() {
     test_tax_limits();
     test_mayor_commissions();
     test_citizen_shops();
+    test_node_stores();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

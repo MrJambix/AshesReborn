@@ -15,14 +15,15 @@
 //                  done: the node gets its reward's NodeModification for the reward's Duration (24 h), and the commission cools down for its Cooldown (6 h) before
 //                  the mayor may buy it again.  One that expires first cools down too, not done.
 //  Modelled: the hand's draw (deterministic from the node and a counter; the retail draw is not known), and that the shared commissions of a region are the
-//  ones whose name's node word is ANY, Kill, Gather, Scout or Cull.  A commission with a ResourceCost (3, outside the Riverlands) is not sold: the node's
-//  resource storage is not built.
+//  ones whose name's node word is ANY, Kill, Gather, Scout or Cull.  A commission with a ResourceCost (3, outside the Riverlands) takes that resource from the
+//  node's stores as well (NodeElection::stored; not sold while they lack it).
 // ============================================================================
 #pragma once
 
 #include "quest/commission_table.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -87,8 +88,10 @@ bool refill_hand(MayorCommissions& s, const std::string& node_key, int hand_slot
 
 enum class Buy : uint8_t { Ok, Unknown, NotInHand, NoSlot, Cooling, ResourceCost, Treasury };
 const char* buy_name(Buy b);
-/// The mayor buys `record` from the hand: on Ok it runs (`*started`, when given) and `money_cost` is what the treasury pays (the caller takes it).
-Buy purchase(MayorCommissions& s, int64_t node, int64_t record, int slots, int64_t treasury, int64_t now_ms, MayorActiveCommission* started = nullptr);
+/// The mayor buys `record` from the hand: on Ok it runs (`*started`, when given); `money_cost` is what the treasury pays and its ResourceCost what the node's
+/// stores give (the caller takes both).  `stored`: the node's stores (null: none, and a commission with a ResourceCost is not sold).
+Buy purchase(MayorCommissions& s, int64_t node, int64_t record, int slots, int64_t treasury, int64_t now_ms, MayorActiveCommission* started = nullptr,
+             const std::map<int64_t, int32_t>* stored = nullptr);
 /// Starts `c` at once (a game master's: no hand, slot or money).
 MayorActiveCommission& start(MayorCommissions& s, int64_t node, const MayoralCommission& c, int64_t now_ms);
 
