@@ -16,7 +16,16 @@
 //    * dues unpaid past their overdue date put the citizenship at risk (CitizenshipAtRisk); after the node's CitizenshipAtRiskTimeLimitSeconds (7 days for nearly every node) more
 //      it lapses (NumberOfMissableDuesPayments is 1: the first missed payment).  Modelled: the lapse is judged by the server's wall clock while a character of the account plays.
 //
-//  What the rules do not do yet: the dues' expressions (CitizenshipRankImpact, LevelImpact, NonPropertyOwnerImpact) are not run (each counts as 1).
+//  The dues of a period (CitizenshipDuesDefRecordBase, the data's own formulas): BaseDuesRequired (the BaseItemValue "CitizenshipDues": 1 Tax Receipt) times
+//    * CitizenshipRankImpact: the citizen's rank / Threshold (25) once that is above 1 (the rank is its place among the node's citizens by when it joined);
+//    * LevelImpact: the character's level / Threshold (5) once that is above 1;
+//    * NonPropertyOwnerImpact (1);
+//    * the node level's DuesNodeLevelScalar (CitizenshipNodeRecordBase: 1 for Village and Town);
+//    * the citizens' count scalar (CitizenshipGeneric's DuesPopulationCountScalars: x1.0 from 50 citizens, x1.3 from 150, x2.0 from 300; below the first, 1),
+//  rounded up.  The formulas' thresholds are read from their text (the "var Threshold = ..." each declares).  Dues paid once overdue cost the node level's
+//  MissedDuesPercentIncrease more (0.5 Village, 0.75 Town), rounded up, and the LateFee.
+//
+//  Modelled: InitialFeeCost (100) is not charged (the join dialog names one cost, CitizenshipCost, and the client checks it against the Tax Receipts held).
 // ============================================================================
 #pragma once
 
@@ -24,6 +33,8 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace aoc::worldd::world {
 
@@ -39,6 +50,13 @@ struct CitizenshipRules {
     int32_t late_fee = 5;                   // LateFee: Tax Receipts more once the dues are overdue
     int32_t overdue_days = 5;               // OverduePeriodDays
     int     min_level = 10;                 // the Node Administrator's line
+    int32_t base_dues = 1;                  // BaseDuesRequired: the BaseItemValue's buy price in the dues tier
+    double  rank_threshold = 25;            // CitizenshipRankImpact's Threshold
+    double  level_threshold = 5;            // LevelImpact's Threshold
+    double  non_owner_impact = 1;           // NonPropertyOwnerImpact
+    std::map<int, double> dues_level_scalar;          // DuesNodeLevelScalar by node level (a level not listed: 1)
+    std::map<int, double> missed_dues_increase;       // MissedDuesPercentIncrease by node level (not listed: 0)
+    std::vector<std::pair<double, double>> population_scalars;   // DuesPopulationCountScalars: (citizens from, scalar), by threshold
     std::map<int, int64_t> cooldown_secs;   // the node levels that take citizens, and their renounce cooldown
     std::map<int64_t, int64_t> at_risk_secs;   // city_node.citizenship_at_risk_secs by node (a node not listed, or 0: kDefaultAtRiskSecs)
     static constexpr int64_t kDefaultAtRiskSecs = 604800;
@@ -51,8 +69,15 @@ struct CitizenshipRules {
     int64_t next_due_ms(int64_t from_ms) const;
     /// When dues due at `due_ms` become overdue (the late fee is added from then on).
     int64_t overdue_ms(int64_t due_ms) const { return due_ms + static_cast<int64_t>(overdue_days) * 86400000; }
-    /// What paying the dues costs at `now_ms` when they are due at `due_ms` (the late fee once overdue).
-    int32_t dues_owed(int64_t due_ms, int64_t now_ms) const { return dues_cost + (due_ms > 0 && now_ms >= overdue_ms(due_ms) ? late_fee : 0); }
+    /// The dues' multipliers for a citizen of rank `rank` with a character of level `level` in a node at `node_level` with `citizens` citizens.
+    struct DuesFactors {
+        double rank = 1, level = 1, non_owner = 1, node_level = 1, population = 1;
+    };
+    DuesFactors dues_factors(int rank, int level, int node_level, size_t citizens) const;
+    /// One period's dues: base_dues times every factor, rounded up (at least 1).
+    int32_t dues_amount(const DuesFactors& f) const;
+    /// What paying the dues costs at `now_ms` when they are due at `due_ms`: `amount`, and once overdue the node level's increase and the late fee.
+    int32_t dues_owed(int64_t due_ms, int64_t now_ms, int32_t amount, int node_level) const;
     /// How long a citizenship of `node` stays at risk before it lapses (ms).
     int64_t at_risk_ms(int64_t node) const {
         const auto it = at_risk_secs.find(node);

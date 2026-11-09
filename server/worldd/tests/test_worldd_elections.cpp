@@ -8,8 +8,10 @@
 //  may stand and vote, the instant runoff, the office lost with the citizenship, the mayor's message, a game master's skip, the file round trip, and the rules of the real
 //  content.db (AOC_CONTENT_DB or dist/content/content.db; skipped without it).
 // ============================================================================
+#include "world/citizenship.h"
 #include "world/elections.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -28,62 +30,89 @@ namespace {
 
 constexpr int64_t kNode = 5444963087871838208;
 constexpr int64_t kDay = 86400000;
+constexpr int64_t kHour = 3600000;
 
-ElectionPerson who(int64_t account, const char* id, const char* name) { return ElectionPerson{account, id, name, 0}; }
+// UTC times of the calendar the tests walk through
+constexpr int64_t kNov10Noon = 1794312000000;   // 2026-11-10 12:00
+constexpr int64_t kNov26 = 1795651200000;       // 2026-11-26 00:00: December's registration
+constexpr int64_t kDec1 = 1796083200000;        // 2026-12-01 00:00: December's election
+constexpr int64_t kDec27 = 1798329600000;       // 2026-12-27 00:00: January's registration
+constexpr int64_t kJan1 = 1798761600000;        // 2027-01-01 00:00
+constexpr int64_t kJan5At23 = 1799190000000;    // 2027-01-05 23:00: the election's end
+constexpr int64_t kJan6At1 = 1799197200000;     // 2027-01-06 01:00: the results
+constexpr int64_t kJan27 = 1801008000000;       // 2027-01-27 00:00: February's registration
+
+ElectionPerson who(int64_t account, const char* id, const char* name, int64_t at = 0) { return ElectionPerson{account, id, name, at}; }
 
 const char* const kAnn = "0000000000000000000000000000000a";
 const char* const kBob = "0000000000000000000000000000000b";
 const char* const kCy = "0000000000000000000000000000000c";
+const char* const kDee = "0000000000000000000000000000000d";
 
 void test_cycle() {
     std::printf("the cycle of a node's elections\n");
-    Elections e;
     const auto takes = [](int64_t n) { return n == kNode; };
-    int64_t t = 1'700'000'000'000;
+    {
+        Elections empty;
+        empty.advance(kNov10Noon, takes, {kNode});
+        empty.advance(kNov10Noon + 3 * kDay, takes, {kNode});
+        CHECK(empty.node(kNode) && empty.node(kNode)->state == ElectionState::AwaitingFirst, "a node with no citizen waits for its first election");
+    }
+    Elections e;
+    int64_t t = kNov10Noon;
     e.set_citizen(kNode, who(1, kAnn, "Ann"));
     e.set_citizen(kNode, who(2, kBob, "Bob"));
     e.set_citizen(kNode, who(3, kCy, "Cy"));
     auto ch = e.advance(t, takes, {kNode, 42});
-    CHECK(ch.size() == 1 && e.node(kNode) && e.node(kNode)->state == ElectionState::AwaitingFirst && !e.node(42), "a node that takes citizens starts with the first wait; another does not");
-    CHECK(e.node(kNode)->citizens.size() == 3, "... and keeps the citizens it had before its cycle started");
+    CHECK(e.node(kNode) && e.node(kNode)->state == ElectionState::Registration && e.node(kNode)->first && !e.node(42),
+          "a node that takes citizens and has some starts its first registration at once; another node does not");
+    CHECK(e.node(kNode)->phase_ends_ms == t + kDay && e.node(kNode)->citizens.size() == 3, "... for the first registration's day, with the citizens it had");
     std::string why;
-    CHECK(!e.register_candidate(kNode, who(1, kAnn, "Ann"), t, why), "nobody stands before the registration period");
-    t += 86400 * 1000LL;
+    // the first registration with no candidate runs again
+    t += kDay;
     e.advance(t, takes, {kNode});
-    CHECK(e.node(kNode)->state == ElectionState::Registration, "after a day: the registration period");
-    // no candidate: the registration runs again
-    t += 5 * kDay;
-    e.advance(t, takes, {kNode});
-    CHECK(e.node(kNode)->state == ElectionState::Registration && e.node(kNode)->phase_started_ms == t, "a registration with no candidate runs again");
+    CHECK(e.node(kNode)->state == ElectionState::Registration && e.node(kNode)->phase_started_ms == t, "a first registration with no candidate runs again");
     CHECK(e.register_candidate(kNode, who(1, kAnn, "Ann"), t, why) && e.register_candidate(kNode, who(2, kBob, "Bob"), t + 1, why), "two citizens stand");
     CHECK(!e.register_candidate(kNode, who(1, kAnn, "Ann"), t, why), "... once each");
     CHECK(!e.register_candidate(kNode, who(9, "0000000000000000000000000000000f", "Stranger"), t, why), "a non-citizen does not stand");
     CHECK(!e.vote(kNode, who(3, kCy, "Cy"), {kAnn}, t, why), "nobody votes in the registration period");
-    t += 5 * kDay;
+    t += kDay;
     e.advance(t, takes, {kNode});
-    CHECK(e.node(kNode)->state == ElectionState::Active, "then the election");
+    CHECK(e.node(kNode)->state == ElectionState::Active && e.node(kNode)->phase_ends_ms == t + kDay, "then the first election, for a day");
     CHECK(e.vote(kNode, who(3, kCy, "Cy"), {kBob, kAnn}, t, why) && e.vote(kNode, who(1, kAnn, "Ann"), {kAnn}, t, why) && e.vote(kNode, who(2, kBob, "Bob"), {kBob}, t, why),
           "three citizens vote, one with a ranking");
     CHECK(!e.vote(kNode, who(3, kCy, "Cy"), {"ffffffffffffffffffffffffffffffff"}, t, why), "a vote for no candidate is refused");
     CHECK(e.vote(kNode, who(3, kCy, "Cy"), {kBob}, t, why) && e.node(kNode)->votes.at(3).size() == 1, "a second vote replaces the first");
-    t += 5 * kDay;
+    t += kDay;
     e.advance(t, takes, {kNode});
-    CHECK(e.node(kNode)->state == ElectionState::AwaitingResults, "then the wait for the results");
+    CHECK(e.node(kNode)->state == ElectionState::AwaitingResults && e.node(kNode)->phase_ends_ms == t + 10 * 1000, "then the first wait for the results, 10 s");
     t += 10 * 1000;
     ch = e.advance(t, takes, {kNode});
     CHECK(e.node(kNode)->state == ElectionState::Post && !ch.empty() && ch.back().results && ch.back().winner == "Bob", "the results: Bob, two votes to one");
-    CHECK(e.node(kNode)->mayor.account == 2 && e.mayor_node(2) == kNode && e.mayor_node(1) == 0, "Bob is the node's mayor");
+    CHECK(e.node(kNode)->mayor.account == 2 && e.mayor_node(2) == kNode && e.mayor_node(1) == 0 && !e.node(kNode)->first, "Bob is the node's mayor; the first election is over");
+    CHECK(e.node(kNode)->phase_ends_ms == kNov26, "the term runs to the next month's registration: 26 November, five days before the election of 1 December");
     CHECK(e.set_message(kNode, 2, "Welcome to Halcyon", why) && e.node(kNode)->mayor_message == "Welcome to Halcyon", "the mayor sets a message");
     CHECK(!e.set_message(kNode, 1, "I am mayor", why), "... nobody else");
-    t += 20 * kDay;
-    e.advance(t, takes, {kNode});
-    CHECK(e.node(kNode)->state == ElectionState::Registration && e.node(kNode)->candidates.empty() && e.node(kNode)->votes.empty() && e.node(kNode)->mayor.account == 2,
-          "the term ends: a new registration, the old candidates and votes gone, the mayor still serving");
-    // a long stop: several phases at once
-    e.register_candidate(kNode, who(1, kAnn, "Ann"), t, why);
-    t += 11 * kDay;
+    // the monthly cycle
+    e.advance(kNov26, takes, {kNode});
+    CHECK(e.node(kNode)->state == ElectionState::Registration && e.node(kNode)->phase_ends_ms == kDec1 && e.node(kNode)->candidates.empty() &&
+              e.node(kNode)->mayor.account == 2,
+          "the month's registration: until 1 December 00:00, the old candidates gone, the mayor still serving");
+    ch = e.advance(kDec1, takes, {kNode});
+    CHECK(e.node(kNode)->state == ElectionState::Post && e.node(kNode)->mayor.account == 2 && !ch.empty() && !ch.back().results &&
+              e.node(kNode)->phase_ends_ms == kDec27,
+          "nobody stood in December: no vote, Bob stays mayor until January's registration (27 December)");
+    e.advance(kDec27, takes, {kNode});
+    CHECK(e.node(kNode)->state == ElectionState::Registration && e.register_candidate(kNode, who(1, kAnn, "Ann"), kDec27, why), "January's registration: Ann stands");
+    e.advance(kJan1, takes, {kNode});
+    CHECK(e.node(kNode)->state == ElectionState::Active && e.node(kNode)->phase_ends_ms == kJan5At23, "the election from 1 January 00:00 to the 5th at 23:00");
+    e.advance(kJan5At23, takes, {kNode});
+    CHECK(e.node(kNode)->state == ElectionState::AwaitingResults && e.node(kNode)->phase_ends_ms == kJan6At1, "the results at 01:00 on the 6th");
+    // a long stop: the phases catch up
+    t = kJan6At1 + 3 * kHour;
     ch = e.advance(t, takes, {kNode});
-    CHECK(e.node(kNode)->state == ElectionState::Post && e.node(kNode)->mayor.account == 1, "after a long stop the phases catch up: Ann, the only candidate, is elected unopposed");
+    CHECK(e.node(kNode)->state == ElectionState::Post && e.node(kNode)->mayor.account == 1 && e.node(kNode)->phase_ends_ms == kJan27,
+          "Ann, the only candidate, is elected unopposed; her term runs to February's registration");
     CHECK(e.node(kNode)->mayor_message.empty(), "... with no message (the office changed hands)");
     // the office goes with the citizenship
     e.remove_citizen(1);
@@ -94,6 +123,40 @@ void test_cycle() {
     // a game master's skip
     const auto skipped = e.skip(kNode, t);
     CHECK(skipped && e.node(kNode)->state == ElectionState::Registration, "a game master skips the term: the registration starts");
+}
+
+void test_calendar() {
+    std::printf("the election calendar of the data\n");
+    ElectionRules r;
+    CHECK(r.election_start_ms(kNov10Noon) == kDec1, "from 10 November the next election starts on 1 December (its registration on the 26th has not begun)");
+    CHECK(r.election_start_ms(kNov26) == kDec1 && r.election_start_ms(kNov26 + 1) == kJan1, "... on the registration's first instant still that one, after it the next month's");
+    CHECK(r.election_end_ms(kJan1) == kJan5At23 && r.results_ms(kJan5At23) == kJan6At1, "five days to 23:00 of the last, the results at the next 01:00");
+    ElectionRules late = r;
+    late.results_hour = 23;
+    late.end_hour = 20;
+    CHECK(late.results_ms(kJan1 + 20 * kHour) == kJan1 + 23 * kHour, "a results hour later on the same day is that day's");
+}
+
+void test_ballot_and_rank() {
+    std::printf("the ballot's limit and the citizens' rank\n");
+    Elections e;
+    const auto takes = [](int64_t) { return true; };
+    e.set_citizen(kNode, who(1, kAnn, "Ann", 300));
+    e.set_citizen(kNode, who(2, kBob, "Bob", 100));
+    e.set_citizen(kNode, who(3, kCy, "Cy", 200));
+    e.set_citizen(kNode, who(4, kDee, "Dee", 200));
+    CHECK(e.citizen_rank(kNode, 2) == 1 && e.citizen_rank(kNode, 3) == 2 && e.citizen_rank(kNode, 4) == 3 && e.citizen_rank(kNode, 1) == 4,
+          "the rank is the place by when each joined (a tie by account)");
+    CHECK(e.citizen_rank(kNode, 9) == 0 && e.citizen_count(kNode) == 4 && e.citizen_count(42) == 0, "no rank for a stranger; four citizens");
+    int64_t t = kNov10Noon;
+    e.advance(t, takes, {kNode});
+    std::string why;
+    for (int64_t a = 1; a <= 4; ++a) e.register_candidate(kNode, who(a, a == 1 ? kAnn : a == 2 ? kBob : a == 3 ? kCy : kDee, "x"), t, why);
+    t += kDay;
+    e.advance(t, takes, {kNode});
+    CHECK(e.node(kNode)->state == ElectionState::Active && e.vote(kNode, who(1, kAnn, "Ann"), {kDee, kCy, kBob, kAnn}, t, why),
+          "a ballot ranking four candidates is taken");
+    CHECK(e.node(kNode)->votes.at(1) == (std::vector<std::string>{kDee, kCy, kBob}), "... with its first three: RankedChoiceVoteCountLimit");
 }
 
 void test_runoff() {
@@ -126,12 +189,45 @@ void test_file() {
     Elections e;
     e.set_citizen(kNode, who(1, kAnn, "Ann"));
     e.advance(1000, [](int64_t) { return true; }, {kNode});
-    e.skip(kNode, 2000);
     std::string why;
     e.register_candidate(kNode, who(1, kAnn, "Ann"), 2000, why);
     Elections back;
-    CHECK(back.from_json(e.to_json(), why) && back.all() == e.all(), "what is written reads back the same");
+    CHECK(back.from_json(e.to_json(), why) && back.all() == e.all() && back.node(kNode)->first, "what is written reads back the same, the first election's mark too");
     CHECK(!back.from_json("{nope", why) && back.all() == e.all(), "a damaged file is refused and changes nothing");
+}
+
+void test_dues() {
+    std::printf("the dues of the data's formulas\n");
+    CitizenshipRules r;
+    r.population_scalars = {{50, 1.0}, {150, 1.3}, {300, 2.0}};
+    r.missed_dues_increase = {{3, 0.5}, {4, 0.75}};
+    r.late_fee = 5;
+    auto f = r.dues_factors(1, 10, 3, 3);
+    CHECK(f.rank == 1 && f.level == 2 && f.population == 1 && r.dues_amount(f) == 2, "the 1st citizen at level 10: level / 5 = 2, so 2 Tax Receipts");
+    f = r.dues_factors(1, 4, 3, 3);
+    CHECK(f.level == 1 && r.dues_amount(f) == 1, "below level 5 the level impact is 1");
+    f = r.dues_factors(60, 25, 4, 160);
+    CHECK(std::abs(f.rank - 2.4) < 1e-9 && f.level == 5 && std::abs(f.population - 1.3) < 1e-9 && r.dues_amount(f) == 16,
+          "the 60th citizen at level 25 in a node of 160: 1 x 2.4 x 5 x 1.3 = 15.6, rounded up to 16");
+    f = r.dues_factors(10, 25, 4, 300);
+    CHECK(f.rank == 1 && f.population == 2.0 && r.dues_amount(f) == 10, "300 citizens double the dues");
+    const int64_t due = 1'800'000'000'000;
+    CHECK(r.dues_owed(due, due - 1, 4, 3) == 4 && r.dues_owed(due, r.overdue_ms(due) - 1, 4, 3) == 4, "before the overdue date the dues are the period's");
+    CHECK(r.dues_owed(due, r.overdue_ms(due), 4, 3) == 6 + 5 && r.dues_owed(due, r.overdue_ms(due), 4, 4) == 7 + 5,
+          "once overdue: the node level's increase (Village half, Town three quarters, rounded up) and the late fee");
+    const char* env = std::getenv("AOC_CONTENT_DB");
+    const std::string path = env && *env ? env : "dist/content/content.db";
+    if (!std::filesystem::exists(path)) {
+        std::printf("  [skip] SKIP: no %s\n", path.c_str());
+        return;
+    }
+    std::string why;
+    const auto real = CitizenshipRules::load(path, why);
+    CHECK(real && real->base_dues == 1 && real->rank_threshold == 25 && real->level_threshold == 5 && real->non_owner_impact == 1,
+          "the real dues: 1 Tax Receipt, the rank's threshold 25 and the level's 5 read from the formulas, no non-owner impact");
+    CHECK(real && real->population_scalars.size() == 3 && real->missed_dues_increase.count(3) && std::abs(real->missed_dues_increase.at(3) - 0.5) < 1e-9 &&
+              real->dues_level_scalar.count(4) && real->dues_level_scalar.at(4) == 1,
+          "... the citizens' count scalars, the Village's 50% for missed dues, the node level scalars");
 }
 
 void test_rules() {
@@ -144,17 +240,24 @@ void test_rules() {
     }
     std::string why;
     const auto r = ElectionRules::load(path, why);
-    CHECK(r && r->registration_days == 5 && r->election_days == 5 && r->first_registration_secs == 86400 && r->results_secs == 10 && r->election_type == 0,
-          "Scientific_Election_Definition: 1 day, 5 days of registration, 5 of voting, 10 s for the results (the test definition is not taken)");
+    CHECK(r && r->registration_days == 5 && r->election_days == 5 && r->first_registration_secs == 86400 && r->first_election_secs == 86400 && r->results_secs == 10 &&
+              r->election_type == 0,
+          "Scientific_Election_Definition: the first registration and election a day each, 10 s for their results; then 5 days of registration and 5 of voting");
+    CHECK(r && r->start_day == 1 && r->start_hour == 0 && r->end_hour == 23 && r->results_hour == 1 && r->min_term_days == 0,
+          "... the election on the 1st at 00:00 to 23:00 of its last day, the results at 01:00, no minimum term (the test definition is not taken)");
+    CHECK(r && r->ranked_limit == 3, "a ballot ranks at most 3 candidates (ElectionConstants)");
 }
 
 }  // namespace
 
 int main() {
     test_cycle();
+    test_calendar();
+    test_ballot_and_rank();
     test_runoff();
     test_file();
     test_rules();
+    test_dues();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

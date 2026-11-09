@@ -121,9 +121,13 @@ void PlayerSession::run_nodes(Connection& conn) {
     const auto has_room = [this] { return !failed_ && replies_.size() + delayed_.size() + 8 <= kMaxPendingReplies; };
 
     // the registry's levels changed: a delta of the GameState's node maps
-    if (pb_.mode() == bootstrap::GameStateMode::Tier3 && nodes && wire && nodes->version() != node_maps_version_ && has_room()) {
+    const world::Elections* elections = world_ ? world_->elections() : nullptr;
+    const uint64_t election_version = elections ? elections->version() : 0;
+    if (pb_.mode() == bootstrap::GameStateMode::Tier3 && nodes && wire && (nodes->version() != node_maps_version_ || election_version != node_maps_election_version_) &&
+        has_room()) {
         node_maps_version_ = nodes->version();
-        auto maps = std::make_shared<protocol::repl::NodeStateMaps>(wire->maps(*nodes));
+        node_maps_election_version_ = election_version;   // (a mayor or a citizen count changed: the maps follow; an unchanged map sends nothing)
+        auto maps = std::make_shared<protocol::repl::NodeStateMaps>(wire->maps(*nodes, elections));
         ++node_map_updates_;
         spdlog::info("[nodes] {}: the node levels changed (registry version {}): sending the GameState's node maps ({})", name(), node_maps_version_, nodes->describe_levels());
         queue("GameState node maps", [maps](bootstrap::PlayerBootstrap& pb) { return pb.node_maps_update(*maps); }, conn, /*must_build=*/false);
@@ -158,7 +162,7 @@ void PlayerSession::run_nodes(Connection& conn) {
         node_summary_wait_.pop_front();
         node_summary_queued_.erase(node);
         const int64_t unix_now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-        const auto s = nodes && wire ? wire->summary(node, *nodes, unix_now) : std::nullopt;
+        const auto s = nodes && wire ? wire->summary(node, *nodes, unix_now, elections) : std::nullopt;
         if (!s) {
             unknown(node, "for its summary");
             continue;

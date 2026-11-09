@@ -59,6 +59,7 @@ struct CitizenHarness : Harness {
         rules.join_cost = 3;
         rules.dues_cost = 1;
         rules.late_fee = 1;
+        rules.level_threshold = 1000;   // (the flow's dues stay at 1: the level impact of the data's formula is tested in test_worldd_elections)
         rules.cooldown_secs = {{3, 0}, {4, 3600}};
         fx.world->set_citizenship_rules(rules);
         content::CurrencyData data;
@@ -274,7 +275,8 @@ void test_mayor_flow() {
     h.s->set_citizenship_for_test(svc::Citizenship{kTestCitizenNode, kCyb, now_ms, now_ms + 14LL * 86400000, 0});
     h.s->run_citizenship_for_test(h.conn);
     const world::NodeElection* e = el ? el->node(kTestCitizenNode) : nullptr;
-    CHECK(e && e->state == world::ElectionState::AwaitingFirst && e->citizens.count(h.record.account_id) == 1, "the citizen's node starts its first wait, the account among its citizens");
+    CHECK(e && (e->state == world::ElectionState::AwaitingFirst || (e->state == world::ElectionState::Registration && e->first)) && e->citizens.count(h.record.account_id) == 1,
+          "the citizen's node starts its first election with its first citizen, the account among its citizens");
     el->skip(kTestCitizenNode, now_ms);
     // standing
     size_t from = h.got.size();

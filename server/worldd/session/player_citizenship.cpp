@@ -281,7 +281,7 @@ void PlayerSession::on_citizenship_dues(Connection& conn, const repl::ClientRpc&
     const int64_t now_ms = wall_ms();
     const int64_t period = static_cast<int64_t>(rules->dues_weeks) * 7 * 86400000;
     if (citizenship_.dues_due_ms - now_ms > period) return refuse("the dues are paid until " + std::to_string(citizenship_.dues_due_ms) + " ms already");
-    const int32_t owed = rules->dues_owed(citizenship_.dues_due_ms, now_ms);
+    const int32_t owed = citizenship_dues(now_ms);
     if (*asked != owed) spdlog::log(level_for(citizenship_log_), "[nodes] {}: the client asks to pay {} dues, {} are owed: what is owed is taken", name(), *asked, owed);
     std::string why;
     if (!pay_tax_receipts(conn, owed, why)) return refuse(why);
@@ -339,12 +339,16 @@ repl::CitizenshipWindowData PlayerSession::citizenship_window(int64_t now_ms) co
         if (const auto g = items::guid_of(character_id_)) s.primary = {*g, name()};
     }
     const int64_t due = citizenship_.dues_due_ms;
-    s.dues_required = rules ? rules->dues_owed(due, now_ms) : 1;
+    world::CitizenshipRules::DuesFactors factors;
+    int rank = 1;
+    s.dues_required = citizenship_dues(now_ms, &factors, &rank);
     s.dues_paid = due > now_ms ? s.dues_required : 0;
-    s.dues_level_impact = s.dues_rank_impact = s.dues_non_owner_impact = 1.0;   // modelled: the dues' expressions are not run
+    s.dues_level_impact = factors.level;        // DuesLevelImpact
+    s.dues_rank_impact = factors.rank;          // DuesCitizenshipRankImpact
+    s.dues_non_owner_impact = factors.non_owner;   // DuesNonPropertyOwnerImpact
     s.dues_overdue = due > 0 && now_ms >= due;
     if (rules && due > 0 && now_ms >= rules->overdue_ms(due)) s.at_risk_start = static_cast<double>(rules->overdue_ms(due)) / 1000.0;   // CitizenshipAtRiskStartTime (Unix seconds)
-    s.rank = 1;                                                               // modelled
+    s.rank = rank;                                                            // CitizenshipRank: the place among the node's citizens by when they joined
     s.player_level = progress_.level;
     s.highest_level = progress_.level;
     s.property_state = 1;                                                     // ApartmentRenter (modelled: no housing)
@@ -468,8 +472,22 @@ std::vector<world::Elections::Change> PlayerWorld::tick_elections(int64_t now_ms
 
 world::ElectionPerson PlayerSession::election_person() const { return world::ElectionPerson{account_id_, character_id_, name(), 0}; }
 
+int32_t PlayerSession::citizenship_dues(int64_t now_ms, world::CitizenshipRules::DuesFactors* factors, int* rank) const {
+    const world::CitizenshipRules* rules = world_ ? world_->citizenship_rules() : nullptr;
+    if (!rules || citizenship_.node_guid == 0) return 1;
+    const world::Elections* el = world_->elections();
+    const int r = el ? std::max(1, el->citizen_rank(citizenship_.node_guid, account_id_)) : 1;
+    const size_t citizens = el ? el->citizen_count(citizenship_.node_guid) : 1;
+    const int node_level = world_->city_nodes() ? world_->city_nodes()->level_of(citizenship_.node_guid) : 0;
+    const world::CitizenshipRules::DuesFactors f = rules->dues_factors(r, progress_.level, node_level, citizens);
+    if (factors) *factors = f;
+    if (rank) *rank = r;
+    return rules->dues_owed(citizenship_.dues_due_ms, now_ms, rules->dues_amount(f), node_level);
+}
+
 world::ElectionPerson PlayerSession::citizen_person() const {
     world::ElectionPerson p = election_person();
+    p.at_ms = citizenship_.joined_ms;   // the rank among the node's citizens is by when they joined
     if (!citizenship_.primary_character_id.empty() && citizenship_.primary_character_id != character_id_) {
         p.character_id = citizenship_.primary_character_id;
         const std::string want = upper(citizenship_.primary_character_id);

@@ -667,6 +667,41 @@ static std::vector<std::string> pc_calls_from(const Harness& h, size_t from, std
     return names;
 }
 
+/// The node window's mayor and the map's citizens: with the elections, FClientNodeData's Mayor names the node's mayor and NodeNumberOfCitizensFastMap counts its citizens;
+/// the summary carries the mayor's message, which the mayor may edit at once.
+static void test_mayor_in_maps() {
+    std::printf("the node's mayor and citizens in the GameState's maps and the summary\n");
+    world::Elections el;
+    const char* const kMayorId = "00000000000000000000000000c0ffee";
+    el.set_citizen(kJoeva, world::ElectionPerson{1, kMayorId, "Mayorie", 10});
+    el.set_citizen(kJoeva, world::ElectionPerson{2, "000000000000000000000000000000b2", "Second", 20});
+    el.set_mayor(kJoeva, world::ElectionPerson{1, kMayorId, "Mayorie", 0}, 30);
+    std::string why;
+    CHECK(el.set_message(kJoeva, 1, "Joeva welcomes you", why), "(the mayor's message is set)");
+    const repl::NodeStateMaps plain = g_wire->maps(*g_nodes);
+    const repl::NodeStateMaps with = g_wire->maps(*g_nodes, &el);
+    const world::CityNodeInfo* joeva = g_nodes->by_guid(kJoeva);
+    const repl::NodeDataEntry* entry = nullptr;
+    for (const repl::NodeDataEntry& n : with.nodes) {
+        if (n.guid == kJoeva) entry = &n;
+    }
+    CHECK(entry && entry->mayor_name == "Mayorie" && entry->mayor_guid == (std::array<uint32_t, 4>{0, 0, 0, 0xc0ffee}), "Joeva's entry names its mayor, the character's guid and name");
+    size_t others_named = 0;
+    for (const repl::NodeDataEntry& n : with.nodes) others_named += n.guid != kJoeva && !n.mayor_name.empty();
+    CHECK(others_named == 0, "no other node has a mayor");
+    const int joeva_level = joeva ? g_nodes->level_of(kJoeva) : 0;
+    uint8_t citizens = 255;
+    for (const auto& [rank, n] : with.citizens) {
+        if (joeva && rank == static_cast<uint32_t>(joeva->rank)) citizens = n;
+    }
+    CHECK(joeva_level < 3 || citizens == 2, "the citizens map counts Joeva's two citizens (it lists the nodes from Village)");
+    CHECK(plain.citizens.size() == with.citizens.size() && plain.nodes.size() == with.nodes.size(), "the maps list the same nodes with or without the elections");
+    const auto summary = g_wire->summary(kJoeva, *g_nodes, 0, &el);
+    CHECK(summary && summary->mayor_message == "Joeva welcomes you" && summary->next_mayor_message_edit_time == 0, "the summary carries the mayor's message, editable now");
+    const auto halcyon = g_wire->summary(kHalcyon, *g_nodes, 0, &el);
+    CHECK(halcyon && halcyon->mayor_message.empty() && halcyon->next_mayor_message_edit_time == 60, "a node with no mayor keeps retail's no-mayor values");
+}
+
 static void test_join() {
     std::printf("a Tier3 join: the maps in the GameState's open, the account's characters in OwnerInfo\n");
     Harness h(cyb_record());
@@ -1227,6 +1262,7 @@ int main() {
     }
     test_maps();
     test_summaries();
+    test_mayor_in_maps();
     test_join();
     test_requests();
     test_level_change();

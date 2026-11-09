@@ -15,7 +15,37 @@ namespace {
 
 constexpr int64_t kDayMs = 86400000;
 constexpr size_t kMaxMessage = 512;
-constexpr size_t kMaxRanked = 32;
+constexpr int64_t kHourMs = 3600000;
+
+// The civil calendar (proleptic Gregorian, UTC): days since 1970-01-01 of a date, and back.
+int64_t days_from_civil(int64_t y, int m, int d) {
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const int64_t yoe = y - era * 400;
+    const int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+void civil_from_days(int64_t z, int64_t& y, int& m, int& d) {
+    z += 719468;
+    const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const int64_t doe = z - era * 146097;
+    const int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const int64_t mp = (5 * doy + 2) / 153;
+    d = static_cast<int>(doy - (153 * mp + 2) / 5 + 1);
+    m = static_cast<int>(mp < 10 ? mp + 3 : mp - 9);
+    y = yoe + era * 400 + (m <= 2);
+}
+
+int days_in_month(int64_t y, int m) {
+    static const int kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const bool leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    return m == 2 && leap ? 29 : kDays[m - 1];
+}
+
+int64_t floor_div(int64_t a, int64_t b) { return a / b - ((a % b != 0) && ((a < 0) != (b < 0))); }
 
 nlohmann::json person_json(const ElectionPerson& p) { return {{"account", p.account}, {"character", p.character_id}, {"name", p.name}, {"at", p.at_ms}}; }
 
@@ -41,6 +71,36 @@ const char* election_state_name(ElectionState s) {
     return "?";
 }
 
+int64_t ElectionRules::election_start_ms(int64_t not_before_ms) const {
+    int64_t y = 0;
+    int m = 0, d = 0;
+    civil_from_days(floor_div(not_before_ms, kDayMs), y, m, d);
+    const int64_t registration = static_cast<int64_t>(std::max(0, registration_days)) * kDayMs;
+    for (int i = 0; i < 26; ++i) {   // (the first month whose registration has not begun is at most two months on)
+        const int day = std::clamp(start_day, 1, days_in_month(y, m));
+        const int64_t start = days_from_civil(y, m, day) * kDayMs + static_cast<int64_t>(std::clamp(start_hour, 0, 23)) * kHourMs;
+        if (start - registration >= not_before_ms) return start;
+        if (++m > 12) {
+            m = 1;
+            ++y;
+        }
+    }
+    return not_before_ms + registration;
+}
+
+int64_t ElectionRules::election_end_ms(int64_t start_ms) const {
+    const int64_t day0 = floor_div(start_ms, kDayMs);
+    const int64_t end = (day0 + std::max(1, election_days) - 1) * kDayMs + static_cast<int64_t>(std::clamp(end_hour, 0, 23)) * kHourMs;
+    return std::max(end, start_ms + kHourMs);   // (an end hour before the start hour on a one-day election: an hour)
+}
+
+int64_t ElectionRules::results_ms(int64_t end_ms) const {
+    const int64_t day0 = floor_div(end_ms, kDayMs);
+    int64_t at = day0 * kDayMs + static_cast<int64_t>(std::clamp(results_hour, 0, 23)) * kHourMs;
+    if (at <= end_ms) at += kDayMs;
+    return at;
+}
+
 std::optional<ElectionRules> ElectionRules::load(const std::string& path, std::string& error) {
     sqlite3* db = nullptr;
     if (sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
@@ -51,7 +111,8 @@ std::optional<ElectionRules> ElectionRules::load(const std::string& path, std::s
     sqlite3_stmt* st = nullptr;
     std::optional<ElectionRules> out;
     if (sqlite3_prepare_v2(db,
-                           "SELECT election_type, registration_days, election_days, first_registration_secs, first_wait_for_results_secs FROM election_def "
+                           "SELECT election_type, registration_days, election_days, first_registration_secs, first_wait_for_results_secs, first_election_secs, start_day, "
+                           "start_hour, end_hour, results_hour, min_term_days FROM election_def "
                            "WHERE name NOT LIKE 'TEST%' ORDER BY guid LIMIT 1",
                            -1, &st, nullptr) != SQLITE_OK) {
         error = path + " has no election_def table";
@@ -64,33 +125,50 @@ std::optional<ElectionRules> ElectionRules::load(const std::string& path, std::s
         if (const int d = sqlite3_column_int(st, 2); d > 0 && d <= 60) r.election_days = d;
         if (const int64_t s = sqlite3_column_int64(st, 3); s > 0 && s <= 60LL * 86400) r.first_registration_secs = s;
         if (const int64_t s = sqlite3_column_int64(st, 4); s > 0 && s <= 86400) r.results_secs = s;
+        if (const int64_t s = sqlite3_column_int64(st, 5); s > 0 && s <= 60LL * 86400) r.first_election_secs = s;
+        if (const int d = sqlite3_column_int(st, 6); d >= 1 && d <= 31) r.start_day = d;
+        if (const int h = sqlite3_column_int(st, 7); h >= 0 && h <= 23) r.start_hour = h;
+        if (const int h = sqlite3_column_int(st, 8); h >= 0 && h <= 23) r.end_hour = h;
+        if (const int h = sqlite3_column_int(st, 9); h >= 0 && h <= 23) r.results_hour = h;
+        if (const int d = sqlite3_column_int(st, 10); d >= 0 && d <= 365) r.min_term_days = d;
         out = r;
     } else {
         error = path + "'s election_def has no definition";
+    }
+    if (st) sqlite3_finalize(st);
+    st = nullptr;
+    // ElectionConstants' RankedChoiceVoteCountLimit (contentc's node_constant; a file without it: 3)
+    if (out && sqlite3_prepare_v2(db, "SELECT value FROM node_constant WHERE name = 'RankedChoiceVoteCountLimit'", -1, &st, nullptr) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW) {
+        if (const int n = sqlite3_column_int(st, 0); n >= 1 && n <= 32) out->ranked_limit = static_cast<size_t>(n);
     }
     if (st) sqlite3_finalize(st);
     sqlite3_close(db);
     return out;
 }
 
-void Elections::enter(int64_t node, NodeElection& e, ElectionState s, int64_t start_ms, std::vector<Change>& out) {
+void Elections::enter(int64_t node, NodeElection& e, ElectionState s, int64_t start_ms, std::vector<Change>& out, bool count) {
     Change c;
     c.node = node;
     c.state = s;
     e.state = s;
     e.phase_started_ms = start_ms;
     switch (s) {
-        case ElectionState::AwaitingFirst: e.phase_ends_ms = start_ms + rules_.first_registration_secs * 1000; break;
+        case ElectionState::AwaitingFirst: e.phase_ends_ms = start_ms; break;   // (due at once: it waits for the node's first citizen)
         case ElectionState::Registration:
-            e.phase_ends_ms = start_ms + static_cast<int64_t>(rules_.registration_days) * kDayMs;
+            e.phase_ends_ms = e.first ? start_ms + rules_.first_registration_secs * 1000 : rules_.election_start_ms(start_ms);
             e.candidates.clear();
             e.votes.clear();
             e.voters.clear();
             break;
-        case ElectionState::Active: e.phase_ends_ms = start_ms + static_cast<int64_t>(rules_.election_days) * kDayMs; break;
-        case ElectionState::AwaitingResults: e.phase_ends_ms = start_ms + rules_.results_secs * 1000; break;
+        case ElectionState::Active: e.phase_ends_ms = e.first ? start_ms + rules_.first_election_secs * 1000 : rules_.election_end_ms(start_ms); break;
+        case ElectionState::AwaitingResults: e.phase_ends_ms = e.first ? start_ms + rules_.results_secs * 1000 : rules_.results_ms(start_ms); break;
         case ElectionState::Post: {
-            e.phase_ends_ms = start_ms + static_cast<int64_t>(rules_.term_days) * kDayMs;
+            // the term: until the next month's registration, at least min_term_days on
+            const int64_t term_from = start_ms + static_cast<int64_t>(std::max(0, rules_.min_term_days)) * kDayMs;
+            e.phase_ends_ms = rules_.election_start_ms(term_from) - static_cast<int64_t>(std::max(0, rules_.registration_days)) * kDayMs;
+            e.first = false;
+            if (!count) break;   // no candidate stood: no vote this month, the mayor stays
             c.results = true;
             if (const auto w = tally(e)) {
                 const int64_t before = e.mayor.account;
@@ -119,16 +197,27 @@ std::vector<Elections::Change> Elections::advance(int64_t now_ms, const std::fun
     for (auto& [node, e] : nodes_) {
         for (int guard = 0; guard < 64 && e.phase_ends_ms != 0 && now_ms >= e.phase_ends_ms; ++guard) {
             const int64_t at = e.phase_ends_ms;
+            bool waits = false;
             switch (e.state) {
-                case ElectionState::AwaitingFirst: enter(node, e, ElectionState::Registration, at, out); break;
+                case ElectionState::AwaitingFirst:
+                    // the first election starts with the node's first citizen
+                    if (e.citizens.empty()) {
+                        waits = true;
+                        break;
+                    }
+                    e.first = true;
+                    enter(node, e, ElectionState::Registration, std::max(at, now_ms), out);
+                    break;
                 case ElectionState::Registration:
-                    // no candidate: the registration runs again
-                    enter(node, e, e.candidates.empty() ? ElectionState::Registration : ElectionState::Active, at, out);
+                    if (!e.candidates.empty()) enter(node, e, ElectionState::Active, at, out);
+                    else if (e.first) enter(node, e, ElectionState::Registration, at, out);   // the first: the registration runs again
+                    else enter(node, e, ElectionState::Post, at, out, /*count=*/false);        // a month with no candidate: no vote
                     break;
                 case ElectionState::Active: enter(node, e, ElectionState::AwaitingResults, at, out); break;
                 case ElectionState::AwaitingResults: enter(node, e, ElectionState::Post, at, out); break;
                 case ElectionState::Post: enter(node, e, ElectionState::Registration, at, out); break;
             }
+            if (waits) break;
         }
     }
     return out;
@@ -202,7 +291,7 @@ bool Elections::vote(int64_t node, const ElectionPerson& who, const std::vector<
     std::vector<std::string> kept;
     std::set<std::string> seen;
     for (const std::string& id : ranked) {
-        if (kept.size() >= kMaxRanked || !seen.insert(id).second) continue;
+        if (kept.size() >= rules_.ranked_limit || !seen.insert(id).second) continue;
         const bool known = std::any_of(e.candidates.begin(), e.candidates.end(), [&](const ElectionPerson& c) { return c.character_id == id; });
         if (known) kept.push_back(id);
     }
@@ -230,6 +319,23 @@ void Elections::set_mayor(int64_t node, const ElectionPerson& who, int64_t now_m
     e.mayor.at_ms = now_ms;
     if (who.account == 0) e.mayor_message.clear();
     ++version_;
+}
+
+int Elections::citizen_rank(int64_t node, int64_t account) const {
+    const NodeElection* e = this->node(node);
+    if (!e) return 0;
+    const auto me = e->citizens.find(account);
+    if (me == e->citizens.end()) return 0;
+    int rank = 1;
+    for (const auto& [a, p] : e->citizens) {
+        if (a != account && (p.at_ms < me->second.at_ms || (p.at_ms == me->second.at_ms && a < account))) ++rank;
+    }
+    return rank;
+}
+
+size_t Elections::citizen_count(int64_t node) const {
+    const NodeElection* e = this->node(node);
+    return e ? e->citizens.size() : 0;
 }
 
 bool Elections::is_candidate(int64_t node, int64_t account) const {
@@ -289,6 +395,7 @@ std::string Elections::to_json() const {
         n["ends"] = e.phase_ends_ms;
         n["mayor"] = person_json(e.mayor);
         n["message"] = e.mayor_message;
+        n["first"] = e.first;
         for (const ElectionPerson& c : e.candidates) n["candidates"].push_back(person_json(c));
         for (const auto& [a, p] : e.citizens) n["citizens"].push_back(person_json(p));
         for (const auto& [a, ranked] : e.votes) {
@@ -319,6 +426,7 @@ bool Elections::from_json(const std::string& text, std::string& error) {
             e.phase_ends_ms = n.value("ends", int64_t{0});
             if (n.contains("mayor")) e.mayor = person_of(n["mayor"]);
             e.mayor_message = n.value("message", std::string());
+            e.first = n.value("first", false);
             if (n.contains("candidates")) for (const auto& c : n["candidates"]) e.candidates.push_back(person_of(c));
             if (n.contains("citizens")) for (const auto& c : n["citizens"]) { const ElectionPerson p = person_of(c); if (p.account != 0) e.citizens[p.account] = p; }
             if (n.contains("votes")) {

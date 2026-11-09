@@ -7,15 +7,21 @@
 //  The mayoral elections of the nodes that take citizens, as one store for the whole world (every session reads it; PlayerWorld owns it and keeps it in a file beside
 //  the ground crates, the supervisor's run folder, so an update does not lose it).
 //
-//    the cycle   EMayorElectionState: AwaitingFirstElection (first_registration_secs after the node first takes citizens) -> RegistrationPeriod (registration_days; the client's
-//                "prevote") -> ActiveElection (election_days) -> AwaitingElectionResults (first_wait_for_results_secs) -> PostElection (the mayor's term, then registration
-//                again).  From content.db's election_def (Scientific_Election_Definition: 1 day, 5 days, 5 days, 10 s).  Modelled: the term (kTermDays: the data's
-//                min_term_days is 0), a registration with no candidate runs again, and the calendar (start_day, start_hour ...) is not followed: the phases follow
-//                each other by their lengths.
+//    the cycle   EMayorElectionState, from content.db's election_def (CityNodeElectionDefRecordBase Scientific_Election_Definition):
+//                  AwaitingFirstElection   from when the node takes citizens until its first citizen;
+//                  the first election      RegistrationPeriod (the client's "prevote") FirstTimeRegistrationPeriodDurationSeconds (1 day), ActiveElection
+//                                          FirstTimeElectionPeriodDurationSeconds (1 day), AwaitingElectionResults FirstTimeWaitForResultsPeriodDurationSeconds (10 s);
+//                  then every month        ActiveElection from day ElectionPeriodStartDay of the month at ElectionPeriodStartHour (the 1st, 00:00 UTC) for
+//                                          ElectionPeriodDurationDays (5), ending at ElectionPeriodEndHour of its last day (the 5th, 23:00); RegistrationPeriod the
+//                                          RegistrationPeriodDurationDays (5) before it; the results at ElectionResultsHour (01:00) after the end;
+//                  PostElection            the mayor's term, until the next month's registration (at least MinimumLengthOfTermDays, 0 in the data).
+//                A first registration with no candidate runs again; a monthly one with no candidate skips that month's vote, and the mayor stays.  The day of
+//                ElectionPeriodStartDay is read as the day of the month (the data's other days are weekdays by name), the times as UTC.
 //    who         the node's citizens (kept here from the sessions' citizenship changes: an account that joins, renounces or lapses), one vote per account; a candidate is a
 //                citizen who registered in the registration period.  The mayor's account loses the office with its citizenship.
 //    the count   ranked choice (ServerRankedChoiceVoteForMayor sends the ranking; the window sends one): an instant runoff, the candidate with the fewest first choices out
-//                each round; a tie goes to the one who registered first.
+//                each round; a tie goes to the one who registered first.  A ballot keeps at most RankedChoiceVoteCountLimit (3) candidates.
+//    the rank    a citizen's CitizenshipRank is its place in the node's citizens by when it joined (1: the first), which the dues' rank impact reads.
 // ============================================================================
 #pragma once
 
@@ -32,12 +38,24 @@ enum class ElectionState : uint8_t { AwaitingFirst = 0, Registration = 1, Active
 const char* election_state_name(ElectionState s);
 
 struct ElectionRules {
-    int64_t first_registration_secs = 86400;   // AwaitingFirstElection
-    int32_t registration_days = 5;
-    int32_t election_days = 5;
-    int64_t results_secs = 10;                 // first_wait_for_results_secs
-    int32_t term_days = 20;                    // modelled
+    int64_t first_registration_secs = 86400;   // FirstTimeRegistrationPeriodDurationSeconds
+    int64_t first_election_secs = 86400;       // FirstTimeElectionPeriodDurationSeconds
+    int64_t results_secs = 10;                 // FirstTimeWaitForResultsPeriodDurationSeconds
+    int32_t registration_days = 5;             // RegistrationPeriodDurationDays
+    int32_t election_days = 5;                 // ElectionPeriodDurationDays
+    int     start_day = 1;                     // ElectionPeriodStartDay: the day of the month
+    int     start_hour = 0;                    // ElectionPeriodStartHour (UTC)
+    int     end_hour = 23;                     // ElectionPeriodEndHour, of the election's last day
+    int     results_hour = 1;                  // ElectionResultsHour: the first such hour after the end
+    int32_t min_term_days = 0;                 // MinimumLengthOfTermDays
+    size_t  ranked_limit = 3;                  // ElectionConstants' RankedChoiceVoteCountLimit
     uint8_t election_type = 0;                 // EMayorElectionType: Scientific 0
+    /// The monthly cycle's ActiveElection start: the first one (day start_day of a month at start_hour) whose registration starts at or after `not_before_ms`.
+    int64_t election_start_ms(int64_t not_before_ms) const;
+    /// The end of the election that starts at `start_ms`: end_hour of its election_days-th day.
+    int64_t election_end_ms(int64_t start_ms) const;
+    /// The results of an election that ended at `end_ms`: the first results_hour after it.
+    int64_t results_ms(int64_t end_ms) const;
     /// content.db's election_def: the first definition that is no test one.  nullopt with `error` for a file without the table.
     static std::optional<ElectionRules> load(const std::string& content_db_path, std::string& error);
 };
@@ -59,6 +77,7 @@ struct NodeElection {
     std::map<int64_t, ElectionPerson> citizens;                    // account -> its primary character
     ElectionPerson mayor;                                          // account 0: no mayor
     std::string    mayor_message;
+    bool           first = false;                                  // this cycle is the node's first election (its own lengths)
     bool operator==(const NodeElection&) const = default;
 };
 
@@ -98,6 +117,10 @@ public:
     void set_mayor(int64_t node, const ElectionPerson& who, int64_t now_ms);
 
     bool is_candidate(int64_t node, int64_t account) const;
+    /// The account's CitizenshipRank in `node`: its place among the node's citizens by when they joined (1: the first; ties by account), 0 when it is no citizen there.
+    int citizen_rank(int64_t node, int64_t account) const;
+    /// How many citizens `node` has.
+    size_t citizen_count(int64_t node) const;
     /// The node whose mayor the account is (0: none).
     int64_t mayor_node(int64_t account) const;
 
@@ -112,7 +135,8 @@ public:
     bool from_json(const std::string& json, std::string& error);
 
 private:
-    void enter(int64_t node, NodeElection& e, ElectionState s, int64_t start_ms, std::vector<Change>& out);
+    /// `e` enters `s` at `start_ms`.  `count`: entering Post counts the votes (false: a monthly registration had no candidate, the mayor stays).
+    void enter(int64_t node, NodeElection& e, ElectionState s, int64_t start_ms, std::vector<Change>& out, bool count = true);
     ElectionRules                   rules_;
     std::map<int64_t, NodeElection> nodes_;
     uint64_t                        version_ = 0;

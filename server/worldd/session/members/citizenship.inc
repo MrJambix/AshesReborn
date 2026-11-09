@@ -34,6 +34,9 @@ private:
     void send_citizenship_call(Connection& conn, const char* rpc, std::function<bool(const protocol::schema::RpcSchema&, repl::RpcParams&)> fill);
     /// Takes `cost` Tax Receipts (the TaxVoucher items); the events go to the client and the bag is saved.  False with `why`, changing nothing, when the bags hold fewer.
     bool pay_tax_receipts(Connection& conn, int32_t cost, std::string& why);
+    /// The account's dues now (world/citizenship.h): what one period costs at `now_ms`, with the late part once overdue; `factors` and `rank` (when given) get what
+    /// it was made of.
+    int32_t citizenship_dues(int64_t now_ms, world::CitizenshipRules::DuesFactors* factors = nullptr, int* rank = nullptr) const;
     /// Every few seconds: the account's citizenship as another session of it changed it (adopted, not saved again), and a citizenship whose dues stayed unpaid too long lapses.
     void run_citizenship(Connection& conn);
     // ---- stage 2: mayors
@@ -55,6 +58,7 @@ private:
     /// The node at the NPC's place: its guid and level (0 and -1 for none).
     std::pair<int64_t, int> citizenship_node_at(double x, double y) const;
     svc::Citizenship                citizenship_;
+    uint64_t                        node_maps_election_version_ = 0;   // the elections' version the GameState's node maps were last brought to
     bool                            citizenship_changed_ = false;   // this session changed it: every progress save carries it
     std::optional<CitizenshipOffer> citizenship_offer_;
     RequestBudget                   citizenship_budget_{kVendorBurst, kVendorInterval};
