@@ -19,6 +19,7 @@
 #include "protocol/repl/quest_codec.h"
 #include "protocol/repl/citizenship_codec.h"
 #include "protocol/repl/node_inventory_codec.h"
+#include "protocol/repl/buy_order_codec.h"
 #include "protocol/repl/warehouse_codec.h"
 #include "protocol/repl/item_codec.h"
 
@@ -117,7 +118,7 @@ enum class S {
     Unknown, Vec3, Vec2, Ticks, Rotator, Quantized, Normal, RepMovement, LoadTracker, UniqueId, Tag, TagContainer,
     StatInt32, Quat, GuidToBool, Alignment, AppearanceId, Customization, ItemInstance, ItemStorageEvent, HitConfirmations,
     MovementInput, VendorPurchase, VendorTransaction, EmptyMap, NodeTax, LocalizedMessage, ChannelingData, CraftState, RewardInstance, HashedVariable,
-    WarehouseEntry, CraftTags, GuildData, Currency, CommissionBoard, CitizenshipWindow, NodeInventory,
+    WarehouseEntry, CraftTags, GuildData, Currency, CommissionBoard, CitizenshipWindow, NodeInventory, BuyOrders, BuyOrderContributions,
 };
 
 S find_struct(std::string_view n) {
@@ -158,6 +159,8 @@ S find_struct(std::string_view n) {
     if (n == "FCommissionBoardList") return S::CommissionBoard;
     if (n == "FEssentialCitizenshipWindowData") return S::CitizenshipWindow;
     if (n == "FNodeInventoryData") return S::NodeInventory;
+    if (n == "FClientBuyOrderData") return S::BuyOrders;
+    if (n == "FPlayerBuyOrderContributions") return S::BuyOrderContributions;
     return S::Unknown;
 }
 
@@ -1309,6 +1312,14 @@ bool struct_accepts(std::string_view struct_name, const Value& v) {
             const auto* d = v.get_if<NodeInventoryData>();
             return d && node_inventory_fits(*d);
         }
+        case S::BuyOrders: {
+            const auto* d = v.get_if<ClientBuyOrderData>();
+            return d && buy_order_data_fits(*d);
+        }
+        case S::BuyOrderContributions: {
+            const auto* c = v.get_if<PlayerBuyOrderContributions>();
+            return c && buy_order_contributions_fit(*c);
+        }
         case S::Unknown:     break;
     }
     return false;
@@ -1331,6 +1342,8 @@ std::optional<Value> zero_struct(std::string_view struct_name) {
         case S::CommissionBoard: return Value(CommissionBoardList{});   // no board, no commissions
         case S::CitizenshipWindow: return Value(CitizenshipWindowData{});   // no notifications, no citizenship
         case S::NodeInventory: return Value(NodeInventoryData{});           // no node, nothing stored
+        case S::BuyOrders: return Value(ClientBuyOrderData{});              // nothing to order, nothing ordered
+        case S::BuyOrderContributions: return Value(PlayerBuyOrderContributions{});
         default:              break;
     }
     return std::nullopt;
@@ -1524,6 +1537,16 @@ std::optional<Value> read_struct(std::string_view struct_name, PacketReader& r, 
             if (!d) return std::nullopt;
             return Value(std::move(*d));
         }
+        case S::BuyOrders: {
+            auto d = read_buy_order_data(r);
+            if (!d) return std::nullopt;
+            return Value(std::move(*d));
+        }
+        case S::BuyOrderContributions: {
+            auto c = read_buy_order_contributions(r);
+            if (!c) return std::nullopt;
+            return Value(std::move(*c));
+        }
         case S::WarehouseEntry: {
             auto e = read_warehouse_entry(r);
             if (!e) return std::nullopt;
@@ -1668,6 +1691,10 @@ bool write_struct(std::string_view struct_name, const Value& v, BunchWriter& out
             return write_citizenship_window(out, *v.get_if<CitizenshipWindowData>());
         case S::NodeInventory:
             return write_node_inventory(out, *v.get_if<NodeInventoryData>());
+        case S::BuyOrders:
+            return write_buy_order_data(out, *v.get_if<ClientBuyOrderData>());
+        case S::BuyOrderContributions:
+            return write_buy_order_contributions(out, *v.get_if<PlayerBuyOrderContributions>());
         case S::Unknown:
             break;
     }
