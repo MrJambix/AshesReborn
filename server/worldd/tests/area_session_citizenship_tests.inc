@@ -648,6 +648,22 @@ void test_mayor_commissions() {
     CHECK(got && std::get<0>(*got) == kTestCitizenNode && std::get<1>(*got).elements.size() == 1 && el_i64(std::get<1>(*got).elements[0], 1) == record &&
               std::get<2>(*got).elements.empty() && std::get<3>(*got) == 6,
           "ClientReceiveMayoralCommissionHand: the node, its hand with the commission, nothing running, 6 slots");
+    // the mayor's own board (the Town Hall's CommissionBoard_NodeMayoral) opens with nothing running: an empty list for its node; the town board sends no mayoral list
+    {
+        const size_t at = h.got.size();
+        h.s->send_mayor_board_for_test(h.conn, kTestCitizenNode, h.t, /*even_empty=*/true);
+        h.run(milliseconds(300));
+        const auto calls = pc_calls_since(h, at);
+        const repl::RpcCall* c = last_call(calls, "ClientReceiveMayoralCommissions");
+        const repl::Value* list = value(c, "CommissionList");
+        const repl::Value* node = value(c, "NodeGuid");
+        CHECK(c && (!list || (list->get_if<repl::ArrayValue>() && list->get_if<repl::ArrayValue>()->elements.empty())) && node && *node->get_if<int64_t>() == kTestCitizenNode,
+              "the mayor's board opens on an empty list of its node's mayoral commissions");
+        const size_t again = h.got.size();
+        h.s->send_mayor_board_for_test(h.conn, kTestCitizenNode, h.t);
+        h.run(milliseconds(300));
+        CHECK(!last_call(pc_calls_since(h, again), "ClientReceiveMayoralCommissions"), "... and nothing is sent when nothing runs and the board is not the mayor's");
+    }
     // a purchase the treasury cannot pay, then one it can
     const auto buy = [&]() {
         h.t += milliseconds(500);

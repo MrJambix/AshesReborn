@@ -1211,6 +1211,11 @@ static void test_world() {
         vendors += a.npc.vendor_guid != 0 ? 1 : 0;
     });
     std::printf("    (and %zu object(s) of the town: its commission boards)\n", objects);
+    size_t mayoral_boards = 0;
+    world.registry().for_each([&](const world::WorldActor& a) {
+        if (a.kind == world::ActorKind::Prop && a.npc.spawn_ref >= spawns::kNodeRefBase && spawns::blueprint_leaf(a.npc.archetype).find("CommissionBoard_NodeMayoral") != std::string::npos) ++mayoral_boards;
+    });
+    CHECK(mayoral_boards == 1, "Joeva's Town Hall has the mayor's commission board (CommissionBoard_NodeMayoral, of the Town Hall's operational people at Town)");
     CHECK(with_ref == made && vendors > 0, "the town's NPCs carry node references, and some are vendors");
     check_town_health(world, "after start_node_people");
     check_open_carries_health(world);

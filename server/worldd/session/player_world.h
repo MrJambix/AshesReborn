@@ -118,6 +118,10 @@ struct MovementConfig {
 /// completion response is EActionResponse::OpenCommissionBoard).
 inline constexpr int64_t kCommissionBoardIcd = 6064633962143220279;
 inline constexpr int64_t kCommissionBoardPid = 6064630678546284548;
+/// The mayor's commission board of the Town Hall (CommissionBoard_NodeMayoral, in ServiceBuilding_L3/L4_TownHall_Operational): ICD_Mayoral_Commission_Board_PID and its
+/// Mayoral_Commission_Board_PID, whose completion response AR_MayoralCommission is EActionResponse::OpenMayoralCommissionBoard.
+inline constexpr int64_t kMayoralCommissionBoardIcd = 6064633962143220316;
+inline constexpr int64_t kMayoralCommissionBoardPid = 6064631199334989827;
 
 class PlayerWorld {
 public:

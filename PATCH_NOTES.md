@@ -2,6 +2,9 @@
 
 ## Next update: towns and citizens
 
+### New
+- The mayor's commission board now stands in the Town Hall of every Village and Town. Use it to see the commissions the mayor has bought and take them as quests; it opens even when none is running. The town's ordinary commission board lists the town's own commissions only.
+
 ### Fixed
 - Citizen-only shop listings, such as each node's citizen cloak and its commodity certificates, are now sold only to that node's citizens. Before, anyone standing in the town could buy them, and a citizen shopping elsewhere was refused listings meant for everyone but the citizens of another node.
 - The warehouse's citizen storage tabs can now be bought by the town's citizens. Before, nobody could buy them.

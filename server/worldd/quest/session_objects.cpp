@@ -161,6 +161,10 @@ void PlayerSession::finish_prop_use(Connection& conn, uint64_t actor_id, Clock::
         open_commission_board(conn, *a, now);
         return;
     }
+    if (row.pid == kMayoralCommissionBoardPid) {   // the mayor's board of the Town Hall (player_mayor_commissions.cpp)
+        open_mayoral_board(conn, *a, now);
+        return;
+    }
     // what its use gives
     if (!row.grants.empty()) {
         gather::Harvest h;

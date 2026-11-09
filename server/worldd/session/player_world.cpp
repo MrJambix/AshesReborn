@@ -361,6 +361,7 @@ bool PlayerWorld::load_area(const spawns::AreaConfig& area, std::string& error) 
             }
             // ... and the commission boards (ICD_PID_CommissionBoard: its use opens the board, player_commissions.cpp)
             props.insert(kCommissionBoardIcd);
+            props.insert(kMayoralCommissionBoardIcd);   // ... and the mayor's board of the Town Hall (its use opens the mayoral commissions, player_mayor_commissions.cpp)
             for (auto it = props.begin(); it != props.end();) {
                 it = objects_->interactables.count(*it) != 0 ? std::next(it) : props.erase(it);
             }

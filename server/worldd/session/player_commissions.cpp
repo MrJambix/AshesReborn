@@ -156,9 +156,6 @@ void PlayerSession::open_commission_board(Connection& conn, const world::WorldAc
                 spawns::blueprint_leaf(a.npc.archetype), node_name.empty() ? std::string("no node") : node_name, list.commissions.size(), pool.size(), refresh / 60.0);
     queue("CurrentCommissionBoard", [list](bootstrap::PlayerBootstrap& pb) { return pb.commission_board_update(list); }, conn, /*must_build=*/true);
     queue("ClientOpenCommissionBoardDialog", [](bootstrap::PlayerBootstrap& pb) { return pb.open_commission_board(); }, conn, /*must_build=*/true);
-    // the node's mayoral commissions: on its town board (the Town Hall's billboard) or a mayoral board (session/player_mayor_commissions.cpp)
-    const std::string leaf = spawns::blueprint_leaf(a.npc.archetype);
-    if (leaf.find("CommissionBoard_NodeDefault") != std::string::npos || leaf.find("CommissionBoard_NodeMayoral") != std::string::npos) send_mayor_board(conn, node, now);
 }
 
 void PlayerSession::on_commission_accept(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {

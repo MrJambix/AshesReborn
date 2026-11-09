@@ -139,15 +139,26 @@ void PlayerSession::send_mayor_hand(Connection& conn, int64_t node, Clock::time_
     });
 }
 
-void PlayerSession::send_mayor_board(Connection& conn, int64_t node, Clock::time_point now) {
+void PlayerSession::open_mayoral_board(Connection& conn, const world::WorldActor& board, Clock::time_point now) {
+    const world::CityNodes* nodes = world_ ? world_->city_nodes() : nullptr;
+    const world::CityNodeInfo* n = nodes ? nodes->by_rank(nodes->node_at(board.x, board.y).node_rank) : nullptr;
+    ++mayor_board_opens_;
+    if (!n) {
+        spdlog::log(level_for(citizenship_log_), "[nodes] {}: uses a mayor's commission board that stands in no node: nothing to list", name());
+        return;
+    }
+    send_mayor_board(conn, n->guid, now, /*even_empty=*/true);
+}
+
+void PlayerSession::send_mayor_board(Connection& conn, int64_t node, Clock::time_point now, bool even_empty) {
     world::Elections* el = world_ ? world_->elections() : nullptr;
     if (!el || node == 0) return;
     el->advance_commissions(wall_ms());
     const world::MayorCommissions* s = el->commissions(node);
     mayor_board_node_ = node;
-    if (!s || s->active.empty()) return;   // (nothing runs: the board shows its own commissions alone)
+    if ((!s || s->active.empty()) && !even_empty) return;
     repl::ArrayValue list;
-    for (const world::MayorActiveCommission& a : s->active) {
+    for (const world::MayorActiveCommission& a : s ? s->active : std::vector<world::MayorActiveCommission>{}) {
         repl::ElementState e;
         e.values[1] = repl::Value::i64(a.record);
         e.values[2] = i32(a.guid.a);
@@ -162,7 +173,7 @@ void PlayerSession::send_mayor_board(Connection& conn, int64_t node, Clock::time
         list.elements.push_back(std::move(e));
     }
     ++mayor_boards_sent_;
-    spdlog::log(level_for(citizenship_log_), "[nodes] {}: the board of node {} lists its {} mayoral commission(s)", name(), node, s->active.size());
+    spdlog::log(level_for(citizenship_log_), "[nodes] {}: the board of node {} lists its {} mayoral commission(s)", name(), node, list.elements.size());
     send_citizenship_call(conn, "ClientReceiveMayoralCommissions", [list, node](const schema::RpcSchema& r, repl::RpcParams& p) {
         return repl::set_rpc_param(r, p, "CommissionList", repl::Value(list)) && repl::set_rpc_param(r, p, "NodeGuid", repl::Value::i64(node));
     });
