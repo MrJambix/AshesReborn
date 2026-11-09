@@ -34,3 +34,4 @@
 #include "session/members/mount_command.inc"
 #include "session/members/chests.inc"
 #include "session/members/surface_move.inc"
+#include "session/members/emotes.inc"

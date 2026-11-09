@@ -108,7 +108,19 @@ void PlayerSession::on_chat(Connection& conn, const repl::ClientRpc& rpc, Clock:
     run_chat(conn);
 }
 
+/// The category of a server line (SysBroadcast), the welcome line's.
+constexpr int kSysBroadcastCategory = 124;
+
+void PlayerSession::send_welcome(Connection& conn) {
+    if (welcome_sent_ || !phase_in_done_ || !replies_.empty() || !room_for(1)) return;
+    welcome_sent_ = true;
+    queue("ClientReceiveChatMessages (welcome)", [](bootstrap::PlayerBootstrap& pb) {
+        return pb.chat_line("Welcome to Ashes Reborn.", kSysBroadcastCategory, "Server");
+    }, conn);
+}
+
 void PlayerSession::run_chat(Connection& conn) {
+    if (phase_in_done_ && !welcome_sent_ && !finished_ && !failed_) send_welcome(conn);
     if (!chat_peer_ || finished_ || failed_) return;
     const auto at = checker_.good();
     chat_peer_->x = at.x; chat_peer_->y = at.y; chat_peer_->z = at.z;

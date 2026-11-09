@@ -20,11 +20,13 @@ target_sources(worldd_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/respawn/session_embersprings.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_abilities.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_based_move.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/session/player_chat.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_chests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_combat.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_combat_side.h
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_craft.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_dialogue.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/session/player_emotes.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_interact.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_items.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_mounts.cpp
@@ -50,7 +52,6 @@ target_sources(worldd_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/session/view_pool.h
     ${CMAKE_CURRENT_SOURCE_DIR}/session/view_worker.h
     ${CMAKE_CURRENT_SOURCE_DIR}/warehouse/player_warehouse.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/session/player_chat.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_consumables.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_gm.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_group.cpp

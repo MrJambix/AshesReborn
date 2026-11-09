@@ -51,8 +51,22 @@ static void test_player_presence() {
     const auto g1 = first.s->bootstrap().setup().guids, g2 = second.s->bootstrap().setup().guids;
     CHECK(registry.count(world::ActorKind::PlayerPawn) == 0 && registry.count(world::ActorKind::PlayerState) == 0,
           "joining players are not published before phase-in");
+    CHECK(!first.s->welcome_line_sent(), "no welcome line before the phase-in");
     first.play(); second.play();
     first.run(milliseconds(1200)); second.run(milliseconds(1200));
+    {   // the welcome line (core's 29a800f, on our chat): once the phase-in is built, from "Server" as a server broadcast (category 124)
+        size_t welcomes = 0;
+        for (const repl::RpcCall& c : pc_calls_since(first, 0)) {
+            if (!c.rpc || std::string(c.rpc->name) != "ClientReceiveChatMessages") continue;
+            const auto it = c.params.values.find(1);
+            const auto* list = it == c.params.values.end() ? nullptr : it->second.get_if<repl::ArrayValue>();
+            for (const auto& m : list ? list->elements : std::vector<repl::ElementState>{}) {
+                welcomes += m.values.count(1) && m.values.at(1) == repl::Value::str("Welcome to Ashes Reborn.") && m.values.count(2) &&
+                            m.values.at(2) == repl::Value::str("Server") && m.values.count(3) && m.values.at(3) == repl::Value::u64(124);
+            }
+        }
+        CHECK(first.s->welcome_line_sent() && welcomes == 1, "after the phase-in the player gets the welcome line once, from the server");
+    }
     const auto* p1 = registry.find(g1.pawn.ObjectId);
     const auto* p2 = registry.find(g2.pawn.ObjectId);
     const auto* ps2 = registry.find(g2.player_state.ObjectId);
@@ -84,6 +98,7 @@ static void test_player_presence() {
           && p2->actor.find(g2.stats) && p2->actor.find(g2.ability),
           "the public pawn includes appearance, equipment, combat state, stats and active abilities");
     bool private_component = false, private_stat = false, private_ability = false;
+    size_t public_emote_records = 0;
     for (const auto& sub : p2->actor.subobjects) {
         const std::string name = sub.name;
         if (name.find("Storage") != std::string::npos || name == "Backpack" || name == "Equipment" || name == "OwnerInfo" || name == "XPTracker") private_component = true;
@@ -91,10 +106,37 @@ static void test_player_presence() {
             const std::string field_name = sub.obj.schema->field(field)->name;
             if (field_name == "StatRepInt32Owner" || field_name == "StatRepFloatArrayOwner") private_stat = true;
         }
-        if (sub.guid == g2.ability && (sub.obj.state.get(*sub.obj.schema, "KnownAbilities") || sub.obj.state.get(*sub.obj.schema, "ReplicatedRecordsToLoad"))) private_ability = true;
+        if (sub.guid == g2.ability && sub.obj.state.get(*sub.obj.schema, "KnownAbilities")) private_ability = true;
+        // the records to load go only as far as the emote abilities (the other clients need them to play the owner's emotes, session/player_presence.cpp)
+        if (sub.guid == g2.ability) {
+            if (const auto* records = sub.obj.state.get(*sub.obj.schema, "ReplicatedRecordsToLoad")) {
+                const auto* list = records->get_if<repl::ArrayValue>();
+                if (!list) private_ability = true;
+                for (const auto& e : list ? list->elements : std::vector<repl::ElementState>{}) {
+                    const auto g = e.values.find(1);
+                    if (g == e.values.end() || !g->second.get_if<int64_t>() || !content::is_emote_ability(*g->second.get_if<int64_t>())) private_ability = true;
+                    else ++public_emote_records;
+                }
+            }
+        }
     }
     CHECK(!private_component && !private_stat && !private_ability,
           "inventory, currencies, XP, owner-only stats and learned-ability lists are absent");
+    {   // ... but the emote records the owner's component loads are there, and only they
+        size_t owner_emote_records = 0;
+        if (const auto* own = second.s->bootstrap().pawn().find(g2.ability)) {
+            if (const auto* records = own->obj.state.get(*own->obj.schema, "ReplicatedRecordsToLoad")) {
+                if (const auto* list = records->get_if<repl::ArrayValue>()) {
+                    for (const auto& e : list->elements) {
+                        const auto g = e.values.find(1);
+                        owner_emote_records += g != e.values.end() && g->second.get_if<int64_t>() && content::is_emote_ability(*g->second.get_if<int64_t>());
+                    }
+                }
+            }
+        }
+        std::printf("  [info] the owner's component loads %zu emote records; the public pawn names %zu\n", owner_emote_records, public_emote_records);
+        CHECK(public_emote_records == owner_emote_records, "the public pawn names the emote records the owner's component loads, for the other clients to play its emotes");
+    }
     const uint32_t version = p2->version, ps_version = ps2->version, reliable_version = p2->reliable_version;
     second.run(milliseconds(1000));
     CHECK(registry.find(g2.pawn.ObjectId)->version == version && registry.find(g2.player_state.ObjectId)->version == ps_version,

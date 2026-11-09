@@ -133,6 +133,8 @@ struct TriggerInfo {
     /// Where the call aims (the first of its TargetTransforms: the place a Chains of Restraint is clicked at).
     bool   has_place = false;
     double place_x = 0, place_y = 0, place_z = 0;
+    /// The server starts the ability itself (an emote word): the client began no instance of it, so a refusal sends it no ClientEndAbility.
+    bool by_server = false;
 };
 
 class AbilityRuntime {
@@ -234,6 +236,10 @@ public:
     /// is ignored.
     bool cancel(int32_t client_instance_id, double now);
 
+    /// The character stands up on the server's say (a second /sit): a Rest that runs ends the way its cancel ends it, the montage jumps to its end section and the effect follows.  It works in
+    /// combat too.  False when no Rest runs.
+    bool end_rest(double now);
+
     /// Runs the timers that fell due up to `now`.
     void tick(double now);
 
@@ -290,6 +296,7 @@ private:
         int32_t                 client_id;
         int64_t                 instance;
         bool                    ended = false;               // cancelled, or replaced: the item stays, the effect goes
+        bool                    by_server = false;           // the server began it (an emote), not the client's own trigger: its item is not one the client predicted
         std::optional<double>   effect_due;                  // the Rest effect is added then
         std::optional<int64_t>  effect_key;                  // the Rest effect, once added
         std::optional<double>   remove_due;                  // and removed then
@@ -316,7 +323,7 @@ private:
     int64_t next_effect_id() { return next_effect_id_++; }
     bootstrap::EffectItem effect_item(const content::EffectRule& e, int64_t key, double t) const;
     bootstrap::ActiveAbilityItem ability_item(const content::AbilityRule& r, int64_t instance) const;
-    void   refuse(int32_t client_instance_id, Refusal why, double t, const char* what);
+    void   refuse(int32_t client_instance_id, Refusal why, double t, const char* what, bool tell = true);
 
     void   start_sprint(int32_t id, double t);
     void   end_sprint(double t, Tell tell, const char* why, bool exertion = true);
@@ -326,7 +333,7 @@ private:
     void   start_dodge(int32_t id, double t, const TriggerInfo& info);
     void   end_evasion(double t);
     void   end_dodge_items(double t);
-    void   start_rest(int32_t id, double t);
+    void   start_rest(int32_t id, double t, bool by_server = false);
     void   release_rest(double t, const char* why);
     void   add_rest_effect(double t);
     void   remove_rest_effect(double t);

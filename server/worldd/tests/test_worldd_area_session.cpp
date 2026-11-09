@@ -27,6 +27,7 @@
 #include "fake_client.h"
 #include "test_registry.h"
 #include "bootstrap/character_setup.h"
+#include "content/emote_commands.h"   // (player_presence_tests.inc: the emote records the public pawn names)
 #include "items/inventory.h"
 #include "nav/area_nav.h"
 #include "net/endpoint.h"

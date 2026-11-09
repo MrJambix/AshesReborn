@@ -98,7 +98,7 @@ inline const CrowdControlRow* crowd_control(int64_t guid) {
     return it != std::end(kCrowdControls) && it->guid == guid ? it : nullptr;
 }
 
-/// The effects that break.  `share`: that share of the holder's maximum Health taken ends it (0: any damage; < 0: damage does not).  `holds`: holding that effect ends it.
+/// The effects that break.  `share`: damage taken worth that share of the instigator's maximum Health ends it (0: any damage; < 0: damage does not).  `holds`: holding that effect ends it.
 /// `with_cast`: it lasts while its instigator's pet plays the ability that gave it.
 struct FragileRow {
     int64_t effect;

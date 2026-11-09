@@ -360,8 +360,15 @@ TargetInfo CombatWorld::inspect(uint64_t target_actor, const Fighter& from) {
     if (!a || a->kind != world::ActorKind::Npc) return t;
     t.exists = true;
     t.position = {a->x, a->y, a->z};
+    if (npcs_world_) {
+        if (const npc::Mover* m = npcs_world_->mover(target_actor)) {
+            const nav::Vec3 v = m->velocity();
+            t.velocity = {v.x, v.y, v.z};
+        }
+    }
     const npc::MotionStats bp = motion_.get(a->npc.archetype);
     t.radius_cm = bp.radius;
+    t.half_height_cm = bp.half_height;
     const auto it = npcs_.find(target_actor);
     t.alive = it == npcs_.end() ? true : !it->second->dead;
     std::vector<int64_t> aligns(bp.alignments.begin(), bp.alignments.end());
@@ -2484,7 +2491,15 @@ void CombatWorld::break_fragile(Npc& n, double loss, const HitOrigin* origin, do
         Npc::HeldEffect& h = n.effects[i];
         const FragileRow* row = fragile_effect(h.def->row.guid);
         h.taken += loss;
-        if (row && row->share >= 0 && !(row->share == 0 && exempt) && h.taken >= row->share * n.max_health()) {
+        // a share of 0 is any damage; a share above it is of the maximum Health of the player that put the effect on (the data's EffectBreakThreshold: GetStat(GetInstigator(), MaxHealth)
+        // times the share; the Marionette's dance ends at a tenth of the Bard's), and counts nothing while that player is gone
+        double threshold = 0;
+        if (row && row->share > 0) {
+            PlayerPort* by = player(h.by);
+            const stats::StatValue* max = by ? by->fighter().stats().find(data_.ids().max_health) : nullptr;
+            threshold = max ? row->share * std::max(0.0, static_cast<double>(max->value)) : -1;
+        }
+        if (row && row->share >= 0 && threshold >= 0 && !(row->share == 0 && exempt) && h.taken >= threshold) {
             end_effect_at(n, i, {"Remove", "End"}, now);
         } else {
             ++i;

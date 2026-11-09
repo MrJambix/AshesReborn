@@ -34,6 +34,7 @@
 #include "npc/motion_table.h"
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/ostream_sink.h>   // (ability_npc_chain_homing_tests.inc reads the log lines a flight writes)
 
 #include <algorithm>
 #include <bit>
@@ -862,6 +863,24 @@ int main(int argc, char** argv) {
                     cw.apply_hit_to_npc(wolf, 77, hurt, now);
                     CHECK(cw.npc_effect_count(wolf, incap->row.guid) == 0, "damage breaks an incapacitate");
                     CHECK(cw.npc_effect_count(wolf, stun->row.guid) == 1, "... and not a stun");
+                    // the Marionette's dance ends once the damage adds up to a tenth of the maximum Health of the player that danced it (the data's Fragile_MaxHealth_10%:
+                    // GetStat(GetInstigator(), MaxHealth) * 0.1), not a tenth of the creature's own
+                    if (const auto* marionette = effect_named("Bard_Marionette")) {
+                        const stats::StatValue* bard = player.fighter().stats().find(content::kGuidMaxHealth);
+                        const double share = bard ? 0.1 * static_cast<double>(bard->value) : 0.0;
+                        std::printf("  [info] the dance breaks at %.0f damage (a tenth of the Bard's %.0f), not %.0f (a tenth of the wolf's)\n", share, share * 10, 0.1 * cw.max_health_of(wolf));
+                        CHECK(share > 2 && share < cw.health_of(wolf), "(the Bard's maximum Health is known, and the wolf has more than a tenth of it left)");
+                        if (share > 2 && share < cw.health_of(wolf)) {
+                            cw.apply_effect_to_npc(wolf, landed(marionette, 10.0), 77, now);
+                            combat::Resolved below, past;
+                            below.mods.push_back({0, content::kGuidHealth, -(share - 1.0)});
+                            past.mods.push_back({0, content::kGuidHealth, -2.0});
+                            cw.apply_hit_to_npc(wolf, 77, below, now);
+                            CHECK(cw.npc_effect_count(wolf, marionette->row.guid) == 1, "the dance holds while the damage is below a tenth of the Bard's maximum Health");
+                            cw.apply_hit_to_npc(wolf, 77, past, now);
+                            CHECK(cw.npc_effect_count(wolf, marionette->row.guid) == 0, "... and ends at the hit that takes it past");
+                        }
+                    }
                     // a debuff's stat mods count, and in-place stacks add up to the record's limit
                     combat::LandedEffect weak = landed(volatile_, 6.0);
                     for (const content::ModRow& m : volatile_->mods) weak.mods.push_back({m.stat_guid, -0.15});

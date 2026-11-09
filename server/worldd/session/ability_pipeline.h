@@ -21,7 +21,8 @@
 //               does not compile refuses the ability (NoFormula), logged. A ClientInstanceId the pipeline has seen lately is dropped with no answer.
 //    cast       one trigger makes up to four steps, each at its own time after the trigger (the montage's notifies):
 //                 item       the ability item (ReplicatedActiveAbilities): the ability, a ServerInstanceId from the pawn's counter, the montage's
-//                            static NetGUID by the call's AnimationIndex (ab_montage.net_guid), PlayRate (the character's speed stat for an ability whose table rows say which one, else 1.0), MontageGroup (DefaultGroup;
+//                            static NetGUID by the call's AnimationIndex (ab_montage.net_guid; an emote whose montage has none gets the id the server
+//                            computes from its path), PlayRate (the character's speed stat for an ability whose table rows say which one, else 1.0), MontageGroup (DefaultGroup;
 //                            Flourish EmoteGroup, the songs SongGroup), Targets the caster when the call named one; the previous item
 //                            of the pipeline goes in the same update (every retail reply says "deleted 1"). The median of the recorded casts where
 //                            ability_timings.h has the ability (50 to 110 ms for most, per kind of cast), else about 300 ms after the trigger
@@ -140,6 +141,7 @@
 #include "combat/hit_resolver.h"
 #include "session/abilities.h"
 #include "session/ability_catalog.h"
+#include "session/projectile_flight.h"
 #include "stats/character_stats.h"
 
 #include <cstdint>
@@ -193,6 +195,17 @@ struct LoopedCast {
     double      jump;         // after the last shot the montage moves to the branch's section this long later
     double      end;          // and ends this long after that
     double      fire = 0;     // the montage time of the first FireProjectile notify (a shot's arrow leaves at it and again every `period`), seconds; 0: no notify, the arrow lands kProjectileDelay after its shot
+};
+
+/// An ability whose cast lands its damage hit several times: the SERVER runs the hit at each of the montage's hit notifies (the animation's own times, seconds at a rate of 1) and the
+/// last of them also runs the ability's Stun hit on the targets it lands on (the one recorded cast's montage; ability_pipeline.cpp has the table and the evidence).
+struct MultiHitCast {
+    const char* ability;
+    const char* damage;   // the hit the montage's notifies run (the ability's key-1 hit)
+    const char* stun;     // the hit the last of them runs too (the tooltip's final hit)
+    double      length;   // the montage's length, seconds at a rate of 1
+    int         count;    // how many hit notifies the montage has
+    double      times[4];  // their times, seconds at a rate of 1
 };
 
 /// An ability that finds its own targets: the call names none, and when the montage reaches its section the SERVER gathers the enemies a cone ahead of the caster holds and sends the
@@ -617,6 +630,8 @@ private:
         uint64_t source_actor = 0;
         /// The hit reaches its targets wherever they stand: a ball that flew on from the caster hurts what it touches, however far from the caster that is by now. Every other check of the hit holds.
         bool    reach_free = false;
+        /// The last hit of the Lullaby's cast: its Stun hit asks its own requirement (an Incapacitated target) of each target it reaches, and no other hit is asked so.
+        bool    ask_each_target = false;
     };
     /// A hit the character made, as the reactions that listen to hits see it (OwnerHits).
     struct HitEvent {
@@ -652,6 +667,7 @@ private:
         double                   last_request = -1e9;
         std::vector<Pending>     due;          // when a request's application runs
         bool                     applied = false;   // the server applied it by itself (no request came by the deadline)
+        bool                     server_multi = false;      // the Lullaby's cast: the server runs the hit at the montage's notifies, never by a request
         bool                     fired = false;     // the projectiles the hit fires have left: they leave once a cast, however often the client asks for the hit
     };
     /// A cast that takes hit requests until its window ends.
@@ -697,6 +713,11 @@ private:
         const abilities::AbilityDef*          def = nullptr;
         double                                trigger_at = 0;
         std::optional<double>                 item_due, cost_due, hit_due, projectile_due, loop_due, own_due;
+        /// A cast whose damage hit lands at several of its montage's notifies (kMultiHitCasts): the hit the last one also runs, which notify it has just run,
+        /// and the rate of the montage's play (its times are seconds at a rate of 1, multiplied by this).
+        const MultiHitCast*                   multi = nullptr;
+        int                                   multi_index = 0;
+        double                                multi_scale = 1.0;
         /// A cast that waits for the client's branch request (kBranchedCasts): when its montage jumps to the branch's section and ends, and the missiles of a volley
         /// each with the time it lands (each its own step); the item as the cast made it (the jump and the end are changes of that item).
         const BranchedCast*                   branched = nullptr;
@@ -715,6 +736,7 @@ private:
         bool                                  montage_branch = false;     // the montage moves to a section when the cast ends (the changes of `item` below)
         float                                 branch_position = 0;        // where that section starts
         bool                                  branch_predicted = true;    // the client took the branch itself (its cast bar); false when the server decided it
+        bool                                  by_server = false;          // the server began the cast (an emote): its item is not one the client predicted
         std::optional<double>                 branch_due, end_due;
         struct Missile {
             double   due = 0;
@@ -723,11 +745,18 @@ private:
             // A timed cast (kTimedCasts) has two more kinds of step in this list: a launch (launch `index` leaves) and, for a Strike, the landing of arrow `index` at (x, y, z).
             // A Fly is a projectile that leaves at `due` (kNoteCasts: a note; a bounce leaves the enemy just hit, at (x, y, z)) and lands a flight later on `target`; `depth` counts the bounces before it
             // A Ball is one step of a ball's flight (kBalls): `index` counts the steps, 0 is the launch; a step looks at what the ball touches and sends a Land at each enemy that is due a hit
-            enum class Kind : uint8_t { Land, Launch, Strike, Fly, Ball };
+            // A Steer is a projectile whose record limits how fast it may turn (kSteerCasts): `steer` is its flight, one 20 ms step per due, and it becomes a Land on arrival or at its closest pass
+            enum class Kind : uint8_t { Land, Launch, Strike, Fly, Ball, Steer };
             Kind     kind = Kind::Land;
             int      index = 0;
             double   x = 0, y = 0, z = 0;
             int      depth = 0;
+            flight::Flight steer;             // a Steer: where it is, which way it goes, how fast and how far it may turn each second
+            double   steer_launch = 0;        // ... when it left
+            double   steer_at = 0;            // ... the time its flight state is at (a step catches up to `due` in 20 ms sub-steps)
+            double   steer_deadline = 0;      // ... when the first lap and the half second after it are over (or its life ends): it lands at its closest pass then
+            double   steer_closest = 1e18;    // ... the closest it has come to its target so far, and when
+            double   steer_closest_at = 0;
         };
         std::vector<Missile>                  missiles;
         const TimedCast*                      timed = nullptr;            // a cast whose montage launches its projectiles at moments of its own (kTimedCasts)
@@ -844,12 +873,19 @@ private:
     void   step_item(Cast& cast, double t);
     void   step_cost(Cast& cast, double t);
     void   step_hits(Cast& cast, double t, const char* which, int depth = 0);
+void   step_multi_hit(Cast& cast, double t);
     /// A hit that fires further hits when it lands (RecursiveHit, kBounces): the child hit is confirmed on another enemy near the one just hit, and the projectile it fires flies there (a Fly step).
     void   bounce_from(bootstrap::AbilityChange& c, Cast& cast, const abilities::HitDef& hit, int64_t projectile, uint64_t target, int depth, double t);
+    /// A hit that names itself in its RecursiveHit (Chain Lightning): the same hit is applied to the nearest enemy within the recursive targeting's sphere of the one just hit,
+    /// again from each enemy it reaches, up to the rule's number of enemies in all; none of them twice (ability_pipeline_chain.inc has the table and the evidence).
+    void   chain_from(bootstrap::AbilityChange& c, const abilities::HitDef& hit, const std::vector<uint64_t>& first, double t, const HitSource& src, const abilities::AbilityDef* ability);
     /// An ordinary cast that sends several projectiles at its target (kNoteCasts): each is a Fly step at the montage's notify of its own, and none of the cast's hits lands before its projectile gets there.
     void   plan_notes(Cast& cast, double t);
     /// A Fly step: the projectile leaves now; its landing is the target's distance (from the caster, or from the enemy a bounce left) over its speed away, never before the cast's cost step.
     void   launch_note(Cast& cast, const Cast::Missile& fly, double t);
+    /// One step of a turn-limited projectile (kSteerCasts): it turns toward the target's live position by at most its turn each second and advances 20 ms; on arrival (or at its
+    /// closest pass after the first lap and half a second) it becomes a Land, which lands through the ordinary projectile hit path.
+    void   steer_step(Cast& cast, const Cast::Missile& m, double t);
     /// A weapon combo's swing that another ability's trigger overtakes is over (the client cancels it with its own press): none of its steps happens, and one whose item has not shown yet is
     /// ended with ClientEndAbility. Without this the swing's item, due later than the ability's, took the pawn's item from the ability: the ability's montage never got its jump or its end.
     void   cancel_swings(double t, const std::string& by);
@@ -938,6 +974,7 @@ private:
     std::vector<DelayedChild> delayed_;
     static constexpr size_t kMaxDelayed = 64;
     void   land_delayed(const DelayedChild& child, double t);
+    bool   chaining_ = false;   // a chain's own jumps apply their hit without starting another chain (chain_from)
     /// `raw`: the stacks are the instance's own count whatever the record's stacking says (a grant, not an application of the ability).
     void   apply_effect(bootstrap::AbilityChange& c, const abilities::EffectDef& def, int stacks, std::optional<double> duration, double t, bool raw = false,
                         int64_t owner = 0);
@@ -1103,6 +1140,9 @@ private:
     std::map<int64_t, SwingRecord> swing_records_;
     void   forget_swing(int64_t ability);
     int    swing_montage(const abilities::AbilityDef& def, int requested, int& step, bool log = true) const;
+    /// The montage an emote plays: the first of the ability's montages whose selection expression holds (a row with none always does), or the first
+    /// montage when an expression cannot be read.  The client names no AnimationIndex for an emote, so the server picks.
+    int32_t emote_montage_index(const abilities::AbilityDef& def, int32_t fallback);
     void   stop_swing(int64_t instance);
     stats::SplitMix           guid_rng_;
     std::vector<bootstrap::ShieldElement> shields_sent_;

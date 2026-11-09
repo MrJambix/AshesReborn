@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "session/player_presence.h"
+
+#include "content/emote_commands.h"
 #include "protocol/repl/move_packed.h"
 #include "stats/character_stats.h"
 
@@ -109,6 +111,18 @@ repl::Actor public_pawn(const bootstrap::PlayerBootstrap& player, const stats::C
                 "SecondaryClassId.", "bIsUsingRangedWeapon", "SiegeTeamType", "SiegeNodeId"});
         } else if (component.guid == guids.ability) {
             sub.obj = project(component.obj, {"bReplicates", "bIsActive"}, {"ReplicatedActiveAbilities"});
+            // the records of the emote abilities the owner's component loads: another player's client needs them to play the owner's emotes (the owner's class abilities, its
+            // KnownAbilities and its Cooldowns stay the owner's)
+            if (const repl::Value* records = component.obj.state.get(*component.obj.schema, "ReplicatedRecordsToLoad")) {
+                if (const auto* list = records->get_if<repl::ArrayValue>()) {
+                    repl::ArrayValue shown;
+                    for (const repl::ElementState& e : list->elements) {
+                        const auto guid = e.values.find(1);
+                        if (guid != e.values.end() && guid->second.get_if<int64_t>() && content::is_emote_ability(*guid->second.get_if<int64_t>())) shown.elements.push_back(e);
+                    }
+                    if (!shown.elements.empty()) sub.obj.state.set(*sub.obj.schema, "ReplicatedRecordsToLoad", Value(std::move(shown)));
+                }
+            }
         } else if (component.guid == guids.stats) {
             sub.obj = project(component.obj, {"bReplicates", "bIsActive", "CrowdControlState."}, {"StatRepInt32OwnerProxy", "StatRepInt32EveryoneProxy",
                 "StatRepFloatArrayOwnerProxy", "StatRepFloatArrayEveryoneProxy", "CurrentEffects"});

@@ -10,6 +10,13 @@ private:
     void run_chat(Connection& conn);
     /// The client's ignore list window: OwnerInfo.IgnoredCharacterNames becomes the names the chat room says the character ignores, sent with the next OwnerInfo update.
     void show_ignore_list(Connection& conn);
+    /// The welcome line, once a session and only after the phase-in was built (queued behind it, so it cannot overtake it).
+    void send_welcome(Connection& conn);
+    bool welcome_sent_ = false;
+public:
+    /// True once the session's welcome line was queued.
+    bool welcome_line_sent() const { return welcome_sent_; }
+private:
     std::shared_ptr<chat::Room> chat_room_;
     std::shared_ptr<chat::Peer> chat_peer_;
     RequestBudget chat_budget_{4, std::chrono::milliseconds(750)};

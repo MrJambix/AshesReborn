@@ -131,7 +131,7 @@ def main() -> int:
         f.write("inline const CrowdControlRow* crowd_control(int64_t guid) {\n")
         f.write("    const auto it = std::lower_bound(std::begin(kCrowdControls), std::end(kCrowdControls), guid, [](const CrowdControlRow& r, int64_t g) { return r.guid < g; });\n")
         f.write("    return it != std::end(kCrowdControls) && it->guid == guid ? it : nullptr;\n}\n\n")
-        f.write("/// The effects that break.  `share`: that share of the holder's maximum Health taken ends it (0: any damage; < 0: damage does not).  `holds`: holding that effect ends it.\n")
+        f.write("/// The effects that break.  `share`: damage taken worth that share of the instigator's maximum Health ends it (0: any damage; < 0: damage does not).  `holds`: holding that effect ends it.\n")
         f.write("/// `with_cast`: it lasts while its instigator's pet plays the ability that gave it.\n")
         f.write("struct FragileRow {\n    int64_t effect;\n    double  share;\n    int64_t holds;\n    bool    with_cast;\n};\n")
         f.write("inline constexpr FragileRow kFragileEffects[] = {\n")

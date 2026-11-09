@@ -1,8 +1,12 @@
 # Patch notes
 
-## Next update: node citizenship and mayors, knockbacks, stacking, coffers, melodies, pets and loot
+## Next update: node citizenship and mayors, emotes, knockbacks, stacking, coffers, melodies, pets and loot
 
 ### New
+- Emotes: type /sit, /wave, /bow, /dance, /cheer, /clap or any of the game's other emote commands, in any letter case, to play it. Players around you see it. A second /sit stands you up, and /dance plays one of four dances.
+- Bard: the Dark Lullaby now hits four times during its cast, and its last hit stuns a creature that is Incapacitated, for 4 seconds (6 seconds for the area version). A Lullaby that is cut short does not stun.
+- Mage: Chain Lightning now jumps from the creature it hits to up to five more within 12.5 m, never the same one twice.
+- A welcome line from the server appears in chat when you enter the world.
 - Knockbacks and pulls on creatures: the Bard's Get Off The Stage throws a creature up and away, the Mage's Cone of Cold pushes it back (less the farther away it is) and freezes it a second later, and the Tank's Grapple pulls it in front of you. A creature that is thrown or pushed cannot walk or attack until it lands. Bosses stay where they stand.
 - Stacks: dragging a stack onto a stack of the same item fills it up to its limit, and the rest stays where it was. Splitting a stack puts the new one in a free slot. Dragging a stack onto a full stack or another item swaps them. New items fill the stacks you already hold first. All of this works in the warehouse too.
 - Coffers: a random coffer gives you what it rolls when you open it. A choose-one box opens its window, and you get the item you pick.
@@ -21,6 +25,9 @@
 - If another of your characters is online when your citizenship changes, it sees the change within a few seconds.
 
 ### Fixed
+- Bard: the Marionette's dance now ends once the creature has taken damage worth a tenth of the Bard's maximum Health, as the game's data says. Before, it was a tenth of the creature's own Health, so a big creature took far more to break out.
+- The Bard's Discordance notes, the Mend, the Frostbolt and the Salvo now turn toward their target in flight the way the game turns them, and the Discordance's notes leave the Bard's hand at the game's own angles.
+- Storage: sending a stack into storage or back into your bags with a right-click now tops up the stack of the same item that is already there, and puts the rest in a free slot.
 - Commission boards: a commission you take no longer shows as complete straight away. It stays in progress until you finish its objectives, and then you can turn it in. A commission you have turned in shows as complete on the board until the board refreshes.
 - Bard: switching melodies now stops the old melody as soon as you press the new one, instead of about two seconds later.
 - Bard: when the game ends a melody on its own, the server now ends it too. Before, the melody kept playing on the server, and your next press to start it again turned it off instead.
