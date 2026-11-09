@@ -29,12 +29,13 @@ struct CitizenHarness : Harness {
     std::unique_ptr<world::CityNodes> nodes;
     bool zoned = false;
 
-    static svc::Character citizen_record() {
+    static svc::Character citizen_record(int gm_level) {
         svc::Character c = cyb_record();
         c.level = 12;
+        c.gm_level = gm_level;
         return c;
     }
-    CitizenHarness() : Harness(citizen_record()) {
+    explicit CitizenHarness(int gm_level = 0) : Harness(citizen_record(gm_level)) {
         // one node over the zone of influence at the player's spot, at Town (4)
         const uint64_t zoi = world::zoi_at(kCx, kCy);
         zoned = zoi != 0;
@@ -345,7 +346,135 @@ void test_mayor_flow() {
     CHECK(el->node(kTestCitizenNode)->mayor.account == 0 && h.s->mayor_node() == 0, "renouncing the citizenship gives up the office");
 }
 
+/// The game master's console calls of citizenship and the elections (session/player_citizenship_gm.cpp), on the game master's own account; and the mayor's tools
+/// refusing a player who is no mayor with ClientShowMustBeMayorCallout.
+void test_citizenship_gm() {
+    std::printf("node citizenship: the game master's console\n");
+    CitizenHarness h(/*gm_level=*/3);
+    h.play();
+    h.run(milliseconds(1500));
+    spdlog::set_level(std::getenv("AOC_TEST_CITIZEN_LOG") ? spdlog::level::info : spdlog::level::off);
+    h.fx.world->set_elections(world::ElectionRules{}, "");
+    world::Elections* el = h.fx.world->elections();
+    const auto str = [](const char* v) { return repl::Value::str(v); };
+    const auto add_citizen = [&](const char* node) {
+        h.t += milliseconds(500);
+        h.pc_call("ServerGMAddNodeCitizen", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+            repl::set_rpc_param(r, p, "NodeName", str(node));
+            repl::set_rpc_param(r, p, "PlayerName", str(""));
+        });
+        h.run(milliseconds(300));
+    };
+    // without GM mode the calls do nothing
+    add_citizen("Testhold");
+    CHECK(h.s->citizenship().node_guid == 0, "a game master's call does nothing before .GM On");
+    h.s->set_gm_enabled(true);
+    const size_t potions = h.s->inventory().count_of(fi::kPotion);
+    add_citizen("Nowhere");
+    CHECK(h.s->citizenship().node_guid == 0, "a node name that names no node does nothing");
+    add_citizen("Testhold");
+    CHECK(h.s->citizenship().node_guid == kTestCitizenNode && h.s->inventory().count_of(fi::kPotion) == potions && h.s->citizenship().dues_due_ms > 0,
+          "ServerGMAddNodeCitizen makes the account a citizen of the named node, for nothing, its dues due a period on");
+    h.s->run_citizenship_for_test(h.conn);
+    // the dues: off and on again, a date from now
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMDisableCitizenshipDues", [&](const schema::RpcSchema& r, repl::RpcParams& p) { repl::set_rpc_param(r, p, "NodeName", str("Testhold")); });
+    h.run(milliseconds(300));
+    size_t from = h.got.size();
+    h.pc_call("ServerSetEssentialCitizenshipWindowData", [](const schema::RpcSchema&, repl::RpcParams&) {});
+    h.run(milliseconds(300));
+    auto calls = pc_calls_since(h, from);
+    const repl::CitizenshipWindowData* w = window_of(last_call(calls, "ClientPopulateCitizenshipData"));
+    CHECK(el->dues_disabled(kTestCitizenNode) && w && w->status.dues_required == 0, "ServerGMDisableCitizenshipDues: the node's dues are off, the window asks for none");
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMTryEnableCitizenshipDues", [&](const schema::RpcSchema& r, repl::RpcParams& p) { repl::set_rpc_param(r, p, "NodeName", str("Testhold")); });
+    h.run(milliseconds(300));
+    CHECK(!el->dues_disabled(kTestCitizenNode), "ServerGMTryEnableCitizenshipDues: on again");
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMSetCitizenshipDuesDueFromNow", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::set_rpc_param(r, p, "NodeGuid", repl::Value::i64(kTestCitizenNode));
+        repl::set_rpc_param(r, p, "SecondsDueFromNow", repl::Value::i64(60));
+    });
+    h.run(milliseconds(300));
+    const int64_t due = h.s->citizenship().dues_due_ms;
+    CHECK(due >= now_ms + 55000 && due <= now_ms + 70000, "ServerGMSetCitizenshipDuesDueFromNow: the dues are due in 60 s");
+    // the election: a candidate, a ballot, the mayor, the message
+    el->skip(kTestCitizenNode, now_ms);   // (the first registration)
+    if (el->node(kTestCitizenNode)->state != world::ElectionState::Registration) el->skip(kTestCitizenNode, now_ms);
+    const auto candidate = [&](bool adding) {
+        h.t += milliseconds(500);
+        h.pc_call("ServerGMSetMayorCandidate", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+            repl::set_rpc_param(r, p, "NodeName", str("Testhold"));
+            repl::set_rpc_param(r, p, "CandidateName", str("CYB"));
+            repl::set_rpc_param(r, p, "bAdding", repl::Value::boolean(adding));
+        });
+        h.run(milliseconds(300));
+    };
+    candidate(true);
+    CHECK(el->is_candidate(kTestCitizenNode, h.record.account_id), "ServerGMSetMayorCandidate adds the citizen named (any case)");
+    candidate(false);
+    CHECK(!el->is_candidate(kTestCitizenNode, h.record.account_id), "... and takes it off again");
+    candidate(true);
+    el->skip(kTestCitizenNode, now_ms);   // (voting)
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMRankedChoiceVoteForMayor", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::set_rpc_param(r, p, "NodeName", str("Testhold"));
+        repl::ArrayValue names;
+        repl::ElementState e;
+        e.values[1] = str("cyb");
+        names.elements.push_back(std::move(e));
+        repl::set_rpc_param(r, p, "RankedCandidateNames", repl::Value(std::move(names)));
+    });
+    h.run(milliseconds(300));
+    CHECK(el->node(kTestCitizenNode)->state == world::ElectionState::Active && el->node(kTestCitizenNode)->votes.count(h.record.account_id) == 1,
+          "ServerGMRankedChoiceVoteForMayor casts the game master's ballot by the candidates' names");
+    // not yet the mayor: the mayor's tools refuse with the callout
+    from = h.got.size();
+    h.t += milliseconds(500);
+    h.pc_call("ServerShowMayorCitizens", [](const schema::RpcSchema& r, repl::RpcParams& p) { repl::set_rpc_param(r, p, "NodeGuid", repl::Value::i64(kTestCitizenNode)); });
+    h.run(milliseconds(300));
+    calls = pc_calls_since(h, from);
+    CHECK(count_calls(calls, "ClientShowMustBeMayorCallout") == 1 && count_calls(calls, "ClientShowMayorCitizens") == 0, "a player who is no mayor gets ClientShowMustBeMayorCallout");
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMSetMayor", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::set_rpc_param(r, p, "NodeName", str("Testhold"));
+        repl::set_rpc_param(r, p, "CharacterName", str("cyb"));
+    });
+    h.run(milliseconds(300));
+    CHECK(el->mayor_node(h.record.account_id) == kTestCitizenNode, "ServerGMSetMayor makes the citizen named the node's mayor");
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMSetMayorMessage", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::set_rpc_param(r, p, "NodeGuid", repl::Value::i64(kTestCitizenNode));
+        repl::set_rpc_param(r, p, "Message", str("Set by a game master"));
+    });
+    h.run(milliseconds(300));
+    CHECK(el->node(kTestCitizenNode)->mayor_message == "Set by a game master", "ServerGMSetMayorMessage sets the mayor's message");
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMSetMayor", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::set_rpc_param(r, p, "NodeName", str("Testhold"));
+        repl::set_rpc_param(r, p, "CharacterName", str(""));
+    });
+    h.run(milliseconds(300));
+    CHECK(el->node(kTestCitizenNode)->mayor.account == 0, "ServerGMSetMayor with no name leaves the node without a mayor");
+    // the citizenship ends, and the cooldown
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMRemoveNodeCitizen", [&](const schema::RpcSchema& r, repl::RpcParams& p) {
+        repl::set_rpc_param(r, p, "NodeName", str("Testhold"));
+        repl::set_rpc_param(r, p, "PlayerName", str("cyb"));
+    });
+    h.run(milliseconds(300));
+    CHECK(h.s->citizenship().node_guid == 0 && h.s->citizenship().renounce_cooldown_until_ms == 0 && el->node(kTestCitizenNode)->citizens.count(h.record.account_id) == 0,
+          "ServerGMRemoveNodeCitizen ends the citizenship, with no cooldown");
+    h.s->set_citizenship_for_test(svc::Citizenship{0, "", 0, 0, now_ms + 3600000});
+    h.t += milliseconds(500);
+    h.pc_call("ServerGMEndCitizenshipRenounceCooldown", [](const schema::RpcSchema&, repl::RpcParams&) {});
+    h.run(milliseconds(300));
+    CHECK(h.s->citizenship().renounce_cooldown_until_ms == 0, "ServerGMEndCitizenshipRenounceCooldown ends the renounce cooldown");
+}
+
 }  // namespace
 
 AOC_REGISTER_TEST(test_citizenship_flow);
 AOC_REGISTER_TEST(test_mayor_flow);
+AOC_REGISTER_TEST(test_citizenship_gm);

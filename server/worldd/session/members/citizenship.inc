@@ -70,7 +70,29 @@ private:
     uint32_t                        mayor_candidacies_ = 0, mayor_votes_ = 0, mayor_results_seen_ = 0;
     uint32_t citizenship_lapses_ = 0, citizenship_adopted_ = 0;
     uint32_t citizenship_joins_ = 0, citizenship_renounces_ = 0, citizenship_dues_paid_ = 0, citizenship_refused_ = 0, citizenship_windows_ = 0, citizenship_dialogs_ = 0;
+    // ---- a game master's (session/player_citizenship_gm.cpp; the client's console, answered only for a game master: gm_rpc_admitted)
+    void on_gm_set_mayor(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_gm_set_mayor_candidate(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_gm_set_mayor_message(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_gm_add_node_citizen(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_gm_remove_node_citizen(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_gm_set_dues_due(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_gm_end_renounce_cooldown(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_gm_check_citizenship(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_gm_citizenship_dues_switch(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now, bool off);
+    void on_gm_mayor_vote_data(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    void on_gm_ranked_vote(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    /// The node a game master's call names (a record or display name, any case; empty: the node the player stands in); 0 with `why` for none.
+    int64_t gm_node_named(const std::string& name, std::string& why) const;
+    /// The mayor's tools refuse a player who is no mayor: ClientShowMustBeMayorCallout.
+    void send_must_be_mayor(Connection& conn);
 public:
+    /// A game master makes this account a citizen of `node` (ServerGMAddNodeCitizen): no cost, no level asked, the dues due a period on.  What was done.
+    std::string gm_join_citizenship(Connection& conn, int64_t node, const std::string& by);
+    /// A game master ends this account's citizenship (ServerGMRemoveNodeCitizen), with no renounce cooldown.  What was done.
+    std::string gm_leave_citizenship(Connection& conn, const std::string& by);
+    /// The account's citizenship as a game master reads it (ServerGMCheckCitizenshipStatus).
+    std::string citizenship_status_text() const;
     const svc::Citizenship& citizenship() const { return citizenship_; }
     uint32_t citizenship_joins() const { return citizenship_joins_; }
     uint32_t citizenship_renounces() const { return citizenship_renounces_; }

@@ -7,6 +7,7 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <cctype>
 #include <set>
 
 namespace aoc::worldd::world {
@@ -283,11 +284,20 @@ bool Elections::register_candidate(int64_t node, const ElectionPerson& who, int6
 }
 
 bool Elections::vote(int64_t node, const ElectionPerson& who, const std::vector<std::string>& ranked, int64_t now_ms, std::string& why) {
+    return vote_as(node, who, ranked, now_ms, why, /*citizens_only=*/true);
+}
+
+bool Elections::gm_vote(int64_t node, const ElectionPerson& who, const std::vector<std::string>& ranked, int64_t now_ms, std::string& why) {
+    return vote_as(node, who, ranked, now_ms, why, /*citizens_only=*/false);
+}
+
+bool Elections::vote_as(int64_t node, const ElectionPerson& who, const std::vector<std::string>& ranked, int64_t now_ms, std::string& why, bool citizens_only) {
     auto it = nodes_.find(node);
     if (it == nodes_.end()) { why = "the node holds no election"; return false; }
     NodeElection& e = it->second;
     if (e.state != ElectionState::Active) { why = std::string("the node's election is in ") + election_state_name(e.state) + ", not voting"; return false; }
-    if (e.citizens.count(who.account) == 0) { why = "the account is not a citizen of the node"; return false; }
+    if (who.account == 0) { why = "no account"; return false; }
+    if (citizens_only && e.citizens.count(who.account) == 0) { why = "the account is not a citizen of the node"; return false; }
     std::vector<std::string> kept;
     std::set<std::string> seen;
     for (const std::string& id : ranked) {
@@ -336,6 +346,75 @@ int Elections::citizen_rank(int64_t node, int64_t account) const {
 size_t Elections::citizen_count(int64_t node) const {
     const NodeElection* e = this->node(node);
     return e ? e->citizens.size() : 0;
+}
+
+bool Elections::gm_set_candidate(int64_t node, const ElectionPerson& who, bool adding, int64_t now_ms, std::string& why) {
+    auto it = nodes_.find(node);
+    if (it == nodes_.end()) { why = "the node holds no election"; return false; }
+    NodeElection& e = it->second;
+    auto& c = e.candidates;
+    const auto at = std::find_if(c.begin(), c.end(), [&](const ElectionPerson& p) { return p.account == who.account; });
+    if (!adding) {
+        if (at == c.end()) { why = "the account does not stand"; return false; }
+        c.erase(at);
+        ++version_;
+        return true;
+    }
+    if (e.citizens.count(who.account) == 0) { why = "the account is not a citizen of the node"; return false; }
+    if (at != c.end()) { why = "the account stands already"; return false; }
+    ElectionPerson p = who;
+    p.at_ms = now_ms;
+    c.push_back(std::move(p));
+    ++version_;
+    return true;
+}
+
+bool Elections::gm_set_message(int64_t node, const std::string& message, std::string& why) {
+    auto it = nodes_.find(node);
+    if (it == nodes_.end() || it->second.mayor.account == 0) { why = "the node has no mayor"; return false; }
+    if (message.size() > kMaxMessage) { why = "the message is longer than 512 bytes"; return false; }
+    it->second.mayor_message = message;
+    ++version_;
+    return true;
+}
+
+namespace {
+bool same_text(const std::string& a, const std::string& b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+               return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+           });
+}
+}  // namespace
+
+const ElectionPerson* Elections::citizen_named(int64_t node, const std::string& name) const {
+    const NodeElection* e = this->node(node);
+    if (!e || name.empty()) return nullptr;
+    for (const auto& [a, p] : e->citizens) {
+        if (same_text(p.name, name)) return &p;
+    }
+    return nullptr;
+}
+
+const ElectionPerson* Elections::candidate_named(int64_t node, const std::string& name) const {
+    const NodeElection* e = this->node(node);
+    if (!e || name.empty()) return nullptr;
+    for (const ElectionPerson& p : e->candidates) {
+        if (same_text(p.name, name)) return &p;
+    }
+    return nullptr;
+}
+
+void Elections::set_dues_disabled(int64_t node, bool off) {
+    if (node == 0) return;
+    NodeElection& e = nodes_[node];
+    if (e.dues_disabled == off) return;
+    e.dues_disabled = off;
+    ++version_;
+}
+
+bool Elections::dues_disabled(int64_t node) const {
+    const NodeElection* e = this->node(node);
+    return e && e->dues_disabled;
 }
 
 bool Elections::is_candidate(int64_t node, int64_t account) const {
@@ -396,6 +475,7 @@ std::string Elections::to_json() const {
         n["mayor"] = person_json(e.mayor);
         n["message"] = e.mayor_message;
         n["first"] = e.first;
+        n["dues_off"] = e.dues_disabled;
         for (const ElectionPerson& c : e.candidates) n["candidates"].push_back(person_json(c));
         for (const auto& [a, p] : e.citizens) n["citizens"].push_back(person_json(p));
         for (const auto& [a, ranked] : e.votes) {
@@ -427,6 +507,7 @@ bool Elections::from_json(const std::string& text, std::string& error) {
             if (n.contains("mayor")) e.mayor = person_of(n["mayor"]);
             e.mayor_message = n.value("message", std::string());
             e.first = n.value("first", false);
+            e.dues_disabled = n.value("dues_off", false);
             if (n.contains("candidates")) for (const auto& c : n["candidates"]) e.candidates.push_back(person_of(c));
             if (n.contains("citizens")) for (const auto& c : n["citizens"]) { const ElectionPerson p = person_of(c); if (p.account != 0) e.citizens[p.account] = p; }
             if (n.contains("votes")) {

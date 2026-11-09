@@ -31,6 +31,7 @@ target_sources(worldd_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_move_ack.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_movement.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_citizenship.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/session/player_citizenship_gm.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_nodes.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_processing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/session/player_progress.cpp

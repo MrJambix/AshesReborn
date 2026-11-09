@@ -999,10 +999,7 @@ static void test_console() {
         repl::set_rpc_param(rpc, p, "FastForwardDuration", repl::Value(ticks));
     });
     CHECK(h.fx.control.calls.size() == 5 && h.fx.control.calls[4].rfind("advance 3600", 0) == 0, "ServerGMFastForwardRealTime skips the node clock by its seconds");
-    send("ServerGMSetMayor", [&](const schema::RpcSchema& rpc, repl::RpcParams& p) {
-        repl::set_rpc_param(rpc, p, "NodeName", repl::Value::str("Joeva"));
-        repl::set_rpc_param(rpc, p, "CharacterName", repl::Value::str("cyb"));
-    });
+    send("ServerGMForceVassalTaxDueDateNow", [&](const schema::RpcSchema&, repl::RpcParams&) {});   // (vassal taxes: not built)
     CHECK(h.fx.control.calls.size() == 5 && h.s->node_gm_rpcs() == 8, "any other ServerGM* call is received and logged, and goes nowhere (its milestone is later)");
 
     // no node service connected: the console says so and nothing crashes

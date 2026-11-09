@@ -78,6 +78,7 @@ struct NodeElection {
     ElectionPerson mayor;                                          // account 0: no mayor
     std::string    mayor_message;
     bool           first = false;                                  // this cycle is the node's first election (its own lengths)
+    bool           dues_disabled = false;                          // a game master switched the node's citizenship dues off (ServerGMDisableCitizenshipDues)
     bool operator==(const NodeElection&) const = default;
 };
 
@@ -116,6 +117,22 @@ public:
     /// The node's mayor is `who` now (a game master's); account 0 removes the mayor.
     void set_mayor(int64_t node, const ElectionPerson& who, int64_t now_ms);
 
+    // ---- a game master's (the client's console calls; the session checks the game master)
+    /// `who` stands (adding) or no longer stands for mayor of `node`, in any phase (ServerGMSetMayorCandidate).  False with `why` for no such election or a
+    /// non-citizen to add.
+    bool gm_set_candidate(int64_t node, const ElectionPerson& who, bool adding, int64_t now_ms, std::string& why);
+    /// The node's mayor's message, set whoever the mayor is (ServerGMSetMayorMessage).  False with `why` for a node with no mayor or a message over 512 bytes.
+    bool gm_set_message(int64_t node, const std::string& message, std::string& why);
+    /// A vote by `who`, citizen of the node or not, while the node votes (ServerGMRankedChoiceVoteForMayor).
+    bool gm_vote(int64_t node, const ElectionPerson& who, const std::vector<std::string>& ranked, int64_t now_ms, std::string& why);
+    /// The node's citizen named `name` (any case); null for none.
+    const ElectionPerson* citizen_named(int64_t node, const std::string& name) const;
+    /// The node's candidate named `name` (any case); null for none.
+    const ElectionPerson* candidate_named(int64_t node, const std::string& name) const;
+    /// The node's citizenship dues off (ServerGMDisableCitizenshipDues) or on again (ServerGMTryEnableCitizenshipDues).
+    void set_dues_disabled(int64_t node, bool off);
+    bool dues_disabled(int64_t node) const;
+
     bool is_candidate(int64_t node, int64_t account) const;
     /// The account's CitizenshipRank in `node`: its place among the node's citizens by when they joined (1: the first; ties by account), 0 when it is no citizen there.
     int citizen_rank(int64_t node, int64_t account) const;
@@ -137,6 +154,7 @@ public:
 private:
     /// `e` enters `s` at `start_ms`.  `count`: entering Post counts the votes (false: a monthly registration had no candidate, the mayor stays).
     void enter(int64_t node, NodeElection& e, ElectionState s, int64_t start_ms, std::vector<Change>& out, bool count = true);
+    bool vote_as(int64_t node, const ElectionPerson& who, const std::vector<std::string>& ranked, int64_t now_ms, std::string& why, bool citizens_only);
     ElectionRules                   rules_;
     std::map<int64_t, NodeElection> nodes_;
     uint64_t                        version_ = 0;

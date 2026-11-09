@@ -278,6 +278,7 @@ void PlayerSession::on_citizenship_dues(Connection& conn, const repl::ClientRpc&
     const world::CitizenshipRules* rules = world_ ? world_->citizenship_rules() : nullptr;
     if (!rules) return refuse("this world has no citizenship rules");
     if (citizenship_.node_guid == 0) return refuse("the account is a citizen of no node");
+    if (const world::Elections* el = world_->elections(); el && el->dues_disabled(citizenship_.node_guid)) return refuse("the node's dues are switched off");
     const int64_t now_ms = wall_ms();
     const int64_t period = static_cast<int64_t>(rules->dues_weeks) * 7 * 86400000;
     if (citizenship_.dues_due_ms - now_ms > period) return refuse("the dues are paid until " + std::to_string(citizenship_.dues_due_ms) + " ms already");
@@ -312,6 +313,7 @@ void PlayerSession::run_citizenship(Connection& conn) {
     // unpaid dues: at risk once overdue, lapsed after the node's time at risk
     const world::CitizenshipRules* rules = world_ ? world_->citizenship_rules() : nullptr;
     if (!rules || citizenship_.node_guid == 0) return;
+    if (const world::Elections* el = world_->elections(); el && el->dues_disabled(citizenship_.node_guid)) return;   // dues off: nothing lapses
     const int64_t lapse = rules->lapse_ms(citizenship_.node_guid, citizenship_.dues_due_ms);
     if (lapse == 0 || now_ms < lapse) return;
     const int64_t node = citizenship_.node_guid;
@@ -476,6 +478,7 @@ int32_t PlayerSession::citizenship_dues(int64_t now_ms, world::CitizenshipRules:
     const world::CitizenshipRules* rules = world_ ? world_->citizenship_rules() : nullptr;
     if (!rules || citizenship_.node_guid == 0) return 1;
     const world::Elections* el = world_->elections();
+    if (el && el->dues_disabled(citizenship_.node_guid)) return 0;   // a game master switched the node's dues off
     const int r = el ? std::max(1, el->citizen_rank(citizenship_.node_guid, account_id_)) : 1;
     const size_t citizens = el ? el->citizen_count(citizenship_.node_guid) : 1;
     const int node_level = world_->city_nodes() ? world_->city_nodes()->level_of(citizenship_.node_guid) : 0;
@@ -627,6 +630,7 @@ void PlayerSession::on_mayor_message(Connection& conn, const repl::ClientRpc& rp
     }
     ++citizenship_refused_;
     spdlog::log(level_for(citizenship_log_), "[nodes] {}: the mayor's message is refused: {}", name(), why);
+    if (el && node == 0) send_must_be_mayor(conn);
 }
 
 void PlayerSession::on_mayor_citizens(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
@@ -636,6 +640,7 @@ void PlayerSession::on_mayor_citizens(Connection& conn, const repl::ClientRpc& r
     const world::NodeElection* e = node ? el->node(node) : nullptr;
     if (!e) {
         spdlog::log(level_for(citizenship_log_), "[nodes] {}: ServerShowMayorCitizens is not answered: the account is no node's mayor", name());
+        if (el) send_must_be_mayor(conn);
         return;
     }
     (void)rpc;
