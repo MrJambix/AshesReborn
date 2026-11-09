@@ -4227,8 +4227,8 @@ void AbilityPipeline::land_by_flight(Cast& cast, double t) {
                         cast.missiles.push_back(m);
                         cast.projectile_due.reset();
                         first = last = launch;
-                        spdlog::info("[abilities] {}: the projectile leaves {:.3f} s after the trigger and turns toward its target at {:.0f} deg/s ({} cm/s)", cast.def->row.name, launch,
-                                     steer->turn_deg_s, p->speed);
+                        spdlog::info("[abilities] {}: the projectile leaves {:.3f} s after the trigger and turns toward its target at {:.0f} deg/s ({} cm/s)", cast.def->row.name,
+                                     launch - cast.trigger_at, steer->turn_deg_s, p->speed);
                     } else {
                         cast.projectile_due = land_at(f, *p);
                         first = last = *cast.projectile_due;
@@ -5078,6 +5078,15 @@ void AbilityPipeline::step_multi_hit(Cast& cast, double t) {
     src.confirm = true;
     src.response = false;   // (the server's own: the client asks for the damage hit, and the server lands it at the montage's notifies)
     const HitDef* damage = catalog_->hit_named(mh.damage);
+    // a notify that comes before the client's hit request named a target (the first is 0.01 s in, sooner than a request can arrive) waits for one while the next notify is not
+    // due; else an area Lullaby, which names no target at its trigger, would land its first hit on nobody
+    if (cast.target_actors.empty() && cast.multi_index + 1 < mh.count) {
+        const double next = cast.trigger_at + mh.times[cast.multi_index + 1] * cast.multi_scale;
+        if (t + 1e-9 < next) {
+            cast.hit_due = std::min(next, t + 0.05);
+            return;
+        }
+    }
     bool landed = false;
     if (damage && !cast.target_actors.empty()) apply_hit_on_targets(c, *damage, cast.target_actors, t, src, &def, &landed);
     const bool last = ++cast.multi_index >= mh.count;

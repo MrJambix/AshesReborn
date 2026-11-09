@@ -871,6 +871,39 @@ void test_node_inventory() {
     const repl::Value* gold = c ? repl::rpcf::value_of(*c->rpc, c->params, "InventoryGold") : nullptr;
     CHECK(item && item->has_item && item->record_id == 77 && item->quantity == 5 && gold && *gold->get_if<int64_t>() == 900,
           "ClientShowMayorInventory lists the node's goods as items, with its gold");
+    // an elections file that does not read is kept as it is: the nodes are not stocked over it
+    {
+        const std::filesystem::path bad = std::filesystem::temp_directory_path() / ("aoc_elections_unreadable_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".json");
+        const std::string text = "{ this is not the file's format";
+        {
+            std::ofstream out(bad, std::ios::binary | std::ios::trunc);
+            out << text;
+        }
+        h.fx.world->set_elections(world::ElectionRules{}, bad.string());
+        h.fx.world->save_elections();
+        // it is moved aside, with what it held; the elections start afresh (the nodes stocked) in a new file at the old name
+        std::string aside_text;
+        std::vector<std::filesystem::path> asides;
+        for (const auto& e : std::filesystem::directory_iterator(bad.parent_path())) {
+            if (e.path().filename().string().rfind(bad.filename().string() + ".unreadable-", 0) == 0) asides.push_back(e.path());
+        }
+        if (asides.size() == 1) {
+            std::ifstream in(asides[0], std::ios::binary);
+            aside_text.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        }
+        world::Elections fresh{world::ElectionRules{}};
+        std::string err;
+        std::string now_text;
+        {
+            std::ifstream in(bad, std::ios::binary);
+            now_text.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        }
+        std::error_code ec;
+        for (const auto& a : asides) std::filesystem::remove(a, ec);
+        std::filesystem::remove(bad, ec);
+        CHECK(asides.size() == 1 && aside_text == text, "an elections file that does not read is moved aside with what it held (FILE.unreadable-<time>)");
+        CHECK(fresh.from_json(now_text, err) && h.fx.world->elections()->treasury(kHalcyon) == 1525050, "... and the elections start afresh in a new file, the nodes stocked");
+    }
 }
 
 AOC_REGISTER_TEST(test_citizenship_flow);

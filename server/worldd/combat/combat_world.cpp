@@ -2492,14 +2492,14 @@ void CombatWorld::break_fragile(Npc& n, double loss, const HitOrigin* origin, do
         const FragileRow* row = fragile_effect(h.def->row.guid);
         h.taken += loss;
         // a share of 0 is any damage; a share above it is of the maximum Health of the player that put the effect on (the data's EffectBreakThreshold: GetStat(GetInstigator(), MaxHealth)
-        // times the share; the Marionette's dance ends at a tenth of the Bard's), and counts nothing while that player is gone
+        // times the share; the Marionette's dance ends at a tenth of the Bard's).  While that player is gone the creature's own maximum stands in, so damage still ends it
         double threshold = 0;
         if (row && row->share > 0) {
             PlayerPort* by = player(h.by);
             const stats::StatValue* max = by ? by->fighter().stats().find(data_.ids().max_health) : nullptr;
-            threshold = max ? row->share * std::max(0.0, static_cast<double>(max->value)) : -1;
+            threshold = row->share * (max ? std::max(0.0, static_cast<double>(max->value)) : n.max_health());
         }
-        if (row && row->share >= 0 && threshold >= 0 && !(row->share == 0 && exempt) && h.taken >= threshold) {
+        if (row && row->share >= 0 && !(row->share == 0 && exempt) && h.taken >= threshold) {
             end_effect_at(n, i, {"Remove", "End"}, now);
         } else {
             ++i;

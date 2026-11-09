@@ -10,6 +10,9 @@
 ### Fixed
 - Citizen-only shop listings, such as each node's citizen cloak and its commodity certificates, are now sold only to that node's citizens. Before, anyone standing in the town could buy them, and a citizen shopping elsewhere was refused listings meant for everyone but the citizens of another node.
 - The warehouse's citizen storage tabs can now be bought by the town's citizens. Before, nobody could buy them.
+- /sit no longer stands you straight back up when you sit while your character is still coming to a stop.
+- Bard: the area Dark Lullaby's first hit now lands. Before, it came before the game had named any target and hit nobody.
+- Bard: the Marionette's dance still breaks from damage after the Bard who cast it has logged out.
 
 ## 2026-11-09: node citizenship and mayors, emotes, knockbacks, stacking, coffers, melodies, pets and loot
 

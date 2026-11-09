@@ -257,10 +257,12 @@ void AbilityRuntime::set_mounted(bool mounted, double now) {
 void AbilityRuntime::set_moving(bool moving, double now) {
     advance(now);
     if (mounted_) moving = false;   // a rider's moves are its mount's: nothing it does charges the pawn
+    const bool starts = moving && !moving_;
     moving_ = moving;
     moving_at_ = std::max(now, now_);
-    // The Rest's record has no rule for movement (usable_while_walking 1, no break condition): walking away stands the character up, as a second /sit does.
-    if (moving_ && rest_ && !rest_->ended) release_rest(now_, "the Rest ends: the player walks away");
+    // The Rest's record has no rule for movement (usable_while_walking 1, no break condition): walking away stands the character up, as a second /sit does.  Only a start
+    // stands it up: this is called for every accepted move, and the last moves of a stop (or a slope's drift) right after a /sit are no walk away
+    if (starts && rest_ && !rest_->ended) release_rest(now_, "the Rest ends: the player walks away");
     // the Sprint's regeneration stop depends on the player moving: the StaminaRegeneration item follows
     if (sprint_ && base_.count(content::kGuidStaminaRegeneration) != 0) {
         AbilityChange c;
