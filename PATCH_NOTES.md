@@ -1,5 +1,11 @@
 # Patch notes
 
+## Next update: towns and citizens
+
+### Fixed
+- Citizen-only shop listings, such as each node's citizen cloak and its commodity certificates, are now sold only to that node's citizens. Before, anyone standing in the town could buy them, and a citizen shopping elsewhere was refused listings meant for everyone but the citizens of another node.
+- The warehouse's citizen storage tabs can now be bought by the town's citizens. Before, nobody could buy them.
+
 ## 2026-11-09: node citizenship and mayors, emotes, knockbacks, stacking, coffers, melodies, pets and loot
 
 ### New

@@ -21,7 +21,8 @@
 //  Anything else is refused whole.
 //
 //  The shops shop_opens() names are switched on: the towns' general, crafting-district, citizen and commodity shops.  The Barracks (siege contracts), the mayor's shop, siege repairs and the test
-//  shops keep answering "nothing to offer yet" until their systems exist.  A tab or listing that needs a reputation rank, or a citizenship, stays hidden: nobody holds one yet.
+//  shops keep answering "nothing to offer yet" until their systems exist.  A tab or listing that needs a reputation rank stays hidden: nobody holds one yet.  One that
+//  needs a citizenship holds for the citizens of the node it names (Node_GetActorCityNode of the player is the node the player is a citizen of).
 //
 //  The shops of shopkeepers who talk (the Black Market, the caravan salesman, the sheriff's tax vouchers) have no use link: a line of their conversation opens them.  A window can
 //  hide a whole tab, or hide or grey out a listing, for a player the tab's or the listing's predicates do not hold for (unavailable()); a price in Glint is paid with Glint T1 items.
@@ -124,15 +125,21 @@ inline int64_t taxed_unit(int64_t price, const TaxRate& rate) {
     return price + static_cast<int64_t>(std::ceil(tax));
 }
 
-/// What a shop's predicates are asked against: the node the player stands in and, for a shop a shopkeeper opens, the node the shopkeeper stands in.  GetPlayer, GetInteractionTarget,
-/// GetCurrentNode, Node_GetActorCityNode, Node_InLevelRangeInclusive, GetNodeBiome, GetNodeToPlayerReputationRank and Node_HasServiceBuilding are the functions the shops' own predicates use;
-/// any other function ends the evaluation with no value, and the predicate does not hold.
+/// What a shop's predicates are asked against: the node the player stands in, the node the player is a citizen of and, for a shop a shopkeeper opens, the node the shopkeeper stands in.
+/// GetPlayer, GetInteractionTarget, GetCurrentNode, Node_GetActorCityNode, Node_InLevelRangeInclusive, GetNodeBiome, GetNodeToPlayerReputationRank and Node_HasServiceBuilding are the
+/// functions the shops' own predicates use (Node_IsPlayerCitizen and Node_IsPlayerCitizenOfNode are answered too); any other function ends the evaluation with no value, and the predicate
+/// does not hold.
+///
+/// Node_GetActorCityNode: the client asks the character itself (get_actor_city_node casts its argument to ABaseCharacter and calls a virtual of it).  An NPC's is the settlement it stands
+/// in; a player's is the node the player is a citizen of (0: none).  The data says so: `Node_GetActorCityNode(GetInteractionTarget()) == Node_GetActorCityNode(GetPlayer())` fails with "Must be
+/// a citizen of this settlement", `Node_GetActorCityNode(GetPlayer()) != <a node>` with "Must not be a citizen of <that node>".
 class ShopFacts final : public dialogue::ExprHost {
 public:
     const world::CityNodes* nodes = nullptr;
     double                  player_x = 0, player_y = 0;
     bool                    has_npc = false;
     double                  npc_x = 0, npc_y = 0;
+    int64_t                 citizen_node = 0;   // the node the player is a citizen of (0: none)
 
     std::optional<dialogue::ExprValue> call(const std::string& name, const std::vector<dialogue::ExprValue>& args) const override {
         using dialogue::ExprValue;
@@ -141,10 +148,16 @@ public:
         if (name == "GetInteractionTarget") return ExprValue::of(has_npc ? kNpc : 0);
         if (name == "Node_GetActorCityNode") {
             if (args.size() != 1 || !nodes) return std::nullopt;
-            const bool of_npc = args[0].i == kNpc && has_npc;
-            const world::NodeSite site = nodes->node_at(of_npc ? npc_x : player_x, of_npc ? npc_y : player_y);
+            if (args[0].i == kPlayer) return ExprValue::of(citizen_node);   // a player's: the citizenship
+            if (args[0].i != kNpc || !has_npc) return ExprValue::of(0);
+            const world::NodeSite site = nodes->node_at(npc_x, npc_y);   // an NPC's: the settlement it stands in
             const world::CityNodeInfo* n = nodes->by_rank(site.node_rank);
             return ExprValue::of(n ? n->guid : 0);
+        }
+        if (name == "Node_IsPlayerCitizen") return ExprValue::of(citizen_node != 0 ? 1 : 0);
+        if (name == "Node_IsPlayerCitizenOfNode") {
+            if (args.size() != 2) return std::nullopt;
+            return ExprValue::of(citizen_node != 0 && citizen_node == args[1].i ? 1 : 0);
         }
         if (name == "GetCurrentNode") {
             if (args.size() != 1 || !nodes) return std::nullopt;

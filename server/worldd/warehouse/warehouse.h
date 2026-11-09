@@ -94,21 +94,23 @@ struct Spec {
 /// the ones the data's warehouse expressions use; any other ends the evaluation with no value, and the expression does not hold.
 class Facts final : public dialogue::ExprHost {
 public:
-    int64_t node = 0;
+    int64_t node = 0;           // the town of the warehouse (where the player stands)
     int     level = 0;
-    bool    citizen = false;   // there is no citizenship yet: nobody is
+    int64_t citizen_node = 0;   // the node the player is a citizen of (0: none)
 
     std::optional<dialogue::ExprValue> call(const std::string& name, const std::vector<dialogue::ExprValue>& args) const override {
         using dialogue::ExprValue;
         constexpr int64_t kPlayer = 1;
         if (name == "GetPlayer") return ExprValue::of(kPlayer);
-        if (name == "GetCurrentNode" || name == "Node_GetActorCityNode") return args.size() == 1 ? std::optional<ExprValue>(ExprValue::of(node)) : std::nullopt;
+        if (name == "GetCurrentNode") return args.size() == 1 ? std::optional<ExprValue>(ExprValue::of(node)) : std::nullopt;
+        // a player's city node is the node the player is a citizen of (vendor/town_shops.h has the evidence): the citizen tabs ask that the player stand in it and be its citizen
+        if (name == "Node_GetActorCityNode") return args.size() == 1 ? std::optional<ExprValue>(ExprValue::of(citizen_node)) : std::nullopt;
         if (name == "Node_GetLevel") return args.size() == 1 ? std::optional<ExprValue>(ExprValue::of(level)) : std::nullopt;
-        if (name == "Node_IsActorInNodeName") return ExprValue::of(1);
-        if (name == "Node_IsPlayerCitizenOfNode") return ExprValue::of(citizen ? 1 : 0);
+        if (name == "Node_IsActorInNodeName") return args.size() == 2 ? std::optional<ExprValue>(ExprValue::of(args[1].i == node ? 1 : 0)) : std::nullopt;   // the player stands in `node`
+        if (name == "Node_IsPlayerCitizenOfNode") return args.size() == 2 ? std::optional<ExprValue>(ExprValue::of(citizen_node != 0 && citizen_node == args[1].i ? 1 : 0)) : std::nullopt;
         if (name == "GetNodeToPlayerReputationRank") {
             ExprValue v;
-            v.text = "ENodeReputationRank::None";   // no reputation tier exists yet: the character is nobody's citizen, noble or liege
+            v.text = "ENodeReputationRank::None";   // no reputation tier exists yet: the character is nobody's noble or liege
             return v;
         }
         if (name == "EnumInt") {
@@ -908,7 +910,7 @@ struct MergeResult {
 /// Puts the bank's legacy items where they fit: an item's own place when it is free and the account owns the container, else the first free place (in the containers' order, then the
 /// slots') of a container of its kind and town the account owns.  level_of gives a town's ENodeLevel ordinal (a tab's availability may ask it).  An item whose instance the storage
 /// holds already is not put again, only named as merged.  Counts a change when anything moved.
-inline MergeResult merge_legacy(Bank& bank, const Book& book, const items::ItemCatalog& catalog, const std::function<int(int64_t)>& level_of) {
+inline MergeResult merge_legacy(Bank& bank, const Book& book, const items::ItemCatalog& catalog, const std::function<int(int64_t)>& level_of, int64_t citizen_node = 0) {
     MergeResult out;
     if (bank.legacy.empty()) return out;
     std::map<int64_t, std::vector<Spec>> by_node;   // the tabs the account owns, by town
@@ -927,6 +929,7 @@ inline MergeResult merge_legacy(Bank& bank, const Book& book, const items::ItemC
             Facts facts;
             facts.node = node;
             facts.level = level_of ? level_of(node) : 0;
+            facts.citizen_node = citizen_node;
             it = by_node.emplace(node, book.owned(node, facts, bank.storage.bought())).first;
         }
         for (const Spec& s : it->second) {

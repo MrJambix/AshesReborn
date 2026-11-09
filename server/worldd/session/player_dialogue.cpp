@@ -98,9 +98,10 @@ public:
         if (name == "GetPlayer") return ExprValue::of(kPlayer);
         if (name == "GetInteractionTarget") return ExprValue::of(has_npc ? kNpc : 0);
         if (name == "GetCurrentNode") return ExprValue::of(node_at(player_x, player_y));
-        if (name == "Node_GetActorCityNode") {
+        if (name == "Node_GetActorCityNode") {   // an NPC's: the settlement it stands in; a player's: the node the player is a citizen of (vendor/town_shops.h has the evidence)
             if (args.size() != 1) return std::nullopt;
-            return ExprValue::of(args[0].i == kNpc && has_npc ? node_at(npc_x, npc_y) : node_at(player_x, player_y));
+            if (args[0].i == kPlayer) return ExprValue::of(citizen_node);
+            return ExprValue::of(args[0].i == kNpc && has_npc ? node_at(npc_x, npc_y) : 0);
         }
         if (name == "GetCharacterLevel" || name == "GetPlayerLevel") return ExprValue::of(level);
         if (name == "Node_IsPlayerCitizen") return ExprValue::of(citizen_node != 0 ? 1 : 0);

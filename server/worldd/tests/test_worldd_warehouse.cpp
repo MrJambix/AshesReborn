@@ -233,7 +233,7 @@ warehouse::Book book() {
     d.defs[2] = {2, "DefaultCrate", 6, 8, {kCargoTab}};
     d.tabs[kBaseTab] = {kBaseTab, "BaseStorage", 0, false, false, "true", {}};
     d.tabs[kVillageTab] = {kVillageTab, "Level3_General", 0, false, true, kVillageRule, gold("5")};
-    d.tabs[kCitizenTab] = {kCitizenTab, "Level3_Citizen", 0, true, true, "Node_IsPlayerCitizenOfNode(GetPlayer())", gold("1")};
+    d.tabs[kCitizenTab] = {kCitizenTab, "Level3_Citizen", 0, true, true, "Node_IsActorInNodeName(GetPlayer(), Node_GetActorCityNode(GetPlayer())) && Node_IsPlayerCitizenOfNode(GetPlayer(), GetCurrentNode(GetPlayer()))", gold("1")};   // (the data's WarehouseStorageMaterialTab_Level3_Citizen)
     d.tabs[kCargoTab] = {kCargoTab, "DefaultCargoTab", 1, false, false, kVillageRule, {}};
     return warehouse::Book(std::move(d));
 }
@@ -254,7 +254,14 @@ void test_buying() {
     CHECK(!b.purchase(kNode, kUnlisted, false, village, bought).refusal.empty(), "a chunk the town's def does not list");
     CHECK(!b.purchase(kNode, kBaseChunk, false, village, bought).refusal.empty(), "the free base chunk is not bought");
     CHECK(!b.purchase(kNode + 1, kVillageChunk, false, village, bought).refusal.empty(), "a town with no warehouse");
-    CHECK(!b.purchase(kNode, kCitizenTab, true, village, bought).refusal.empty(), "a citizen's tab, and nobody is a citizen");
+    CHECK(!b.purchase(kNode, kCitizenTab, true, village, bought).refusal.empty(), "a citizen's tab, and the player is no citizen");
+    {
+        warehouse::Facts citizen = village, elsewhere = village;
+        citizen.citizen_node = kNode;
+        elsewhere.citizen_node = kNode + 7;
+        CHECK(b.purchase(kNode, kCitizenTab, true, citizen, bought).refusal.empty(), "a citizen of the town buys its citizens' tab");
+        CHECK(!b.purchase(kNode, kCitizenTab, true, elsewhere, bought).refusal.empty(), "... a citizen of another node does not");
+    }
     p = b.purchase(kNode, kVillageTab, true, village, bought);
     CHECK(p.refusal.empty() && p.key == kTab2, "a material tab, kept per town");
 

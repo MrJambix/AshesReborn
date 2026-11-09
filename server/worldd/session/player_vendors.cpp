@@ -61,12 +61,13 @@ using protocol::emit::FIntrepidNetworkGUID;
 
 namespace {
 
-/// What a shop's predicates are asked: the node the player stands in and the node the shopkeeper stands in.
-vendor::ShopFacts shop_facts_for(const world::CityNodes* nodes, const GoodPosition& player, const world::WorldActor* npc) {
+/// What a shop's predicates are asked: the node the player stands in, the node the player is a citizen of and the node the shopkeeper stands in.
+vendor::ShopFacts shop_facts_for(const world::CityNodes* nodes, const GoodPosition& player, const world::WorldActor* npc, int64_t citizen_node) {
     vendor::ShopFacts facts;
     facts.nodes = nodes;
     facts.player_x = player.x;
     facts.player_y = player.y;
+    facts.citizen_node = citizen_node;
     if (npc) {
         facts.has_npc = true;
         facts.npc_x = npc->x;
@@ -104,7 +105,7 @@ bool PlayerSession::open_talk_shop(Connection& conn, const world::WorldActor& np
     vendor_by_talk_ = true;
     ++vendor_opens_;
     // what the window hides or greys out for this player and this shopkeeper
-    const vendor::ShopFacts facts = shop_facts_for(world_->city_nodes(), at, &npc);
+    const vendor::ShopFacts facts = shop_facts_for(world_->city_nodes(), at, &npc, pb_.setup().citizen_node);
     bool unreadable = false;
     const vendor::TownShops::Holds holds = [&](const content::VendorPredicateRow& p) {
         const auto v = dialogue::evaluate_expression(p.expression, facts);
@@ -336,7 +337,7 @@ void PlayerSession::buy_from_town_shop(Connection& conn, const repl::VendorPurch
     // the shop's predicates: the node the player stands in, and the node the shopkeeper stands in
     const GoodPosition at = checker_.good();
     const world::WorldActor* keeper = registry_ ? registry_->find(vendor_actor_) : nullptr;
-    const vendor::ShopFacts facts = shop_facts_for(world_->city_nodes(), at, keeper);
+    const vendor::ShopFacts facts = shop_facts_for(world_->city_nodes(), at, keeper, pb_.setup().citizen_node);
     bool unreadable = false;
     const vendor::TownShops::Holds holds = [&](const content::VendorPredicateRow& p) {
         const auto v = dialogue::evaluate_expression(p.expression, facts);

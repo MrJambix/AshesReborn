@@ -81,7 +81,8 @@ void PlayerSession::merge_legacy_warehouse(const char* why) {
     const warehouse::Book* book = world_ ? world_->warehouses() : nullptr;
     if (!book) return;
     const world::CityNodes* nodes = world_->city_nodes();
-    const warehouse::MergeResult r = warehouse::merge_legacy(*wh_bank_, *book, item_catalog(), [nodes](int64_t node) { return nodes ? nodes->level_of(node) : 0; });
+    const warehouse::MergeResult r = warehouse::merge_legacy(*wh_bank_, *book, item_catalog(), [nodes](int64_t node) { return nodes ? nodes->level_of(node) : 0; },
+                                                             pb_.setup().citizen_node);
     if (r.put == 0) return;
     inventory_dirty_ = true;
     inventory_changed_ = true;
@@ -143,6 +144,7 @@ bool PlayerSession::open_warehouse(Connection& conn, const world::WorldActor& np
     if (!room_for(4)) return refuse("the connection is busy");
     merge_legacy_warehouse("a window opens");
     warehouse::Facts facts;
+    facts.citizen_node = pb_.setup().citizen_node;
     facts.node = town->guid;
     facts.level = nodes->level_of(town->guid);
     std::vector<warehouse::Spec> specs = book->owned(town->guid, facts, wh_bank_->storage.bought());
@@ -284,6 +286,7 @@ void PlayerSession::on_warehouse_purchase(Connection& conn, const repl::ClientRp
     const world::CityNodes* nodes = world_ ? world_->city_nodes() : nullptr;
     if (!book || !nodes) return refuse("worldd has no warehouse data");
     warehouse::Facts facts;
+    facts.citizen_node = pb_.setup().citizen_node;
     facts.node = wh_window_.node;
     facts.level = nodes->level_of(wh_window_.node);
     const warehouse::Book::Purchase plan = book->purchase(wh_window_.node, *record, tab, facts, wh_bank_->storage.bought());
@@ -412,6 +415,7 @@ void PlayerSession::on_warehouse_request(Connection& conn, const repl::ClientRpc
     const world::CityNodes* nodes = world_ ? world_->city_nodes() : nullptr;
     if (!book || !nodes) return;
     warehouse::Facts facts;
+    facts.citizen_node = pb_.setup().citizen_node;
     facts.node = wh_window_.node;
     facts.level = nodes->level_of(wh_window_.node);
     const auto summary = book->summary(wh_window_.node, facts);
