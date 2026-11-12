@@ -1460,14 +1460,26 @@ struct MountEffectRow {
     bool        force_dismount = false;
 };
 
-/// The four tables, read whole (101 mounts, 250 stat rows, 34 abilities, 9 effects).
+/// One row of `mount_cosmetic` (contentc version 49): a mount skin, worn in the cosmetic slot of its kind.
+struct MountCosmeticRow {
+    int64_t     item = 0;                // the ItemRecord (Cosmetic_Mount_Grounded_Baghorn)
+    std::string item_name;
+    std::string kind;                    // "ground", "flying" or "aquatic": GroundMountCosmetic 70, FlyingMountCosmetic 72, AquaticMountCosmetic 73
+    std::string blueprint_path;          // MountCosmeticBP: /Game/GameBlueprints/Mounts/Mount_Grounded_AlpineBaghorn_0.Mount_Grounded_AlpineBaghorn_0_C
+    std::string blueprint;               // the package name: Mount_Grounded_AlpineBaghorn_0
+};
+
+/// The tables, read whole (101 mounts, 250 stat rows, 34 abilities, 9 effects, 66 skins).
 struct MountData {
     std::vector<MountRow>         mounts;               // by item name
     std::vector<MountStatRow>     stats;                // by level, then stat
     std::vector<MountAbilityRow>  abilities;
     std::vector<MountEffectRow>   effects;
+    std::vector<MountCosmeticRow> cosmetics;            // by item name; empty in a file older than contentc version 49
 
     const MountRow*        find(int64_t item) const;
+    /// The skin an item is; nullptr for an item that is none.
+    const MountCosmeticRow* cosmetic(int64_t item) const;
     /// The Mount_Base value of a stat at an owner's level (1 to 50); `fallback` when the file has none.
     double                 stat_at(int level, int64_t stat, double fallback = 0) const;
     const MountAbilityRow* ability(int64_t guid) const;

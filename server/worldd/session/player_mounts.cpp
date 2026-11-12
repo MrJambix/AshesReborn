@@ -93,6 +93,13 @@ void PlayerSession::on_summon_trigger(Connection& conn, int32_t client_instance,
     MountController::Request r;
     r.item_record = item->item_record_id;
     r.item_guid = *guid;
+    // the skin the player wears for this kind of mount: the record in the cosmetic slot of its kind (spawns/mount_spawn.h, the skins)
+    if (const content::MountRow* row = mounts_->book().find(item->item_record_id)) {
+        const uint8_t slot = row->kind == "flying"    ? items::equip::FlyingMountCosmetic
+                             : row->kind == "aquatic" ? items::equip::AquaticMountCosmetic
+                                                      : items::equip::GroundMountCosmetic;
+        if (const svc::InventoryItem* worn = inventory_.at(svc::ItemContainer::Equipment, slot)) r.cosmetic_item = worn->item_record_id;
+    }
     r.client_instance = client_instance;
     r.lock_expiration = item->lock_expiration;
     r.now_unix = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();

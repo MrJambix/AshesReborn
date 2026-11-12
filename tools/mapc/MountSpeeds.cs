@@ -17,10 +17,14 @@ namespace Mapc;
 /// A ground mount's speed is its MaxRunSpeed, not its MaxWalkSpeed: the walk is 220 (300 for two) in every Blueprint, and the 165 % terror bird sets
 /// MaxRunSpeed 990, the number the retail capture measures.  `mapc mount-speeds` reads only these 141 packages (no map, a few seconds) and writes
 /// dist/content/mount_speeds.tsv, one line per Blueprint that has a class default object, in path order:
-///   blueprint  kind  parents  max_walk_speed  max_run_speed  max_fly_speed  max_swim_speed  defaults
+///   blueprint  kind  parents  max_walk_speed  max_run_speed  max_fly_speed  max_swim_speed  defaults  crate_penalty
 /// `kind` is the first of Grounded, Flying, Aquatic, Gliding the parents name ("" for a class that is none: a coin, a state table); `parents` the class
 /// chain up to the Blueprint root, nearest first; `defaults` lists which of walk, run, fly and swim no Blueprint of the chain sets (the value is then the engine's
 /// default for walk (600), fly (600) and swim (300), and the walk speed for run, as the NPC table does).  A package with no movement component anywhere in its chain has empty speeds.
+/// `crate_penalty` (the mount skins, contentc version 49) is the class default object's bSuffersCrateCarryingMovementPenalty along the parents: "1" or "0" where a Blueprint
+/// of the chain sets it, "" where none does (the C++ default).  The retail summon compares it between a mount and the skin its owner wears
+/// (FMountCosmeticHelper::GetCosmeticMountData, 0x1469d6730: the byte at +0x10b9 of the two default objects, "Mount cosmetic crate capabilities don't match
+/// summoned mount") and keeps the mount's own look when they differ.
 /// The same pass reads each Blueprint's rider AnimBP (stage 3 fix 2) into mount_riders.tsv, `blueprint  rider_anim`: the class path of the AnimBP its InteractableComponent's
 /// interaction point (Mount_Interaction) names as AttachmentAnimation, along the Blueprint's parents (a child keeps its parent's component data).  The server names it in the
 /// mount's open and exports it; the client puts the rider's mesh on it, which is what makes the rider sit.
@@ -34,7 +38,7 @@ public static class MountSpeeds
     public const string FileName = "mount_speeds.tsv";
     public const string RidersFileName = "mount_riders.tsv";
     public const string RidersHeader = "blueprint\trider_anim";
-    public const string Header = "blueprint\tkind\tparents\tmax_walk_speed\tmax_run_speed\tmax_fly_speed\tmax_swim_speed\tdefaults";
+    public const string Header = "blueprint\tkind\tparents\tmax_walk_speed\tmax_run_speed\tmax_fly_speed\tmax_swim_speed\tdefaults\tcrate_penalty";
 
     // UCharacterMovementComponent's defaults (UE 5.6): the value when no Blueprint of the chain sets the property
     const double DefaultWalk = 600, DefaultFly = 600, DefaultSwim = 300;
@@ -46,6 +50,7 @@ public static class MountSpeeds
         public double Walk, Run, Fly, Swim;
         public string Defaults = "";
         public string RiderAnim = "";   // "/Game/Characters/Animations/Mounts_Rider/Swiftclaw/ABP_PC_MNT_Swiftclaw.ABP_PC_MNT_Swiftclaw_C"; "" when no component of the chain names one
+        public string CratePenalty = "";   // bSuffersCrateCarryingMovementPenalty: "1", "0", or "" when no Blueprint of the chain sets it
     }
 
     /// <summary>Every package of the mounts folder, in path order.</summary>
@@ -134,6 +139,7 @@ public static class MountSpeeds
             foreach (var kind in new[] { "Grounded", "Flying", "Aquatic", "Gliding" })
                 if (names.Any(n => n.StartsWith("Mount_" + kind + "_Base", StringComparison.Ordinal))) { r.Kind = kind; break; }
             r.RiderAnim = RiderAnimOf(cdos);
+            if (Lv.TryProp<bool>(cdo, "bSuffersCrateCarryingMovementPenalty", out var penalty)) r.CratePenalty = penalty ? "1" : "0";
             var move = MovementOf(cdos);
             if (move != null)
             {
@@ -160,7 +166,7 @@ public static class MountSpeeds
             sb.Append(r.Blueprint).Append('\t').Append(r.Kind).Append('\t').Append(r.Parents).Append('\t');
             if (r.HasMovement) sb.Append(F(r.Walk)).Append('\t').Append(F(r.Run)).Append('\t').Append(F(r.Fly)).Append('\t').Append(F(r.Swim)).Append('\t').Append(r.Defaults);
             else sb.Append("\t\t\t\t");
-            sb.Append('\n');
+            sb.Append('\t').Append(r.CratePenalty).Append('\n');
         }
         return sb.ToString();
     }

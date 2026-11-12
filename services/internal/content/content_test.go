@@ -83,7 +83,9 @@ func TestCreateMakesTheDocumentedTables(t *testing.T) {
 		// plan E1, stage 3, part 2 (contentc version 10): the reward tables
 		"loot_table", "xp_rule",
 		// the mounts (contentc version 11)
-		"mount", "mount_stat", "mount_ability", "mount_effect"}
+		"mount", "mount_stat", "mount_ability", "mount_effect",
+		// the mount skins (contentc version 49)
+		"mount_cosmetic"}
 	want = append(want, extraDocumentedTables...) // the tables of the features that list their own, in <feature>_tables_test.go
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {

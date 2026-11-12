@@ -199,6 +199,12 @@ func buildMounts(w *writer, src *source, opt *Options, meta map[string]string) e
 		n++
 	}
 
+	// mount_cosmetic: the mount skins (version 49)
+	cosmetics, err := buildMountCosmetics(w, src)
+	if err != nil {
+		return err
+	}
+
 	// mount_stat: the Mount_Base list at the owner's levels
 	statLevels, err := buildMountStats(w, src)
 	if err != nil {
@@ -313,13 +319,72 @@ func buildMounts(w *writer, src *source, opt *Options, meta map[string]string) e
 		effects++
 	}
 
-	opt.logf("mount: %d items (%d ground, %d flying, %d aquatic); mount_stat: %d rows; mount_ability: %d; mount_effect: %d",
-		n, counts[content.MountGround], counts[content.MountFlying], counts[content.MountAquatic], statLevels, abilities, effects)
+	opt.logf("mount: %d items (%d ground, %d flying, %d aquatic); mount_stat: %d rows; mount_ability: %d; mount_effect: %d; mount_cosmetic: %d",
+		n, counts[content.MountGround], counts[content.MountFlying], counts[content.MountAquatic], statLevels, abilities, effects, cosmetics)
 	meta["typed.mount"] = strconv.Itoa(n)
+	meta["typed.mount_cosmetic"] = strconv.Itoa(cosmetics)
 	meta["typed.mount_stat"] = strconv.Itoa(statLevels)
 	meta["typed.mount_ability"] = strconv.Itoa(abilities)
 	meta["typed.mount_effect"] = strconv.Itoa(effects)
 	return nil
+}
+
+// mountCosmeticSlots are the equip slots a mount skin is worn in, and the kind of mount each dresses.
+var mountCosmeticSlots = map[string]string{
+	"EEquipSlot::GroundMountCosmetic":  content.MountGround,
+	"EEquipSlot::FlyingMountCosmetic":  content.MountFlying,
+	"EEquipSlot::AquaticMountCosmetic": content.MountAquatic,
+}
+
+// buildMountCosmetics fills mount_cosmetic: every ItemRecord that names a MountCosmeticBP and is worn in a mount cosmetic slot.  A skin with no Blueprint (18 of
+// the 84 in the data) changes nothing and is left out; a Blueprint outside the mounts folder, a skin worn in no mount cosmetic slot or in two of them is a data
+// error, as a mount's own Blueprint is.
+func buildMountCosmetics(w *writer, src *source) (int, error) {
+	var items []designdb.Row
+	for _, r := range src.rows["ItemRecordBase"] {
+		if _, ok := r.Fields["MountCosmeticBP"]; ok {
+			items = append(items, r)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	n := 0
+	for _, r := range items {
+		f := newFields(fmt.Sprintf("Item %s (%d)", r.Name, r.Guid), r.Fields)
+		path := f.str("MountCosmeticBP")
+		var slots []string
+		if _, ok := f.get("EquipSlots"); ok {
+			slots = f.tags("EquipSlots")
+		}
+		if f.err != nil {
+			return 0, f.err
+		}
+		if path == "" {
+			continue
+		}
+		kind := ""
+		for _, s := range slots {
+			k, ok := mountCosmeticSlots[s]
+			if !ok {
+				continue
+			}
+			if kind != "" && kind != k {
+				return 0, fmt.Errorf("%s: worn in two mount cosmetic slots (%v)", f.where, slots)
+			}
+			kind = k
+		}
+		if kind == "" {
+			return 0, fmt.Errorf("%s: MountCosmeticBP %q, but EquipSlots %v names no mount cosmetic slot", f.where, path, slots)
+		}
+		bp := mountPackage.FindStringSubmatch(path)
+		if bp == nil {
+			return 0, fmt.Errorf("%s: MountCosmeticBP %q is not /Game/GameBlueprints/Mounts/<Package>.<Class>_C", f.where, path)
+		}
+		if err := w.exec(`INSERT INTO mount_cosmetic (item_guid, item_name, kind, blueprint_path, blueprint) VALUES (?, ?, ?, ?, ?)`, r.Guid, r.Name, kind, path, bp[1]); err != nil {
+			return 0, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 // buildMountStats runs the Mount_Base list (when the data has it) for an owner of each level 1 to 50 and writes what every entry gives.

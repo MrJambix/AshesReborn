@@ -29,6 +29,17 @@
 //  PvP flag) and the rider's AnimBP (the interaction data names it and the open exports the class: without it the rider stands on the mount).
 //  What is the capture's, kept: everything else (CharacterType 1.1, the penetrations, the interaction definition, the ability list).
 //  Modelled, not retail: the open has no ReplicatedBasedMovement (retail names the ground object the mount stands on, which worldd has no export for: the NPCs of E1 go without it too).
+//
+//  The skins (contentc version 49, content.db's mount_cosmetic).  The retail summon (AAoCPlayerController::HandleMountSummon, 0x146aca580, the server's code in
+//  the client) asks FMountCosmeticHelper::GetCosmeticMountData (0x1469d6730) for the item its owner wears in the cosmetic slot of the mount's MountType
+//  (Ground 70, Flying 72, Aquatic 73), loads the item's MountCosmeticBP and SPAWNS THAT CLASS in place of the item's, then puts the item's own movement on it
+//  (0x1469cc420) and names the item's class in UMountComponent.OriginalMountClass (0x1460831f0, only when a skin was used).  The client does the same with
+//  what it is sent: OnRep_OriginalMountClass (0x14607b4b0) reads the class's default object and puts its movement on the skin's actor, so the skin looks like
+//  itself and moves like the item.  The helper keeps the item's own look when the two default objects differ in flight (a virtual call, "Mount cosmetic flight
+//  capabilities don't match summoned mount") or in bSuffersCrateCarryingMovementPenalty (the byte at +0x10b9, "... crate capabilities ..."): worldd holds them
+//  to mount_speeds.tsv's `kind` (Flying or not) and `crate_penalty` columns, and wears no skin whose Blueprint, or whose mount's, the file does not know.
+//  What the skin changes: the open's archetype (the skin's default object) and the rider's AnimBP (the skin's: its skeleton is the skin's); everything else is
+//  the item's (the donor of its kind, its name, its Health, its speeds).
 // ============================================================================
 #pragma once
 
@@ -78,6 +89,9 @@ struct MountParams {
     std::optional<float>                 dissolve_timer;
     /// The health the mount starts at (a mount that was hurt and came back: stage 3's saved Health); unset: its maximum.
     std::optional<double>                health;
+    /// The skin the mount wears (MountBook::skin_for has allowed it): the open's archetype and the rider's AnimBP are its Blueprint's, and
+    /// UMountComponent.OriginalMountClass names the item's class.  nullptr: the item's own look.
+    const content::MountCosmeticRow*     skin = nullptr;
     /// The owner's own alignments (its pawn's UAlignmentComponent.Alignments, as they are now): the mount INHERITS them, as retail's does (the mount's
     /// InheritedAlignments are its owner's, the retail captures).  Unset: a player with no PvP flag, node or guild (Player, NonCombatant, the
     /// owner's Instigator and PVPSuppressed_Perceiver: the alignments of worldd's own pawn).  Fix 2 of stage 3: the donors' alignments belong to the CAPTURING
@@ -119,6 +133,7 @@ public:
 
     /// The Blueprints' speeds (dist/content/mount_speeds.tsv, tools/mapc `mount-speeds`): walk, run, fly and swim in cm/s by the Blueprint's name. False, with `error`,
     /// when the file does not read (a missing file leaves the table empty: a mount then runs at 600 cm/s times its item's ground percentage).
+    /// The same file gives each Blueprint's traits (below).
     bool load_speeds(const std::string& path, std::string& error);
     struct Speeds {
         double walk = 0, run = 0, fly = 0, swim = 0;
@@ -127,6 +142,23 @@ public:
     size_t speeds_known() const { return speeds_.size(); }
     /// Sets one Blueprint's speeds (the tests').
     void set_speeds(const std::string& blueprint, Speeds s) { speeds_[blueprint] = s; }
+
+    /// What the retail summon compares between a mount and its skin (see the top): the Blueprint's family (mount_speeds.tsv's `kind`: Grounded, Flying, Aquatic,
+    /// Gliding) and its bSuffersCrateCarryingMovementPenalty (`crate_penalty`: "1", "0", "" where no Blueprint of its chain sets it).  A file older than the
+    /// column gives `crate_known` false: no skin is worn then, as a skin on a mule could not be told from one on a horse.
+    struct Traits {
+        std::string kind;
+        std::string crate_penalty;
+        bool        crate_known = false;
+    };
+    const Traits* traits_of(const std::string& blueprint) const;
+    /// Sets one Blueprint's traits (the tests').
+    void set_traits(const std::string& blueprint, Traits t) { traits_[blueprint] = std::move(t); }
+
+    /// The skin the mount of `row` wears when its owner wears the item `worn` (the record in the cosmetic slot of the mount's kind; 0: none), or nullptr for the
+    /// item's own look: no skin worn, an item that is no skin or a skin of another kind, a Blueprint mount_speeds.tsv does not know, or the retail checks
+    /// (the flight and the crate capabilities of the two Blueprints differ).  `why` says which, for the log (empty when nothing was worn).
+    const content::MountCosmeticRow* skin_for(const content::MountRow& row, int64_t worn, std::string* why = nullptr) const;
 // CoA : C.Y.B
 
     /// The rider's AnimBP of each Blueprint (dist/content/mount_riders.tsv, tools/mapc `mount-speeds` writes it with the speeds): the class path
@@ -143,7 +175,11 @@ public:
     std::string rider_anim_of(const content::MountRow& row) const;
     /// The export of that AnimBP class (the class, its package: flags 5, checksum 0, NetGUIDs worldd mints from the path, stable between calls): what the actor's
     /// open carries so that the client can find the class its AttachmentAnimation names.  Empty for a path without a dot.
-    repl::ExportChain rider_anim_export(const std::string& class_path) const;
+    repl::ExportChain rider_anim_export(const std::string& class_path) const { return class_export(class_path); }
+    /// The export of a class by its path ("/Game/GameBlueprints/Mounts/X.X_C"): the class, then its package.  A package has one NetGUID however many
+    /// exports name it (a donor's retail one, else the one first minted): the item's class default object and, under a skin, its class
+    /// (OriginalMountClass) share theirs.  Empty for a path without a dot.
+    repl::ExportChain class_export(const std::string& class_path) const;
 
     /// MaxHealth of the mount at its owner's level: Mount_Base_HP times the item's factor.
     double max_health(const content::MountRow& row, int owner_level) const;
@@ -153,13 +189,18 @@ public:
     std::optional<MountMade> make(const content::MountRow& row, const MountParams& p, const Minter& mint, std::string& error) const;
 
 private:
+    /// The export link of a package: a donor's retail one when a donor's archetype lives in it, else the one minted first (then kept).
+    repl::ExportLink package_link(const std::string& package) const;
+
     content::MountData                       data_;
     MountDonors                              donors_;
     mutable std::map<std::string, repl::ExportChain> made_;     // by the CDO's path
     mutable std::set<uint64_t>               minted_;
+    mutable std::map<std::string, repl::ExportLink> packages_;   // by the package's path
     std::map<std::string, Speeds>            speeds_;
+    std::map<std::string, Traits>            traits_;     // Blueprint name -> its family and crate penalty
     std::map<std::string, std::string>       riders_;     // Blueprint name -> the rider AnimBP's class path
-    mutable std::map<std::string, repl::ExportChain> rider_exports_;   // by the class path
+    mutable std::map<std::string, repl::ExportChain> class_exports_;   // by the class path (the rider AnimBPs, the items' classes)
 };
 
 /// The values of an ObjectState (and its fast arrays' items) with the four words of `from` replaced by `to`, wherever they stand as an FGuid, as the four

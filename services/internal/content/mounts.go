@@ -20,6 +20,9 @@ import (
 //	               roles of Summon_Mount, MountAbility_Sprint (the dash) and the two dismounts
 //	mount_effect   the effects of riding: the road speed effects Road_T0..T4_Speed_Mount (MoveSpeedMult +0.10 .. +0.30), the dash and the effects with
 //	               bForceDismount
+//	mount_cosmetic (contentc version 49) the mount skins: every item with a MountCosmeticBP and one of the three mount cosmetic slots (EquipSlots
+//	               GroundMountCosmetic, FlyingMountCosmetic, AquaticMountCosmetic: the kind of mount it dresses).  The retail summon spawns the skin's Blueprint
+//	               in place of the item's when the owner wears one in the slot of the mount's kind (AAoCPlayerController::HandleMountSummon, 0x146aca580)
 const MountDDL = `
 CREATE TABLE mount (
     item_guid         INTEGER PRIMARY KEY,
@@ -66,6 +69,13 @@ CREATE TABLE mount_effect (
     infinite       INTEGER NOT NULL,
     duration       REAL NOT NULL,         -- seconds; 0 for an infinite effect
     force_dismount INTEGER NOT NULL       -- bForceDismount
+);
+CREATE TABLE mount_cosmetic (
+    item_guid      INTEGER PRIMARY KEY,
+    item_name      TEXT NOT NULL,
+    kind           TEXT NOT NULL,          -- ground, flying or aquatic: the slot it is worn in (GroundMountCosmetic 70, FlyingMountCosmetic 72, AquaticMountCosmetic 73)
+    blueprint_path TEXT NOT NULL,          -- MountCosmeticBP: /Game/GameBlueprints/Mounts/Mount_Grounded_AlpineBaghorn_0.Mount_Grounded_AlpineBaghorn_0_C
+    blueprint      TEXT NOT NULL           -- the package's name: Mount_Grounded_AlpineBaghorn_0
 );
 `
 
@@ -154,6 +164,15 @@ type MountEffect struct {
 	ForceDismount bool
 }
 
+// MountCosmetic is a row of mount_cosmetic: a mount skin.
+type MountCosmetic struct {
+	ItemGuid      int64
+	ItemName      string
+	Kind          string
+	BlueprintPath string
+	Blueprint     string
+}
+
 // (C | O | A ~ C | Y | B)
 
 func createMounts(db *sql.DB) error {
@@ -215,6 +234,24 @@ func (d *DB) MountAbilities() ([]MountAbility, error) {
 			return nil, err
 		}
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// MountCosmetics reads the mount skins, by item name.
+func (d *DB) MountCosmetics() ([]MountCosmetic, error) {
+	rows, err := d.sql.Query(`SELECT item_guid, item_name, kind, blueprint_path, blueprint FROM mount_cosmetic ORDER BY item_name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MountCosmetic
+	for rows.Next() {
+		var c MountCosmetic
+		if err := rows.Scan(&c.ItemGuid, &c.ItemName, &c.Kind, &c.BlueprintPath, &c.Blueprint); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }

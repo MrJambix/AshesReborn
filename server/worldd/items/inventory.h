@@ -96,6 +96,8 @@ inline constexpr uint8_t RingRight = 10, RingLeft = 11, Necklace = 12, EarRight 
 inline constexpr uint8_t Primary = 15, Secondary = 16, Ranged = 17, RangedOffHand = 18;
 inline constexpr uint8_t Shirt = 19, ResourceBag0 = 23, ResourceBag1 = 24, ResourceBag2 = 25, Pickaxe = 26, Axe = 29, Sickle = 33, FishingRod = 35, Bow = 38, Crowbar = 41;
 inline constexpr uint8_t Costume = 71, PrimaryCosmetic = 75, CloakCosmetic = 79;
+/// The mount skins' slots: the skin worn in the slot of a mount's kind dresses the mount summoned (session/mounts.h).
+inline constexpr uint8_t GroundMountCosmetic = 70, FlyingMountCosmetic = 72, AquaticMountCosmetic = 73;
 /// The slot a carried crate stands in (the construction, trade, relic and fishing crates list only this one).
 inline constexpr uint8_t CargoHold = 53;
 }  // namespace equip

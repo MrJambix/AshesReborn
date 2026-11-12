@@ -2159,6 +2159,7 @@ constexpr const char* kMountStatSql = "SELECT level, stat_guid, stat_name, value
 constexpr const char* kMountAbilitySql = "SELECT ability_guid, name, role, usable_while_mounted, auto_dismount FROM mount_ability ORDER BY name";
 constexpr const char* kMountEffectSql =
     "SELECT effect_guid, name, kind, tier, stat_guid, value, relative, infinite, duration, force_dismount FROM mount_effect ORDER BY name";
+constexpr const char* kMountCosmeticSql = "SELECT item_guid, item_name, kind, blueprint_path, blueprint FROM mount_cosmetic ORDER BY item_name";
 
 /// A JSON array of numbers ("[1,2.5]") and one of [x, y, z] triples, as contentc writes a route.
 bool parse_number_array(const std::string& text, std::vector<double>& out) {
@@ -2955,6 +2956,13 @@ std::optional<std::vector<GmItemRow>> ContentDb::gm_items(std::string& error) co
 const MountRow* MountData::find(int64_t item) const {
     for (const MountRow& m : mounts)
         if (m.item == item) return &m;
+    return nullptr;
+}
+
+const MountCosmeticRow* MountData::cosmetic(int64_t item) const {
+    if (item == 0) return nullptr;
+    for (const MountCosmeticRow& c : cosmetics)
+        if (c.item == item) return &c;
     return nullptr;
 }
 
@@ -4754,6 +4762,26 @@ std::optional<MountData> ContentDb::mount_data(std::string& error) const {
         if (step != SQLITE_DONE) {
             error = "content.db mount_effect query failed: " + db_message(db_);
             return std::nullopt;
+        }
+    }
+    {   // the mount skins (contentc version 49); an older file has no such table and no skin is worn
+        Stmt q(db_, kMountCosmeticSql);
+        if (q.ok()) {
+            int step;
+            while ((step = sqlite3_step(q.get())) == SQLITE_ROW) {
+                if (!column_is_int(q.get(), 0)) return wrong("mount_cosmetic");
+                MountCosmeticRow r;
+                r.item = sqlite3_column_int64(q.get(), 0);
+                r.item_name = column_text(q.get(), 1);
+                r.kind = column_text(q.get(), 2);
+                r.blueprint_path = column_text(q.get(), 3);
+                r.blueprint = column_text(q.get(), 4);
+                out.cosmetics.push_back(std::move(r));
+            }
+            if (step != SQLITE_DONE) {
+                error = "content.db mount_cosmetic query failed: " + db_message(db_);
+                return std::nullopt;
+            }
         }
     }
     return out;

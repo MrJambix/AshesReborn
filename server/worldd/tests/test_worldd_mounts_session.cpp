@@ -113,6 +113,8 @@ static svc::InventoryItem make_item(ItemContainer c, int slot, int64_t record, u
 }
 
 static constexpr int kMountSlot = 5, kOtherMountSlot = 6, kLockedSlot = 7, kAquaticSlot = 8, kFlyingSlot = 9, kPotionSlot = 1, kSwordSlot = 0;
+/// Cosmetic_Mount_Grounded_Baghorn: a ground mount skin (MountCosmeticBP Mount_Grounded_AlpineBaghorn_0), worn in GroundMountCosmetic (70).
+static constexpr int64_t kBaghornSkin = 6064633895828979841ll;
 static int64_t g_mount_record = 0, g_other_mount_record = 0, g_aquatic_record = 0, g_flying_record = 0;
 
 static std::vector<svc::InventoryItem> kit() {
@@ -208,7 +210,25 @@ struct Fixture {
             std::printf("  [FAIL] the data has no terror bird or horse\n");
             std::exit(2);
         }
-        world->set_mounts(std::move(*book));
+        // the Baghorn skin (contentc version 49's row, put in when an older content.db has none) and the traits the skins' checks read: the tests' own, so that the
+        // fixture does not need mapc's newest mount_speeds.tsv
+        content::MountData data = book->data();
+        if (!data.cosmetic(kBaghornSkin)) {
+            content::MountCosmeticRow c;
+            c.item = kBaghornSkin;
+            c.item_name = "Cosmetic_Mount_Grounded_Baghorn";
+            c.kind = "ground";
+            c.blueprint = "Mount_Grounded_AlpineBaghorn_0";
+            c.blueprint_path = "/Game/GameBlueprints/Mounts/Mount_Grounded_AlpineBaghorn_0.Mount_Grounded_AlpineBaghorn_0_C";
+            data.cosmetics.push_back(std::move(c));
+        }
+        spawns::MountBook dressed(std::move(data), book->donors());
+        spawns::MountBook::Traits grounded;
+        grounded.kind = "Grounded";
+        grounded.crate_known = true;
+        dressed.set_traits("Mount_Grounded_TerrorBird_0", grounded);
+        dressed.set_traits("Mount_Grounded_AlpineBaghorn_0", grounded);
+        world->set_mounts(std::move(dressed));
     }
     Fixture(const Fixture&) = delete;
     Fixture& operator=(const Fixture&) = delete;
@@ -741,6 +761,52 @@ static void test_open_on_the_wire() {
     (void)blocks;
 }
 
+
+/// UMountComponent.OriginalMountClass of a mount actor (an invalid NetGUID when it names nothing).
+static emit::FIntrepidNetworkGUID original_class_of(const world::WorldActor& m) {
+    const repl::Subobject* mc = spawns::sub_of(m, "UMountComponent");
+    const repl::Value* v = mc ? mc->obj.state.get(*mc->obj.schema, "OriginalMountClass") : nullptr;
+    const auto* g = v ? v->get_if<emit::FIntrepidNetworkGUID>() : nullptr;
+    return g ? *g : emit::FIntrepidNetworkGUID{};
+}
+
+static void test_summon_in_a_skin() {
+    std::printf("a mount summoned with a skin worn (the skins: the record in the cosmetic slot of the mount's kind)\n");
+    std::vector<svc::InventoryItem> dressed_kit = kit();
+    dressed_kit.push_back(make_item(Worn, items::equip::GroundMountCosmetic, kBaghornSkin, 400));
+    Harness h(cyb_record(dressed_kit));
+    h.play();
+    CHECK(h.s->inventory().at(Worn, items::equip::GroundMountCosmetic) != nullptr, "the skin is worn in GroundMountCosmetic (70)");
+    const size_t from = h.got.size();
+    summon_with(h, kMountSlot, 62);
+    h.run(milliseconds(500));
+    const world::WorldActor* m = h.s->mounts()->mount();
+    CHECK(m && m->actor.open.archetype.size() == 2 && m->actor.open.archetype[0].name == "Default__Mount_Grounded_AlpineBaghorn_0_C" && original_class_of(*m).is_valid(),
+          "the terror bird opens as the Baghorn's Blueprint and names its own class in OriginalMountClass");
+    const fake::Delivered* open = nullptr;
+    for (size_t i = from; i < h.got.size(); ++i) {
+        if (h.got[i].open && !is_player_channel(h, h.got[i].channel)) open = &h.got[i];
+    }
+    bool names_class = false, names_skin = false;
+    if (open) {
+        for (const emit::BunchWriter& x : open->exports) {
+            names_class = names_class || bits_contain_text(x, "Mount_Grounded_TerrorBird_0_C");
+            names_skin = names_skin || bits_contain_text(x, "Default__Mount_Grounded_AlpineBaghorn_0_C");
+        }
+    }
+    CHECK(open && names_skin && names_class, "the open reached the client with the skin's default object and the item's class among its exports");
+    h.run(milliseconds(500));   // (the mount is out once bIsSummoning goes off, 0.574 s after the request)
+    CHECK(h.s->mounts()->phase() == MountController::Phase::Out && h.s->mounts()->item_record() == g_mount_record, "the mount out is the terror bird's (its speeds, its Health)");
+
+    // a flyer reads its own slot (72): the ground skin does not dress it
+    Harness f(cyb_record(dressed_kit));
+    f.play();
+    summon_with(f, kFlyingSlot, 63);
+    f.run(milliseconds(2000));
+    const world::WorldActor* fm = f.s->mounts()->mount();
+    CHECK(fm && !original_class_of(*fm).is_valid() && fm->actor.open.archetype.size() == 2 && fm->actor.open.archetype[0].name != "Default__Mount_Grounded_AlpineBaghorn_0_C",
+          "a flyer summoned with only a ground skin worn keeps its own look");
+}
 
 // ---- golden: what retail sent for the same requests -------------------------------------------------------------------------------------
 
@@ -1379,6 +1445,7 @@ int main() {
     test_cancel_by_damage();
     test_world();
     test_open_on_the_wire();
+    test_summon_in_a_skin();
     test_golden_summon();
     test_golden_desummon();
     test_golden_refusal();

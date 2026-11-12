@@ -25,7 +25,7 @@ func TestRealMounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for key, want := range map[string]string{"typed.mount": "101", "typed.mount_stat": "250", "typed.mount_ability": "34", "typed.mount_effect": "9"} {
+	for key, want := range map[string]string{"typed.mount": "101", "typed.mount_stat": "250", "typed.mount_ability": "34", "typed.mount_effect": "9", "typed.mount_cosmetic": "66"} {
 		if meta[key] != want {
 			t.Errorf("meta %s = %q, want %q", key, meta[key], want)
 		}
@@ -213,7 +213,7 @@ func readMountSpeeds(t *testing.T) map[string]map[string]string {
 	}
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	header := strings.Split(lines[0], "\t")
-	want := []string{"blueprint", "kind", "parents", "max_walk_speed", "max_run_speed", "max_fly_speed", "max_swim_speed", "defaults"}
+	want := []string{"blueprint", "kind", "parents", "max_walk_speed", "max_run_speed", "max_fly_speed", "max_swim_speed", "defaults", "crate_penalty"}
 	if strings.Join(header, ",") != strings.Join(want, ",") {
 		t.Fatalf("mount_speeds.tsv header = %v, want %v", header, want)
 	}
@@ -314,6 +314,43 @@ func TestRealMountSpeedsAgreeWithTheItemText(t *testing.T) {
 	}
 	if untexted != 22 {
 		t.Errorf("%d ground items have no speed text, want 22", untexted)
+	}
+}
+
+// TestRealMountCosmetics checks the mount skins (version 49): 66 of the 84 items worn in a mount cosmetic slot name a Blueprint (55 ground, 8 flying, 3 aquatic;
+// the 18 others name none and change nothing), and mapc's mount_speeds.tsv knows every one of them, which worldd needs to hold a skin to the retail summon's
+// two checks (the flight and the crate capabilities of the two default objects).  Two are dressed in a Blueprint of another family than their slot: a flying
+// skin on a Grounded one (the retail check of the flight refuses it on every flyer) and an aquatic skin on a Grounded one (as two aquatic mounts are).
+func TestRealMountCosmetics(t *testing.T) {
+	speeds := readMountSpeeds(t)
+	db := builtDB(t)
+	skins, err := db.MountCosmetics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds, families := map[string]int{}, map[string]int{}
+	byName := map[string]content.MountCosmetic{}
+	for _, s := range skins {
+		kinds[s.Kind]++
+		byName[s.ItemName] = s
+		row, ok := speeds[s.Blueprint]
+		if !ok {
+			t.Errorf("%s: its Blueprint %s is not in mount_speeds.tsv", s.ItemName, s.Blueprint)
+			continue
+		}
+		families[s.Kind+"/"+row["kind"]]++
+	}
+	if len(skins) != 66 || kinds[content.MountGround] != 55 || kinds[content.MountFlying] != 8 || kinds[content.MountAquatic] != 3 {
+		t.Errorf("%d skins, by kind %v", len(skins), kinds)
+	}
+	if families["flying/Grounded"] != 1 || families["aquatic/Grounded"] != 1 || families["flying/Flying"] != 7 || families["aquatic/Aquatic"] != 2 || families["ground/Grounded"] != 55 {
+		t.Errorf("skins by slot and Blueprint family: %v", families)
+	}
+	if s := byName["Cosmetic_Mount_Grounded_Baghorn"]; s.Kind != content.MountGround || s.Blueprint != "Mount_Grounded_AlpineBaghorn_0" {
+		t.Errorf("the Baghorn skin = %+v", s)
+	}
+	if _, ok := byName["Cosmetic_Mount_Grounded_RadiantStallion"]; ok {
+		t.Error("a skin with no Blueprint is in mount_cosmetic")
 	}
 }
 

@@ -1363,6 +1363,200 @@ static void test_desummon_early(const spawns::MountBook& book) {
 }
 // built with C | O | A and C-Y-B
 
+// ---- the skins (contentc version 49; spawns/mount_spawn.h) ---------------------------------------------------------------------------------
+
+static const repl::Subobject* mount_component(const world::WorldActor& w) { return sub_named(w.actor, "UMountComponent"); }
+
+/// The NetGUID UMountComponent.OriginalMountClass holds (an invalid one when it names nothing).
+static FIntrepidNetworkGUID original_class_of(const world::WorldActor& w) {
+    const repl::Subobject* mc = mount_component(w);
+    const repl::Value* v = mc ? mc->obj.state.get(*mc->obj.schema, "OriginalMountClass") : nullptr;
+    const auto* g = v ? v->get_if<FIntrepidNetworkGUID>() : nullptr;
+    return g ? *g : FIntrepidNetworkGUID{};
+}
+
+static std::string character_name_of(const world::WorldActor& w) {
+    const repl::Subobject* info = sub_named(w.actor, "UNPCInfo");
+    const repl::Value* v = info ? info->obj.state.get(*info->obj.schema, "CharacterName") : nullptr;
+    const auto* s = v ? v->get_if<std::string>() : nullptr;
+    return s ? *s : std::string();
+}
+
+static void test_skins(const spawns::MountBook& real) {
+    std::printf("the skins: a mount wears the skin its owner wears for its kind, when the retail summon's checks allow it\n");
+    const content::MountRow* terror = row_named(real, "Mount_Grounded_TerrorBird_0");
+    const content::MountRow* mule = nullptr;
+    const content::MountRow* other = nullptr;   // a ground mount that is no donor's Blueprint
+    for (const content::MountRow& r : real.data().mounts) {
+        if (r.kind == "ground" && r.mule && !mule) mule = &r;
+        if (r.kind == "ground" && !r.mule && r.blueprint != "Mount_Grounded_TerrorBird_0" && !other) other = &r;
+    }
+    const content::MountRow* flyer = first_of_kind(real, "flying");
+    CHECK(terror && mule && other && flyer, "the data has the terror bird, a mule, another ground mount and a flyer");
+    if (!terror || !mule || !other || !flyer) return;
+
+    // a book over the real mounts with skins of our own (the test does not need content.db's mount_cosmetic): their kinds, Blueprints and traits
+    content::MountData data = real.data();
+    const auto skin = [](int64_t item, const char* name, const char* kind, const std::string& blueprint) {
+        content::MountCosmeticRow c;
+        c.item = item;
+        c.item_name = name;
+        c.kind = kind;
+        c.blueprint = blueprint;
+        c.blueprint_path = "/Game/GameBlueprints/Mounts/" + blueprint + "." + blueprint + "_C";
+        return c;
+    };
+    data.cosmetics = {skin(900001, "Cosmetic_Test_Baghorn", "ground", "Mount_Grounded_AlpineBaghorn_0"),
+                      skin(900002, "Cosmetic_Test_WalkingFlyer", "flying", "Mount_Grounded_WalkingThing_0"),
+                      skin(900003, "Cosmetic_Test_Unknown", "ground", "Mount_Grounded_NoSuchBlueprint_0"),
+                      skin(900004, "Cosmetic_Test_OwnBird", "ground", "Mount_Grounded_TerrorBird_0")};
+    spawns::MountBook book(data, real.donors());
+    const auto traits = [](const char* kind, const char* crate) {
+        spawns::MountBook::Traits t;
+        t.kind = kind;
+        t.crate_penalty = crate;
+        t.crate_known = true;
+        return t;
+    };
+    book.set_traits(terror->blueprint, traits("Grounded", ""));
+    book.set_traits(other->blueprint, traits("Grounded", ""));
+    book.set_traits(mule->blueprint, traits("Grounded", "0"));   // a mule suffers no crate penalty
+    book.set_traits(flyer->blueprint, traits("Flying", ""));
+    book.set_traits("Mount_Grounded_AlpineBaghorn_0", traits("Grounded", ""));
+    book.set_traits("Mount_Grounded_WalkingThing_0", traits("Grounded", ""));
+    const std::string baghorn_rider = "/Game/Characters/Animations/Mounts_Rider/Baghorn/ABP_PC_MNT_Baghorn.ABP_PC_MNT_Baghorn_C";
+    book.set_rider_anim("Mount_Grounded_AlpineBaghorn_0", baghorn_rider);
+    const content::MountCosmeticRow* baghorn = book.data().cosmetic(900001);
+
+    std::string why;
+    CHECK(book.skin_for(*terror, 0, &why) == nullptr && why.empty(), "no skin worn: the item's own look, nothing to log");
+    CHECK(baghorn && book.skin_for(*terror, 900001, &why) == baghorn && why.empty(), "a ground skin on a ground mount of the same family and crate penalty is worn");
+    CHECK(book.skin_for(*terror, terror->item, &why) == nullptr && !why.empty(), "an item that is no skin is not worn");
+    CHECK(book.skin_for(*flyer, 900001, &why) == nullptr && why.find("dresses a ground mount") != std::string::npos, "a ground skin does not dress a flyer");
+    CHECK(book.skin_for(*flyer, 900002, &why) == nullptr && why.find("flight capabilities") != std::string::npos,
+          "a flying skin on a Grounded Blueprint keeps the flyer's own look (retail: \"flight capabilities don't match\")");
+    CHECK(book.skin_for(*mule, 900001, &why) == nullptr && why.find("crate capabilities") != std::string::npos,
+          "a horse's skin does not dress a mule (retail: \"crate capabilities don't match\", bSuffersCrateCarryingMovementPenalty)");
+    CHECK(book.skin_for(*terror, 900003, &why) == nullptr && why.find("does not know") != std::string::npos, "a skin whose Blueprint mount_speeds.tsv does not know is not worn");
+    CHECK(book.skin_for(*terror, 900004, &why) == nullptr && why.find("own Blueprint") != std::string::npos, "a skin that is the mount's own Blueprint is no skin (retail compares the classes)");
+    {
+        spawns::MountBook old(data, real.donors());
+        spawns::MountBook::Traits t = traits("Grounded", "");
+        t.crate_known = false;
+        old.set_traits(terror->blueprint, t);
+        old.set_traits("Mount_Grounded_AlpineBaghorn_0", t);
+        CHECK(old.skin_for(*terror, 900001, &why) == nullptr && why.find("crate_penalty") != std::string::npos,
+              "a mount_speeds.tsv older than the crate_penalty column wears no skin (a mule could not be told from a horse)");
+    }
+
+    // the actor: the skin's archetype and rider, the item's class in OriginalMountClass, the rest the item's
+    std::string error;
+    auto plain = make_plain(book, *terror, plain_params(), error);
+    spawns::MountParams p = plain_params();
+    p.skin = baghorn;
+    auto dressed = make_plain(book, *terror, p, error);
+    CHECK(plain && dressed, ("the terror bird is made plain and in the skin: " + error).c_str());
+    if (!plain || !dressed) return;
+    const repl::ExportChain& arch = dressed->actor.actor.open.archetype;
+    CHECK(arch.size() == 2 && arch[0].name == "Default__Mount_Grounded_AlpineBaghorn_0_C" && arch[1].name == "/Game/GameBlueprints/Mounts/Mount_Grounded_AlpineBaghorn_0",
+          "the open's archetype is the skin's class default object, in its package");
+    const spawns::OpenTemplate* ground = book.donors().donor("ground");
+    CHECK(ground && same_chain(plain->actor.actor.open.archetype, ground->archetype), "the plain terror bird keeps the retail export");
+    CHECK(!original_class_of(plain->actor).is_valid() && plain->actor.open_exports.size() == 1, "a plain mount names no OriginalMountClass and exports only its rider's AnimBP");
+    CHECK(dressed->actor.open_exports.size() == 2, "the dressed mount exports two things: the rider's AnimBP and the item's class");
+    const repl::ExportChain rider = dressed->actor.open_exports.empty() ? repl::ExportChain{} : dressed->actor.open_exports[0];
+    CHECK(rider.size() == 2 && rider[0].name == "ABP_PC_MNT_Baghorn_C", "the rider sits on the skin's AnimBP (its skeleton is the skin's)");
+    const repl::ExportChain cls = dressed->actor.open_exports.size() < 2 ? repl::ExportChain{} : dressed->actor.open_exports[1];
+    CHECK(cls.size() == 2 && cls[0].name == "Mount_Grounded_TerrorBird_0_C" && cls[0].has_checksum && cls[0].checksum == 0 && cls[0].guid.is_valid() &&
+              original_class_of(dressed->actor).ObjectId == cls[0].guid.ObjectId,
+          "UMountComponent.OriginalMountClass is the item's class, exported by its name (retail 0x1460831f0; the client's OnRep puts its movement on the skin)");
+    CHECK(ground && cls.size() == 2 && ground->archetype.size() >= 2 && cls[1].guid.ObjectId == ground->archetype.back().guid.ObjectId && cls[1].name == ground->archetype.back().name,
+          "the class's package is the donor's retail package link: one NetGUID for one package");
+    CHECK(character_name_of(dressed->actor) == character_name_of(plain->actor) && dressed->max_health == plain->max_health,
+          "the name on the nameplate and the Health are the item's");
+    CHECK(writes_open(const_cast<repl::Actor&>(dressed->actor.actor)), "the dressed open writes");
+    p.skin = book.data().cosmetic(900002);
+    CHECK(!make_plain(book, *terror, p, error) && !error.empty(), "make refuses a skin of another kind (the controller never asks it)");
+
+    // a mount of a Blueprint of our own: its class default object and, under a skin, its class share one package NetGUID
+    {
+        auto own = make_plain(book, *other, plain_params(), error);
+        spawns::MountParams q = plain_params();
+        q.skin = baghorn;
+        auto own_dressed = make_plain(book, *other, q, error);
+        const repl::ExportChain c2 = own_dressed && own_dressed->actor.open_exports.size() == 2 ? own_dressed->actor.open_exports[1] : repl::ExportChain{};
+        CHECK(own && own_dressed && c2.size() == 2 && own->actor.actor.open.archetype.size() == 2 && c2[1].guid.ObjectId == own->actor.actor.open.archetype[1].guid.ObjectId &&
+                  c2[0].name == other->blueprint + "_C",
+              "another mount's class (under the skin) and its default object (plain) are exported in the same package NetGUID");
+        auto again = make_plain(book, *other, q, error);
+        CHECK(again && again->actor.open_exports.size() == 2 && same_chain(again->actor.open_exports[1], c2), "the class export is the same at every summon");
+    }
+
+    // the controller: the request names what the owner wears, the open is dressed
+    {
+        Rig rig(book);
+        MountController::Request r = rig.request(*terror);
+        r.cosmetic_item = 900001;
+        CHECK(rig.mc->summon(r, 10.0) == MountController::Outcome::Started, "a summon with a skin worn starts");
+        Seen seen;
+        rig.run(10.0, 10.3, seen);
+        const world::WorldActor* m = rig.mount();
+        CHECK(m && m->actor.open.archetype.size() == 2 && m->actor.open.archetype[0].name == "Default__Mount_Grounded_AlpineBaghorn_0_C" && original_class_of(*m).is_valid(),
+              "the summoned mount opens in the skin and names the item's class");
+        Rig mrig(book);
+        MountController::Request mr = mrig.request(*mule);
+        mr.cosmetic_item = 900001;
+        mrig.mc->summon(mr, 10.0);
+        Seen ms;
+        mrig.run(10.0, 10.3, ms);
+        const world::WorldActor* mm = mrig.mount();
+        CHECK(mm && !original_class_of(*mm).is_valid() && mm->actor.open.archetype.size() == 2 && mm->actor.open.archetype[0].name == "Default__" + mule->blueprint + "_C",
+              "a mule with a horse's skin worn opens as itself");
+    }
+
+    // the real data, when the files are new enough: content.db's 66 skins (contentc 49) and mount_speeds.tsv's crate_penalty column (mapc)
+    if (real.data().cosmetics.empty()) {
+        std::printf("  [skip] content.db has no mount_cosmetic (older than contentc version 49)\n");
+        return;
+    }
+    CHECK(real.data().cosmetics.size() == 66, "content.db has the 66 skins that name a Blueprint");
+    spawns::MountBook live(real.data(), real.donors());
+    std::string serr;
+    if (!live.load_speeds(MOUNT_SPEEDS_PATH, serr)) {
+        CHECK(false, ("mount_speeds.tsv loads: " + serr).c_str());
+        return;
+    }
+    const spawns::MountBook::Traits* tt = live.traits_of("Mount_Grounded_TerrorBird_0");
+    if (!tt || !tt->crate_known) {
+        std::printf("  [skip] mount_speeds.tsv has no crate_penalty column (an older mapc)\n");
+        return;
+    }
+    size_t known = 0;
+    for (const content::MountCosmeticRow& c : real.data().cosmetics) known += live.traits_of(c.blueprint) != nullptr;
+    CHECK(known == 66, "mount_speeds.tsv knows every skin's Blueprint");
+    const content::MountCosmeticRow* real_baghorn = nullptr;
+    for (const content::MountCosmeticRow& c : real.data().cosmetics) {
+        if (c.item_name == "Cosmetic_Mount_Grounded_Baghorn") real_baghorn = &c;
+    }
+    const content::MountRow* live_terror = row_named(live, "Mount_Grounded_TerrorBird_0");
+    const content::MountCosmeticRow* worn_baghorn = real_baghorn && live_terror ? live.skin_for(*live_terror, real_baghorn->item, &why) : nullptr;
+    CHECK(worn_baghorn && worn_baghorn->item == real_baghorn->item && worn_baghorn->blueprint == "Mount_Grounded_AlpineBaghorn_0", ("the Baghorn skin dresses the terror bird: " + why).c_str());
+    // how many skins dress the first plain mount of their kind (logged, for the handoff)
+    size_t worn = 0, kept = 0;
+    for (const content::MountCosmeticRow& c : real.data().cosmetics) {
+        const content::MountRow* base = first_of_kind(live, c.kind.c_str());
+        if (!base) continue;
+        if (live.skin_for(*base, c.item, &why)) {
+            ++worn;
+        } else {
+            ++kept;
+            std::printf("  [info] %s keeps %s's own look: %s\n", c.item_name.c_str(), base->item_name.c_str(), why.c_str());
+        }
+    }
+    std::printf("  [info] on the first plain mount of their kind: %zu skins are worn, %zu keep the mount's look\n", worn, kept);
+    CHECK(worn > 0, "skins dress the plain mounts of their kind");
+}
+
 static void test_world_loads(const content::ContentDb& db) {
     std::printf("the world loads the mounts\n");
     aoc::protocol::ServerGuidAllocator guids(60, 1);
@@ -1433,6 +1627,7 @@ int main() {
     test_cancel(*book);
     test_desummon(*book);
     test_desummon_early(*book);
+    test_skins(*book);
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

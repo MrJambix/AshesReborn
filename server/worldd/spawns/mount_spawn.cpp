@@ -165,6 +165,16 @@ bool MountBook::load_speeds(const std::string& path, std::string& error) {
         error = path + " has not the expected columns (blueprint, kind, parents, max_walk_speed, max_run_speed, max_fly_speed, max_swim_speed, ...)";
         return false;
     }
+    // the skins' column (contentc version 49's mapc): the ninth, after `defaults`; a file without it knows no crate penalty
+    bool with_crate = false;
+    {
+        std::vector<std::string> h;
+        std::stringstream hs(line);
+        std::string cell;
+        while (std::getline(hs, cell, '\t')) h.push_back(cell);
+        with_crate = h.size() > 8 && h[8] == "crate_penalty";
+    }
+    std::map<std::string, Traits> traits;
     size_t rows = 0, row_number = 1;
     while (std::getline(in, line)) {
         ++row_number;
@@ -190,13 +200,48 @@ bool MountBook::load_speeds(const std::string& path, std::string& error) {
             return false;
         }
         speeds_[f[0]] = s;
+        Traits t;
+        t.kind = f[1];
+        t.crate_known = with_crate;
+        if (with_crate && f.size() > 8) t.crate_penalty = f[8];
+        traits[f[0]] = std::move(t);
         ++rows;
     }
     if (rows == 0) {
         error = path + " has no rows";
         return false;
     }
+    traits_ = std::move(traits);
     return true;
+}
+
+const MountBook::Traits* MountBook::traits_of(const std::string& blueprint) const {
+    const auto it = traits_.find(blueprint);
+    return it == traits_.end() ? nullptr : &it->second;
+}
+
+const content::MountCosmeticRow* MountBook::skin_for(const content::MountRow& row, int64_t worn, std::string* why) const {
+    if (why) why->clear();
+    const auto keep_own = [&](std::string reason) -> const content::MountCosmeticRow* {
+        if (why) *why = std::move(reason);
+        return nullptr;
+    };
+    if (worn == 0) return nullptr;
+    const content::MountCosmeticRow* skin = data_.cosmetic(worn);
+    if (!skin) return keep_own("item " + std::to_string(worn) + " is no mount skin");
+    if (skin->kind != row.kind) return keep_own(skin->item_name + " dresses a " + skin->kind + " mount and " + row.item_name + " is a " + row.kind + " one");
+    // retail: a skin whose class is the mount's own is no skin (HandleMountSummon compares the class it gets back with the item's)
+    if (skin->blueprint_path == row.blueprint_path) return keep_own(skin->item_name + " is the mount's own Blueprint");
+    const Traits* mine = traits_of(row.blueprint);
+    const Traits* its = traits_of(skin->blueprint);
+    if (!mine || !its) return keep_own("mount_speeds.tsv does not know the Blueprint " + (mine ? skin->blueprint : row.blueprint));
+    if (!mine->crate_known || !its->crate_known) return keep_own("mount_speeds.tsv has no crate_penalty column (run mapc mount-speeds again)");
+    if ((mine->kind == "Flying") != (its->kind == "Flying"))
+        return keep_own("the flight capabilities of " + skin->blueprint + " (" + its->kind + ") and " + row.blueprint + " (" + mine->kind + ") don't match");
+    if (mine->crate_penalty != its->crate_penalty)
+        return keep_own("the crate capabilities of " + skin->blueprint + " and " + row.blueprint + " don't match (bSuffersCrateCarryingMovementPenalty '" + its->crate_penalty +
+                        "' and '" + mine->crate_penalty + "')");
+    return skin;
 }
 
 const MountBook::Speeds* MountBook::speeds_of(const std::string& blueprint) const {
@@ -246,24 +291,35 @@ std::string MountBook::rider_anim_of(const content::MountRow& row) const {
     return row.kind == "aquatic" ? kAquaticRiderAnim : row.kind == "flying" ? kFlyingRiderAnim : kGroundRiderAnim;
 }
 
-repl::ExportChain MountBook::rider_anim_export(const std::string& class_path) const {
-    std::string package, klass;
-    if (!split_class_path(class_path, package, klass)) return {};
-    if (const auto it = rider_exports_.find(class_path); it != rider_exports_.end()) return it->second;
+repl::ExportLink MountBook::package_link(const std::string& package) const {
+    if (const auto it = packages_.find(package); it != packages_.end()) return it->second;
+    // a package a donor's archetype lives in keeps the donor's retail link (the client knows the package by it)
+    for (const OpenTemplate& o : donors_.opens()) {
+        if (o.archetype.size() >= 2 && o.archetype.back().name == package) return packages_[package] = o.archetype.back();
+    }
     const auto taken = [&](uint64_t id) { return donors_.static_id_in_use(id) || minted_.count(id) != 0; };
-    repl::ExportLink cls, pkg;
-    cls.guid = FIntrepidNetworkGUID::from_u64(static_object_id(class_path, taken));
-    minted_.insert(cls.guid.ObjectId);
-    cls.name = klass;                // the class object: "ABP_PC_MNT_Swiftclaw_C" in its package [R: the retail capture: flags 5, checksum 0]
-    cls.has_checksum = true;
-    cls.checksum = 0;
+    repl::ExportLink pkg;
     pkg.guid = FIntrepidNetworkGUID::from_u64(static_object_id(package + "#package", taken));
     minted_.insert(pkg.guid.ObjectId);
     pkg.name = package;
     pkg.has_checksum = true;
     pkg.checksum = 0;
-    repl::ExportChain chain{cls, pkg};
-    rider_exports_[class_path] = chain;
+    return packages_[package] = pkg;
+}
+
+repl::ExportChain MountBook::class_export(const std::string& class_path) const {
+    std::string package, klass;
+    if (!split_class_path(class_path, package, klass)) return {};
+    if (const auto it = class_exports_.find(class_path); it != class_exports_.end()) return it->second;
+    const auto taken = [&](uint64_t id) { return donors_.static_id_in_use(id) || minted_.count(id) != 0; };
+    repl::ExportLink cls;
+    cls.guid = FIntrepidNetworkGUID::from_u64(static_object_id(class_path, taken));
+    minted_.insert(cls.guid.ObjectId);
+    cls.name = klass;                // the class object: "ABP_PC_MNT_Swiftclaw_C" in its package [R: the retail capture: flags 5, checksum 0]
+    cls.has_checksum = true;
+    cls.checksum = 0;
+    repl::ExportChain chain{cls, package_link(package)};
+    class_exports_[class_path] = chain;
     return chain;
 }
 
@@ -289,18 +345,13 @@ repl::ExportChain MountBook::archetype_of(const content::MountRow& row, const Op
     if (path == donor.archetype_path) return donor.archetype;   // the Blueprint a capture exported keeps its retail export
     if (const auto it = made_.find(path); it != made_.end()) return it->second;
     const auto taken = [&](uint64_t id) { return donors_.static_id_in_use(id) || minted_.count(id) != 0; };
-    repl::ExportLink obj, pkg;
+    repl::ExportLink obj;
     obj.guid = FIntrepidNetworkGUID::from_u64(static_object_id(path, taken));
     minted_.insert(obj.guid.ObjectId);
     obj.name = "Default__" + klass;
     obj.has_checksum = true;
     obj.checksum = 0;   // not compared by the client (spawns/generic_npc.h)
-    pkg.guid = FIntrepidNetworkGUID::from_u64(static_object_id(package + "#package", taken));
-    minted_.insert(pkg.guid.ObjectId);
-    pkg.name = package;
-    pkg.has_checksum = true;
-    pkg.checksum = 0;
-    repl::ExportChain chain{obj, pkg};
+    repl::ExportChain chain{obj, package_link(package)};
     made_[path] = chain;
     return chain;
 }
@@ -322,9 +373,19 @@ std::optional<MountMade> MountBook::make(const content::MountRow& row, const Mou
             return std::nullopt;
         }
     }
-    repl::ExportChain archetype = archetype_of(row, *donor);
+    // the look: the skin's Blueprint when one is worn (the open's archetype, the rider's AnimBP), the item's otherwise; everything else is the item's
+    content::MountRow look = row;
+    if (p.skin) {
+        if (p.skin->kind != row.kind) {
+            error = p.skin->item_name + " dresses a " + p.skin->kind + " mount, not " + row.item_name;
+            return std::nullopt;
+        }
+        look.blueprint_path = p.skin->blueprint_path;
+        look.blueprint = p.skin->blueprint;
+    }
+    repl::ExportChain archetype = archetype_of(look, *donor);
     if (archetype.empty()) {
-        error = row.item_name + " names no Blueprint";
+        error = (p.skin ? p.skin->item_name : row.item_name) + " names no Blueprint";
         return std::nullopt;
     }
 
@@ -460,7 +521,7 @@ std::optional<MountMade> MountBook::make(const content::MountRow& row, const Mou
     }
     // the rider's AnimBP: the mount's InteractableComponent names it and the open exports it (see MountBook::load_riders)
     if (repl::Subobject* inter = find_sub(a, "UInteractableComponent")) {
-        const repl::ExportChain chain = rider_anim_export(rider_anim_of(row));
+        const repl::ExportChain chain = rider_anim_export(rider_anim_of(look));
         const repl::Value* data = inter->obj.state.get(*inter->obj.schema, "InteractionInputData");
         const auto* arr = data ? data->get_if<repl::ArrayValue>() : nullptr;
         if (chain.empty() || !arr) {
@@ -540,6 +601,22 @@ std::optional<MountMade> MountBook::make(const content::MountRow& row, const Mou
             error = e;
             return std::nullopt;
         }
+        // under a skin the component names the item's class (retail 0x1460831f0): the client's OnRep_OriginalMountClass puts that class's movement on the skin's actor
+        if (p.skin) {
+            const repl::ExportChain cls = class_export(row.blueprint_path);
+            if (cls.empty()) {
+                error = row.item_name + ": its Blueprint path names no class";
+                return std::nullopt;
+            }
+            if (!set_path(mc->obj, "OriginalMountClass", repl::Value(cls.front().guid), e)) {
+                error = e;
+                return std::nullopt;
+            }
+            w.open_exports.push_back(cls);
+        }
+    } else if (p.skin) {
+        error = row.item_name + ": the donor has no UMountComponent to name the item's class in";
+        return std::nullopt;
     }
     // the interaction state of the mount is the owner's alone
     world::set_player(a, donor_owner, false);

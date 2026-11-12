@@ -280,6 +280,10 @@ void MountController::run_open(double now, Effects& out) {
     else if (ground_) {
         if (const auto g = ground_(p.x, p.y, req_.place.z - kPlayerFootOffsetCm)) p.z = *g + kMountFootOffsetCm;
     }
+    // the skin its owner wears for this kind of mount, when the retail checks allow it (spawns/mount_spawn.h)
+    std::string kept_own;
+    p.skin = row ? book_.skin_for(*row, req_.cosmetic_item, &kept_own) : nullptr;
+    if (!p.skin && !kept_own.empty()) spdlog::info("[mounts] {}: {} keeps its own look: {}", owner_.name, row ? row->item_name : std::string("?"), kept_own);
     std::string error;
     auto made = row ? book_.make(*row, p, mint_, error) : std::nullopt;
     if (!made) {
@@ -313,7 +317,14 @@ void MountController::run_open(double now, Effects& out) {
     out.pet_changed = true;
     out.pet = pet;
     pet_set_ = true;
-    spdlog::info("[mounts] {}: {} is summoned (actor {}, {:.0f} cm in front of the player; its rider sits on {})", owner_.name, row->item_name, id, kSpawnAheadCm, book_.rider_anim_of(*row));
+    if (p.skin) {
+        content::MountRow look = *row;
+        look.blueprint = p.skin->blueprint;
+        spdlog::info("[mounts] {}: {} is summoned in the skin {} ({}; actor {}, {:.0f} cm in front of the player; its rider sits on {})", owner_.name, row->item_name,
+                     p.skin->item_name, p.skin->blueprint, id, kSpawnAheadCm, book_.rider_anim_of(look));
+    } else {
+        spdlog::info("[mounts] {}: {} is summoned (actor {}, {:.0f} cm in front of the player; its rider sits on {})", owner_.name, row->item_name, id, kSpawnAheadCm, book_.rider_anim_of(*row));
+    }
 }
 // Cyb captures, C | O | A code
 

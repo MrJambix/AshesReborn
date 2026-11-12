@@ -33,8 +33,9 @@ import (
 //
 // Core's numbering: 42 added the knock-back tables, 43 item_reward_selection (the random coffers and
 // choose-one selectors). Ours runs ahead of core's: 44 to 46 are this branch's (recipe items, the
-// citizenship and mayor dialogue actions), 47 took core's 42, 48 core's 43.
-const Version = "48"
+// citizenship and mayor dialogue actions), 47 took core's 42, 48 core's 43. 49 is ours: mount_cosmetic
+// (the mount skins).
+const Version = "49"
 
 // Options say what Build reads and writes.
 type Options struct {

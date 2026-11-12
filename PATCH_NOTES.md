@@ -6,6 +6,7 @@
 - Node stores: every node now has the money and goods the game gives it to start with: for most nodes 152 gold, 50 silver and 50 copper in the treasury, and 225 each of the tier 1 Materials, Tools and Food commodities. The node window's inventory tab shows the goods and the money, and the mayor's inventory lists the goods too. Players can't add goods to a node yet.
 - The mayoral commissions that also cost a node resource can now be bought, once the node's stores hold it; the resource comes out of the stores.
 - The mayor's commission board now stands in the Town Hall of every Village and Town. Use it to see the commissions the mayor has bought and take them as quests; it opens even when none is running. The town's ordinary commission board lists the town's own commissions only.
+- Mount skins: wear a mount cosmetic in the mount cosmetic slot of its kind (ground, flying or aquatic), and the mount you summon wears it. It keeps your mount's own speed, health and name. As in the game, a mount keeps its own look when the skin does not suit it: a mule wears no horse's skin, and a flyer wears no skin of a mount that cannot fly. 18 of the game's mount cosmetics come with no look of their own and change nothing.
 
 ### Fixed
 - Citizen-only shop listings, such as each node's citizen cloak and its commodity certificates, are now sold only to that node's citizens. Before, anyone standing in the town could buy them, and a citizen shopping elsewhere was refused listings meant for everyone but the citizens of another node.

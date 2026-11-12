@@ -96,6 +96,13 @@ func syntheticMounts() *source {
 		item(503, "RETIRED_Mount_Grounded_Daystrider_0", "Item.Mount.Ground", "/Game/GameBlueprints/Mounts/Mount_Grounded_Daystrider_0.Mount_Grounded_Daystrider_0_C", "", archSummon, false),
 		mkRow(504, "Mount_Banner", st{"GameplayTags": list{"Item.Cosmetic"}, "SummonNotifyClassPath": "", "Description": designdb.Text{}, "Tradeable": true,
 			"ActivationArchetypeId": idv(0, 1, "None"), "ActivationCastId": idv(0, 2, "None")}),
+		// the mount skins (version 49): a ground one, a flying one, one with no Blueprint (left out) and an item with the field empty and no slot (no skin)
+		mkRow(511, "Cosmetic_Mount_Grounded_Baghorn", st{"EquipSlots": list{"EEquipSlot::GroundMountCosmetic"},
+			"MountCosmeticBP": "/Game/GameBlueprints/Mounts/Mount_Grounded_AlpineBaghorn_0.Mount_Grounded_AlpineBaghorn_0_C"}),
+		mkRow(512, "Cosmetic_Mount_Flying_Dawnbreaker", st{"EquipSlots": list{"EEquipSlot::FlyingMountCosmetic"},
+			"MountCosmeticBP": "/Game/GameBlueprints/Mounts/Mount_Flying_Dawnbreaker_2.Mount_Flying_Dawnbreaker_2_C"}),
+		mkRow(513, "Cosmetic_Mount_Grounded_RadiantStallion", st{"EquipSlots": list{"EEquipSlot::GroundMountCosmetic"}, "MountCosmeticBP": ""}),
+		mkRow(514, "Cosmetic_Costume_Peddler", st{"EquipSlots": list{"EEquipSlot::Costume"}, "MountCosmeticBP": ""}),
 	}
 
 	flags := func(guid int64, name string, usable, auto bool) designdb.Row {
@@ -169,8 +176,20 @@ func TestSyntheticMounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta["typed.mount"] != "2" || meta["typed.mount_ability"] != "5" || meta["typed.mount_effect"] != "3" || meta["typed.mount_stat"] != "250" {
+	if meta["typed.mount"] != "2" || meta["typed.mount_ability"] != "5" || meta["typed.mount_effect"] != "3" || meta["typed.mount_stat"] != "250" ||
+		meta["typed.mount_cosmetic"] != "2" {
 		t.Errorf("meta = %v", meta)
+	}
+	skins, err := db.MountCosmetics()
+	if err != nil || len(skins) != 2 {
+		t.Fatalf("MountCosmetics = %v, %v (a skin with no Blueprint and a costume are no mount skins)", skins, err)
+	}
+	if s := skins[1]; s.ItemGuid != 511 || s.Kind != content.MountGround || s.Blueprint != "Mount_Grounded_AlpineBaghorn_0" ||
+		s.BlueprintPath != "/Game/GameBlueprints/Mounts/Mount_Grounded_AlpineBaghorn_0.Mount_Grounded_AlpineBaghorn_0_C" {
+		t.Errorf("the ground skin = %+v", s)
+	}
+	if s := skins[0]; s.ItemName != "Cosmetic_Mount_Flying_Dawnbreaker" || s.Kind != content.MountFlying || s.Blueprint != "Mount_Flying_Dawnbreaker_2" {
+		t.Errorf("the flying skin = %+v", s)
 	}
 	ms, err := db.Mounts()
 	if err != nil || len(ms) != 2 {
@@ -255,6 +274,25 @@ func TestSyntheticMountsRefuse(t *testing.T) {
 	src.rows["StatEquationTypeRecordBase"] = src.rows["StatEquationTypeRecordBase"][:1]
 	if _, _, err := buildMountsOnly(t, src); err == nil {
 		t.Error("a list that reads a missing equation was accepted")
+	}
+	// a skin's Blueprint outside the mounts folder, and a skin worn in no mount cosmetic slot, are data errors too (rows 4 to 7 are the skins)
+	src = syntheticMounts()
+	if src.rows["ItemRecordBase"][4].Name != "Cosmetic_Mount_Grounded_Baghorn" {
+		t.Fatalf("row 4 is %s", src.rows["ItemRecordBase"][4].Name)
+	}
+	src.rows["ItemRecordBase"][4].Fields["MountCosmeticBP"] = "/Game/Elsewhere/Baghorn.Baghorn_C"
+	if _, _, err := buildMountsOnly(t, src); err == nil {
+		t.Error("a skin's Blueprint outside GameBlueprints/Mounts was accepted")
+	}
+	src = syntheticMounts()
+	src.rows["ItemRecordBase"][4].Fields["EquipSlots"] = list{"EEquipSlot::Costume"}
+	if _, _, err := buildMountsOnly(t, src); err == nil {
+		t.Error("a skin worn in no mount cosmetic slot was accepted")
+	}
+	src = syntheticMounts()
+	src.rows["ItemRecordBase"][4].Fields["EquipSlots"] = list{"EEquipSlot::GroundMountCosmetic", "EEquipSlot::FlyingMountCosmetic"}
+	if _, _, err := buildMountsOnly(t, src); err == nil {
+		t.Error("a skin worn in two mount cosmetic slots was accepted")
 	}
 	// a database with no mounts at all (the synthetic one of the other tests) writes empty tables
 	empty := &source{rows: map[string][]designdb.Row{}, typeIDs: map[string]uint64{}}

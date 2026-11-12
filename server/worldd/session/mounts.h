@@ -129,6 +129,9 @@ public:
         std::optional<double> health;           // the Health the mount starts at (stage 3: the item's saved Health; unset: its maximum)
         /// The owner's alignments as its pawn holds them now: the mount inherits them (stage 3 fix 2: never a donor's). Unset: the unflagged player's.
         std::optional<repl::AlignmentContainer> alignments;
+        /// The record the owner wears in the cosmetic slot of the mount's kind (Ground 70, Flying 72, Aquatic 73; 0: none): the skin the mount wears when
+        /// MountBook::skin_for allows it (spawns/mount_spawn.h, the skins).
+        int64_t         cosmetic_item = 0;
     };
 
     enum class Outcome : uint8_t {
