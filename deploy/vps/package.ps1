@@ -28,7 +28,7 @@ robocopy "$repo\dist\content" "$stage\dist\content" /E /XF area_geom.bin /XD .ex
 if ($LASTEXITCODE -ge 8) { throw 'could not copy dist\content' }
 Copy-Item "$repo\PATCH_NOTES.md" "$stage\dist\services"
 Copy-Item "$repo\deploy\citynode_seed.json" "$stage\deploy"
-Copy-Item "$PSScriptRoot\install.ps1", "$PSScriptRoot\supervisor.ps1", "$PSScriptRoot\sandalctl.ps1", "$PSScriptRoot\sendctrlc.ps1", "$PSScriptRoot\notify-discord.ps1", "$PSScriptRoot\README.md" "$stage\ops"
+Copy-Item "$PSScriptRoot\install.ps1", "$PSScriptRoot\supervisor.ps1", "$PSScriptRoot\sandalctl.ps1", "$PSScriptRoot\sendctrlc.ps1", "$PSScriptRoot\notify-discord.ps1", "$PSScriptRoot\enable-crash-dumps.ps1", "$PSScriptRoot\README.md" "$stage\ops"
 Copy-Item "$repo\LICENSE", "$repo\NOTICE" $stage
 Copy-Item "$CertDir\server.pem", "$CertDir\server.key", "$CertDir\ca.crt" "$stage\certs"
 (git -C $repo rev-parse HEAD) + $(if (git -C $repo status --porcelain) { ' (with uncommitted changes)' }) | Set-Content "$stage\VERSION.txt" -Encoding ascii

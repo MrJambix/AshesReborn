@@ -21,6 +21,14 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${AOC_DIST_ROOT}/RelWithDebIn
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     "${AOC_DIST_ROOT}/MinSizeRel")
 message(STATUS "AshesOfCreation dist/ root: ${AOC_DIST_ROOT}")
 
+# ── Symbols for Release (reading a crash dump of the VPS) ───────────────────
+# /Zi writes every object's symbols into a PDB and leaves the code as it was; worldd's link makes worldd.pdb beside
+# worldd.exe (server/worldd/CMakeLists.txt).  Keep the PDB of each deployed worldd.exe: a dump of the VPS
+# (deploy/vps/enable-crash-dumps.ps1) reads only with the PDB of that very build.
+if(MSVC)
+    string(APPEND CMAKE_CXX_FLAGS_RELEASE " /Zi")
+endif()
+
 # ── Game data the build includes ─────────────────────────────────────────
 # scripts/extract_game_data.ps1 (extract_game_data.bat) makes these from your own Ashes of Creation install; they are git-ignored.
 set(AOC_GENERATED_FILES

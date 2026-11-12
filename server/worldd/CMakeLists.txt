@@ -381,6 +381,11 @@ set_target_properties(worldd_core PROPERTIES FOLDER "Servers/worldd")
 add_executable(worldd main.cpp)
 target_link_libraries(worldd PRIVATE worldd_core CLI11::CLI11)
 set_target_properties(worldd PROPERTIES FOLDER "Servers")
+if(MSVC)
+    # worldd.pdb in Release too, for the crash dumps (the top CMakeLists.txt).  /OPT:REF and /OPT:ICF are what a Release link does without
+    # /DEBUG, so the program keeps the same code.  The tests link without a PDB.
+    target_link_options(worldd PRIVATE "$<$<CONFIG:Release>:/DEBUG:FULL;/OPT:REF;/OPT:ICF>")
+endif()
 
 # ── tests: plain executables that print [ok ]/[FAIL], like libaocnet's ──────
 function(worldd_add_test name)
