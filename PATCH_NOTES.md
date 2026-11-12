@@ -1,6 +1,6 @@
 # Patch notes
 
-## Next update: towns and citizens
+## 2026-11-11: buy orders, node stores, the Town Hall's commission board and mount skins
 
 ### New
 - Buy orders: a node's mayor can now place buy orders from the treasury window. Pick a commodity and one of its recipes, the materials, how many units the node wants, how many each player may give a day and for how many days; the order's cost comes out of the node's treasury. While an order runs, the town's Buy Order Manager opens the buy order window (after their introduction quest, the first time). Bring the materials, deliver whole units and get the order's reward for each one. Every unit delivered adds the commodity to the node's stores, an order ends once it has everything it asked for, and the citizenship tab's news lists new and filled orders.
